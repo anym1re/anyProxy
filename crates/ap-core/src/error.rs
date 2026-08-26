@@ -38,4 +38,21 @@ pub enum Error {
     /// An open node carrying a domain, which it never serves.
     #[error("an open node cannot carry a domain")]
     OpenWithDomain,
+
+    /// A device limit outside the range an access accepts.
+    #[error("device limit must be between 1 and 1000")]
+    MaxDevices,
+
+    /// An attempt to resume an access that was withdrawn for good.
+    #[error("a revoked access is never resumed")]
+    AccessRevoked,
+
+    /// An access read back as the wrong surface.
+    #[error("expected a {expected} access, found {actual}")]
+    SurfaceMismatch {
+        /// Surface the caller asked for.
+        expected: &'static str,
+        /// Surface the value actually carries.
+        actual: &'static str,
+    },
 }
