@@ -1,0 +1,275 @@
+use std::fmt;
+
+use crate::Error;
+
+const LABEL_MAX: usize = 32;
+const TAG_NAME_MAX: usize = 24;
+const NOTE_MAX: usize = 128;
+const DOMAIN_MAX: usize = 253;
+const DOMAIN_PART_MAX: usize = 63;
+
+fn is_slug(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && value
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+fn is_hostname(value: &str) -> bool {
+    if value.is_empty() || value.len() > DOMAIN_MAX || !value.contains('.') {
+        return false;
+    }
+    value.split('.').all(|part| {
+        !part.is_empty()
+            && part.len() <= DOMAIN_PART_MAX
+            && !part.starts_with('-')
+            && !part.ends_with('-')
+            && part
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    })
+}
+
+macro_rules! slug {
+    ($name:ident, $max:ident, $doc:literal) => {
+        #[doc = $doc]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub struct $name(String);
+
+        impl $name {
+            /// Borrows the validated value.
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl TryFrom<&str> for $name {
+            type Error = Error;
+
+            fn try_from(value: &str) -> Result<Self, Error> {
+                if is_slug(value, $max) {
+                    Ok(Self(value.to_owned()))
+                } else {
+                    Err(Error::Name { max: $max })
+                }
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = Error;
+
+            fn try_from(value: String) -> Result<Self, Error> {
+                if is_slug(&value, $max) {
+                    Ok(Self(value))
+                } else {
+                    Err(Error::Name { max: $max })
+                }
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+    };
+}
+
+slug!(
+    Label,
+    LABEL_MAX,
+    "Identifier of a client or a node, unique within its kind."
+);
+slug!(TagName, TAG_NAME_MAX, "Identifier of a tag.");
+
+/// Hostname a stealth node answers on, shared by its cover site and its clients.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Domain(String);
+
+impl Domain {
+    /// Borrows the validated value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for Domain {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Error> {
+        if is_hostname(value) {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(Error::Domain)
+        }
+    }
+}
+
+impl fmt::Display for Domain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Lowercase hex triplet used to mark a tag in the panel.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Color(String);
+
+impl Color {
+    /// Borrows the validated value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for Color {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Error> {
+        let valid = value.len() == 7
+            && value.starts_with('#')
+            && value[1..]
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c));
+        if valid {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(Error::Color)
+        }
+    }
+}
+
+impl fmt::Display for Color {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Short free text an operator attaches to a tag.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Note(String);
+
+impl Note {
+    /// Borrows the validated value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for Note {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Error> {
+        if value.chars().count() <= NOTE_MAX {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(Error::TextTooLong { max: NOTE_MAX })
+        }
+    }
+}
+
+impl fmt::Display for Note {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_accepts_one_character() {
+        assert_eq!(Label::try_from("a").unwrap().as_str(), "a");
+    }
+
+    #[test]
+    fn label_accepts_the_longest_allowed_value() {
+        let longest = "a".repeat(LABEL_MAX);
+        assert_eq!(Label::try_from(longest.as_str()).unwrap().as_str(), longest);
+    }
+
+    #[test]
+    fn label_rejects_the_empty_string() {
+        assert_eq!(Label::try_from(""), Err(Error::Name { max: LABEL_MAX }));
+    }
+
+    #[test]
+    fn label_rejects_one_character_too_many() {
+        let too_long = "a".repeat(LABEL_MAX + 1);
+        assert_eq!(
+            Label::try_from(too_long.as_str()),
+            Err(Error::Name { max: LABEL_MAX })
+        );
+    }
+
+    #[test]
+    fn label_rejects_anything_outside_the_alphabet() {
+        for value in ["Alice", "alice.bob", "alice bob", "алиса", "alice!"] {
+            assert_eq!(
+                Label::try_from(value),
+                Err(Error::Name { max: LABEL_MAX }),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn tag_name_is_shorter_than_a_label() {
+        assert!(TagName::try_from("a".repeat(TAG_NAME_MAX).as_str()).is_ok());
+        assert!(TagName::try_from("a".repeat(TAG_NAME_MAX + 1).as_str()).is_err());
+    }
+
+    #[test]
+    fn domain_accepts_a_hostname() {
+        assert_eq!(
+            Domain::try_from("cover.example.com").unwrap().as_str(),
+            "cover.example.com"
+        );
+    }
+
+    #[test]
+    fn domain_rejects_malformed_values() {
+        for value in [
+            "",
+            "example",
+            "Example.com",
+            "example..com",
+            "-example.com",
+            "example-.com",
+            "приме́р.рф",
+        ] {
+            assert_eq!(
+                Domain::try_from(value),
+                Err(Error::Domain),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn color_accepts_a_lowercase_triplet() {
+        assert_eq!(Color::try_from("#1a2b3c").unwrap().as_str(), "#1a2b3c");
+    }
+
+    #[test]
+    fn color_rejects_uppercase_and_short_forms() {
+        for value in ["#1A2B3C", "#1a2b3", "1a2b3c", "#1a2b3cd", ""] {
+            assert_eq!(
+                Color::try_from(value),
+                Err(Error::Color),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn note_rejects_text_past_the_limit() {
+        assert!(Note::try_from("a".repeat(NOTE_MAX).as_str()).is_ok());
+        assert_eq!(
+            Note::try_from("a".repeat(NOTE_MAX + 1).as_str()),
+            Err(Error::TextTooLong { max: NOTE_MAX })
+        );
+    }
+}
