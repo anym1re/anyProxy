@@ -27,6 +27,34 @@ pub enum Error {
     #[error("quota must be greater than zero")]
     Quota,
 
+    /// A secret that is not sixteen bytes of hexadecimal.
+    #[error("a secret is exactly 32 hexadecimal characters")]
+    SecretForm,
+
+    /// A credential whose account name is empty or too long.
+    #[error("an account name is 1 to 64 characters")]
+    CredentialForm,
+
+    /// A sealed value that would not open, or would not parse once open.
+    #[error("the sealed value could not be opened")]
+    SealedValue,
+
+    /// A key file that cannot be read.
+    #[error("the key file cannot be read")]
+    KeyFileUnreadable,
+
+    /// A key file readable by anyone but its owner.
+    #[error("the key file must not be readable by group or others")]
+    KeyFilePermissions,
+
+    /// A key file that does not hold exactly the key.
+    #[error("the key file must hold exactly 32 bytes")]
+    KeyFileLength,
+
+    /// A link asked for without a host to point at.
+    #[error("a connection link needs a host")]
+    LinkHost,
+
     /// A timestamp that is not valid RFC 3339.
     #[error("timestamp must be RFC 3339, for example 2026-12-31T23:59:59Z")]
     Timestamp,

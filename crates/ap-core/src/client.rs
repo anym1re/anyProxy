@@ -1,7 +1,7 @@
 use ::time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Error, Label};
+use crate::{Encrypted, Error, Label};
 
 /// Lifecycle of a client as the panel sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -20,6 +20,7 @@ pub struct Client {
     id: Uuid,
     label: Label,
     state: ClientState,
+    note: Option<Encrypted<String>>,
     quota_bytes: Option<i64>,
     expires_at: Option<OffsetDateTime>,
     created_at: OffsetDateTime,
@@ -32,10 +33,22 @@ impl Client {
             id: Uuid::now_v7(),
             label,
             state: ClientState::Active,
+            note: None,
             quota_bytes: None,
             expires_at: None,
             created_at,
         }
+    }
+
+    /// Attaches an operator note. It is sealed because it may name a person.
+    pub fn with_note(mut self, note: Encrypted<String>) -> Self {
+        self.note = Some(note);
+        self
+    }
+
+    /// The sealed operator note, if one is set.
+    pub fn note(&self) -> Option<&Encrypted<String>> {
+        self.note.as_ref()
     }
 
     /// Sets a ceiling across every access this client holds.
