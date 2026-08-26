@@ -1,0 +1,15 @@
+# The engine this node runs, pinned by the digest of the release archive.
+#
+# A tag can be moved; a digest cannot. Updating the engine is one line here and
+# shows up in the diff as one line, which is the point.
+#
+# Digests come from the .sha256 files published beside each archive at
+# https://github.com/telemt/telemt/releases and are verified again on the node
+# before anything is unpacked.
+#
+# Static builds, so the node needs no matching C library.
+
+version = 3.5.3
+
+x86_64-linux-musl = 388699e666f06914c471fe3dc7e5c4d1c12341cde821ea04e44b37157be600bf
+aarch64-linux-musl = 86c8bd0895b3f55956b6df81fc7790132e2aba1f0782c30237cf85101ec5da0b
