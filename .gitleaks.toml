@@ -1,0 +1,20 @@
+title = "anyProxy"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "mtproto-secret"
+description = "Sixteen bytes of hexadecimal, the form of a client secret"
+regex = '''(?i)\b[0-9a-f]{32}\b'''
+[rules.allowlist]
+paths = ['''Cargo\.lock''', '''\.gitleaks\.toml''']
+regexes = ['''000102030405060708090a0b0c0d0e0f''']
+
+[[rules]]
+id = "encryption-key-file"
+description = "A key file committed to the repository"
+path = '''\.(key|pem)$'''
+
+[allowlist]
+paths = ['''(^|/)target/''', '''(^|/)scripts/fixtures/''']
