@@ -193,6 +193,7 @@ impl Error {
             Self::KeyFilePermissions => "error-key-file-permissions",
             Self::KeyFileLength => "error-key-file-length",
             Self::LinkHost => "error-link-host",
+            Self::StoredValue => "error-stored-value",
             Self::Catalogue | Self::MessageMissing => "error-sealed-value",
         }
     }
@@ -331,6 +332,7 @@ mod tests {
             Error::KeyFilePermissions,
             Error::KeyFileLength,
             Error::LinkHost,
+            Error::StoredValue,
         ];
         for error in cases {
             for locale in Locale::all() {

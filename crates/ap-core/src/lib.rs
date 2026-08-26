@@ -9,6 +9,7 @@ mod limits;
 mod link;
 mod name;
 mod node;
+mod stored;
 mod tag;
 pub mod time;
 

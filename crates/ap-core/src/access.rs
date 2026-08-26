@@ -94,6 +94,32 @@ impl AccessCommon {
         }
     }
 
+    /// Rebuilds the common part from a stored row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        id: Uuid,
+        client_id: Uuid,
+        node_id: Uuid,
+        tag_id: Option<Uuid>,
+        quota_bytes: Option<i64>,
+        expires_at: Option<OffsetDateTime>,
+        max_devices: Option<i32>,
+        state: AccessState,
+        created_at: OffsetDateTime,
+    ) -> Self {
+        Self {
+            id,
+            client_id,
+            node_id,
+            tag_id,
+            quota_bytes,
+            expires_at,
+            max_devices,
+            state,
+            created_at,
+        }
+    }
+
     /// Puts the access in a tag, for selection and bulk withdrawal.
     pub fn with_tag(mut self, tag_id: Uuid) -> Self {
         self.tag_id = Some(tag_id);

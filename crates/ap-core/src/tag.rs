@@ -22,6 +22,16 @@ impl Tag {
         }
     }
 
+    /// Rebuilds a tag from a stored row.
+    pub fn from_parts(id: Uuid, name: TagName, color: Option<Color>, note: Option<Note>) -> Self {
+        Self {
+            id,
+            name,
+            color,
+            note,
+        }
+    }
+
     /// Sets the color the panel marks this tag with.
     pub fn with_color(mut self, color: Color) -> Self {
         self.color = Some(color);

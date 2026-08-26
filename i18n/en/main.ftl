@@ -17,6 +17,7 @@ error-key-file-unreadable = the key file cannot be read
 error-key-file-permissions = the key file must not be readable by group or others
 error-key-file-length = the key file must hold exactly 32 bytes
 error-link-host = a connection link needs a host
+error-stored-value = the stored value is not a known variant
 
 # Why an access is not served.
 reason-client-suspended = the client is suspended

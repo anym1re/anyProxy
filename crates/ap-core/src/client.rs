@@ -40,6 +40,29 @@ impl Client {
         }
     }
 
+    /// Rebuilds a client from a stored row. Values are taken as given: they
+    /// were validated when the row was written.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        id: Uuid,
+        label: Label,
+        state: ClientState,
+        note: Option<Encrypted<String>>,
+        quota_bytes: Option<i64>,
+        expires_at: Option<OffsetDateTime>,
+        created_at: OffsetDateTime,
+    ) -> Self {
+        Self {
+            id,
+            label,
+            state,
+            note,
+            quota_bytes,
+            expires_at,
+            created_at,
+        }
+    }
+
     /// Attaches an operator note. It is sealed because it may name a person.
     pub fn with_note(mut self, note: Encrypted<String>) -> Self {
         self.note = Some(note);

@@ -99,6 +99,30 @@ impl Node {
         }
     }
 
+    /// Rebuilds a node from a stored row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        id: Uuid,
+        label: Label,
+        kind: NodeKind,
+        address: Option<IpAddr>,
+        agent_version: Option<String>,
+        last_seen_at: Option<OffsetDateTime>,
+        state: NodeState,
+        created_at: OffsetDateTime,
+    ) -> Self {
+        Self {
+            id,
+            label,
+            kind,
+            address,
+            agent_version,
+            last_seen_at,
+            state,
+            created_at,
+        }
+    }
+
     /// Identifier assigned at registration.
     pub fn id(&self) -> Uuid {
         self.id

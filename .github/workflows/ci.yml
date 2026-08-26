@@ -33,14 +33,6 @@ jobs:
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check
 
-  audit:
-    name: cargo-audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@cargo-audit
-      - run: cargo audit
-
   conventions:
     name: conventions
     runs-on: ubuntu-latest
@@ -60,3 +52,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
+
+  store:
+    name: store integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: anyproxy
+          POSTGRES_PASSWORD: anyproxy
+          POSTGRES_DB: anyproxy
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U anyproxy"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://anyproxy:anyproxy@localhost:5432/anyproxy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p ap-store --locked -- --test-threads 1

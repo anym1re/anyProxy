@@ -59,6 +59,10 @@ pub enum Error {
     #[error("the message catalogue has no such key")]
     MessageMissing,
 
+    /// A stored value that no variant is spelled by.
+    #[error("the stored value is not a known variant")]
+    StoredValue,
+
     /// A link asked for without a host to point at.
     #[error("a connection link needs a host")]
     LinkHost,
