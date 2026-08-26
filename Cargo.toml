@@ -11,6 +11,8 @@ publish = false
 
 [workspace.dependencies]
 chacha20poly1305 = "0.10"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
 fluent = "0.17"
 hex = "0.4"
 hmac = "0.12"
@@ -23,7 +25,7 @@ thiserror = "2"
 unic-langid = { version = "0.9", features = ["macros"] }
 time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-uuid = { version = "1", features = ["v7"] }
+uuid = { version = "1", features = ["v7", "serde"] }
 zeroize = { version = "1", features = ["derive"] }
 
 [workspace.lints.rust]

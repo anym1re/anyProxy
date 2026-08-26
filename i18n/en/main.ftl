@@ -33,3 +33,29 @@ access-count =
         [one] { $count } connection
        *[other] { $count } connections
     }
+
+# Command line output.
+cli-client-created = client { $label } created
+cli-client-not-found = no client named { $label }
+cli-node-not-found = no node named { $label }
+cli-tag-not-found = no tag named { $label }
+cli-access-not-found = no access with that identifier
+cli-node-created = node { $label } registered
+cli-tag-created = tag { $name } created
+cli-access-created = access created on node { $node }
+cli-access-updated = access updated
+cli-accesses-revoked = { $count } withdrawn
+cli-nothing-found = nothing to show
+cli-field-label = label
+cli-field-state = state
+cli-field-quota = allowance
+cli-field-expires = expires
+cli-field-created = created
+cli-field-kind = kind
+cli-field-domain = domain
+cli-field-method = method
+cli-field-node = node
+cli-field-tag = tag
+cli-value-none = none
+cli-link-confirm = printing a link reveals a secret; pass --yes to proceed
+cli-method-not-served = a { $kind } node does not serve { $method }

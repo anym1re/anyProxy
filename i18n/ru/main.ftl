@@ -34,3 +34,29 @@ access-count =
         [few] { $count } подключения
        *[other] { $count } подключений
     }
+
+# Вывод командной строки.
+cli-client-created = клиент { $label } создан
+cli-client-not-found = клиента { $label } нет
+cli-node-not-found = ноды { $label } нет
+cli-tag-not-found = тега { $label } нет
+cli-access-not-found = доступа с таким идентификатором нет
+cli-node-created = нода { $label } зарегистрирована
+cli-tag-created = тег { $name } создан
+cli-access-created = доступ создан на ноде { $node }
+cli-access-updated = доступ изменён
+cli-accesses-revoked = отозвано: { $count }
+cli-nothing-found = показывать нечего
+cli-field-label = метка
+cli-field-state = состояние
+cli-field-quota = объём
+cli-field-expires = истекает
+cli-field-created = создан
+cli-field-kind = тип
+cli-field-domain = домен
+cli-field-method = метод
+cli-field-node = нода
+cli-field-tag = тег
+cli-value-none = нет
+cli-link-confirm = вывод ссылки раскрывает секрет; для продолжения укажите --yes
+cli-method-not-served = нода типа { $kind } не обслуживает { $method }
