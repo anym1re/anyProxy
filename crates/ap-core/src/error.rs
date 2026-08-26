@@ -51,6 +51,14 @@ pub enum Error {
     #[error("the key file must hold exactly 32 bytes")]
     KeyFileLength,
 
+    /// A catalogue that will not parse.
+    #[error("the message catalogue could not be parsed")]
+    Catalogue,
+
+    /// A message key the catalogue does not define.
+    #[error("the message catalogue has no such key")]
+    MessageMissing,
+
     /// A link asked for without a host to point at.
     #[error("a connection link needs a host")]
     LinkHost,
