@@ -6,7 +6,7 @@
 
 mod error;
 mod frame;
-mod guard;
+pub mod guard;
 mod message;
 
 pub use error::ProtoError;

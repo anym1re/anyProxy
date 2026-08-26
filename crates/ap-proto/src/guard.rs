@@ -52,6 +52,34 @@ pub fn refuse_address_fields(payload: &serde_json::Value) -> Result<(), ProtoErr
     }
 }
 
+/// Takes out every field that names a client address, and says how many.
+///
+/// The engine keeps the addresses it is tracking, because tracking them is its
+/// job. The agent has no use for them and no right to hold them, so they are
+/// removed where the two meet rather than remembered not to be used: a caller
+/// that logs the whole reply then has nothing to leak.
+pub fn strip_address_fields(payload: &mut serde_json::Value) -> usize {
+    match payload {
+        serde_json::Value::Object(fields) => {
+            let named: Vec<String> = fields
+                .keys()
+                .filter(|key| names_an_address(key))
+                .cloned()
+                .collect();
+            let mut taken = named.len();
+            for key in named {
+                fields.remove(&key);
+            }
+            for value in fields.values_mut() {
+                taken += strip_address_fields(value);
+            }
+            taken
+        }
+        serde_json::Value::Array(items) => items.iter_mut().map(strip_address_fields).sum(),
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +128,45 @@ mod tests {
                 field: "client_ip".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn stripping_takes_out_the_addresses_and_leaves_the_rest() {
+        let mut payload = json(
+            r#"{"username":"abc","current_connections":2,
+                "active_unique_ips_list":["203.0.113.7"],
+                "recent_unique_ips_list":["203.0.113.8"],
+                "active_unique_ips":1}"#,
+        );
+        let taken = strip_address_fields(&mut payload);
+
+        assert_eq!(taken, 3, "a field naming an address was left behind");
+        assert!(refuse_address_fields(&payload).is_ok());
+        assert_eq!(payload["username"], "abc");
+        assert_eq!(payload["current_connections"], 2);
+        assert!(!payload.to_string().contains("203.0.113"));
+    }
+
+    #[test]
+    fn stripping_reaches_inside_arrays_and_nested_objects() {
+        let mut payload = json(
+            r#"{"users":[{"username":"a","active_unique_ips_list":["203.0.113.7"]},
+                         {"username":"b","peer":"203.0.113.8"}],
+                "node":{"health":{"host":"cover.example.com"}}}"#,
+        );
+        let taken = strip_address_fields(&mut payload);
+
+        assert_eq!(taken, 3);
+        assert!(!payload.to_string().contains("203.0.113"));
+        assert!(!payload.to_string().contains("cover.example.com"));
+        assert_eq!(payload["users"][0]["username"], "a");
+    }
+
+    #[test]
+    fn stripping_a_payload_with_nothing_to_take_changes_nothing() {
+        let before = json(r#"{"username":"abc","current_connections":2}"#);
+        let mut payload = before.clone();
+        assert_eq!(strip_address_fields(&mut payload), 0);
+        assert_eq!(payload, before);
     }
 }

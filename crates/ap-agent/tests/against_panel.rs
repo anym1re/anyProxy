@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use ap_agent::identity::Paths;
+use ap_agent::meter::Meter;
 use ap_agent::posture::{Posture, Silent};
 use ap_agent::{AgentError, cache, identity, link, session};
 use ap_core::{KeyStore, Label, Node, NodeKind};
@@ -435,5 +436,171 @@ async fn a_certificate_others_can_read_is_refused_before_it_is_used() {
             matches!(outcome, Err(AgentError::Exposed(_))),
             "a world-readable key was loaded: {outcome:?}"
         );
+    }
+}
+
+/// An access on this node that the panel will accept telemetry for.
+async fn an_access_on(panel: &Panel, node_id: Uuid) -> Uuid {
+    use ap_core::{Access, AccessCommon, AnyAccess, Client, Credential, Label, Open, OpenMethod};
+
+    let pool = ap_panel::channel::pool_of(&panel.state);
+    let client = Client::new(
+        Label::try_from(unique("c").as_str()).unwrap(),
+        OffsetDateTime::now_utc(),
+    );
+    ap_store::ClientRepo::insert(pool, &client, None)
+        .await
+        .unwrap();
+
+    let common = AccessCommon::new(client.id(), node_id, OffsetDateTime::now_utc());
+    let access = AnyAccess::Open(Access::<Open>::new(common, OpenMethod::Mtproto));
+    let id = access.common().id();
+    ap_store::AccessRepo::insert(
+        pool,
+        &access,
+        &Credential::generate_secret(),
+        &KeyStore::from_bytes([11u8; 32]),
+    )
+    .await
+    .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn what_the_node_counted_is_what_the_panel_holds() {
+    let panel = panel!();
+    let node_id = a_node(&panel).await;
+    let code = a_code(&panel, node_id).await;
+    let paths = agent_dir("counted");
+    let access = an_access_on(&panel, node_id).await;
+
+    let mut channel = link::connect(&panel.address, &panel.fingerprint, None)
+        .await
+        .unwrap();
+    let identity = session::enrol(&mut channel, &code).await.unwrap();
+    drop(channel);
+
+    let mut channel = link::connect(&panel.address, &panel.fingerprint, Some(&identity))
+        .await
+        .unwrap();
+    let now = OffsetDateTime::now_utc();
+    session::open(&mut channel, identity.node_id, &paths, None, now)
+        .await
+        .unwrap();
+
+    // Two readings of the engine's counters, so the meter has a difference to
+    // report rather than a first sighting.
+    let mut meter = Meter::new();
+    meter.observe(&a_reading(access, 0, 0), now).unwrap();
+    meter.observe(&a_reading(access, 4096, 1024), now).unwrap();
+
+    let delivery = meter
+        .delivery(
+            ap_proto::Health {
+                engine: "up".to_owned(),
+                site: "unknown".to_owned(),
+                cert_not_after: None,
+            },
+            now,
+        )
+        .unwrap();
+    let sent: i64 = delivery.deltas.iter().map(|delta| delta.bytes_in).sum();
+    let sent_out: i64 = delivery.deltas.iter().map(|delta| delta.bytes_out).sum();
+
+    assert!(
+        session::deliver(&mut channel, &mut meter, delivery)
+            .await
+            .unwrap(),
+        "the panel did not acknowledge the delivery"
+    );
+    assert!(
+        !meter.waiting(),
+        "the meter is still owed an acknowledgement"
+    );
+
+    let held = ap_store::TrafficRepo::for_access(ap_panel::channel::pool_of(&panel.state), access)
+        .await
+        .unwrap();
+    assert_eq!(held.bytes_in, sent, "the panel holds a different total");
+    assert_eq!(held.bytes_out, sent_out);
+}
+
+#[tokio::test]
+async fn a_delivery_repeated_after_a_lost_acknowledgement_counts_once() {
+    let panel = panel!();
+    let node_id = a_node(&panel).await;
+    let code = a_code(&panel, node_id).await;
+    let paths = agent_dir("repeated");
+    let access = an_access_on(&panel, node_id).await;
+
+    let mut channel = link::connect(&panel.address, &panel.fingerprint, None)
+        .await
+        .unwrap();
+    let identity = session::enrol(&mut channel, &code).await.unwrap();
+    drop(channel);
+
+    let mut channel = link::connect(&panel.address, &panel.fingerprint, Some(&identity))
+        .await
+        .unwrap();
+    let now = OffsetDateTime::now_utc();
+    session::open(&mut channel, identity.node_id, &paths, None, now)
+        .await
+        .unwrap();
+
+    let mut meter = Meter::new();
+    meter.observe(&a_reading(access, 0, 0), now).unwrap();
+    meter.observe(&a_reading(access, 2048, 512), now).unwrap();
+
+    let health = ap_proto::Health {
+        engine: "up".to_owned(),
+        site: "unknown".to_owned(),
+        cert_not_after: None,
+    };
+    let delivery = meter.delivery(health.clone(), now).unwrap();
+
+    // The panel receives it and answers, but the answer never reaches the
+    // node: sent, acknowledged, and the meter never told. That is what a lost
+    // acknowledgement is.
+    channel
+        .send(&ap_proto::Message::Telemetry(delivery.clone()))
+        .await
+        .unwrap();
+    let acked = channel.receive().await.unwrap();
+    assert!(
+        matches!(acked, Some(ap_proto::Message::Ack(_))),
+        "the panel did not answer the first delivery"
+    );
+    assert!(meter.waiting(), "the meter stopped waiting on its own");
+
+    // So the node sends the same delivery again, under the identifier it
+    // carried before.
+    let again = meter.delivery(health, now).unwrap();
+    assert_eq!(again.revision, delivery.revision);
+    session::deliver(&mut channel, &mut meter, again)
+        .await
+        .unwrap();
+
+    let held = ap_store::TrafficRepo::for_access(ap_panel::channel::pool_of(&panel.state), access)
+        .await
+        .unwrap();
+    assert_eq!(held.bytes_in, 2048, "the repeat was counted twice");
+    assert_eq!(held.bytes_out, 512);
+}
+
+/// A reading of the engine's counters for one access.
+fn a_reading(access: Uuid, bytes_in: i64, bytes_out: i64) -> ap_engine::metrics::Reading {
+    let mut by_access = std::collections::BTreeMap::new();
+    by_access.insert(
+        access,
+        ap_engine::metrics::Counters {
+            bytes_in,
+            bytes_out,
+            devices: 1,
+            connections: 1,
+        },
+    );
+    ap_engine::metrics::Reading {
+        by_access,
+        unread: 0,
     }
 }

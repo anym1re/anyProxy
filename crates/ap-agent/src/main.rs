@@ -2,8 +2,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ap_agent::identity::Paths;
+use ap_agent::meter::Meter;
 use ap_agent::posture::{Posture, Silent};
-use ap_agent::{AgentError, backoff, identity, link, session};
+use ap_agent::{AgentError, backoff, engine, identity, link, session};
+use ap_engine::control::Control;
+use ap_engine::health::{self, Site};
 use ap_proto::Message;
 use clap::{Parser, Subcommand};
 use time::OffsetDateTime;
@@ -97,11 +100,27 @@ async fn serve(paths: &Paths, panel: &str) -> Result<(), AgentError> {
     // is not on this machine.
     report(&session::posture_before_contact());
 
+    let settings = engine::settings(paths)?;
+    let control = Control::new(settings.api_port, settings.api_token.clone());
+    let metrics_port = settings.metrics_port;
+
     let mut applied_revision = None;
     let mut attempt = 0u32;
+    let mut meter = Meter::new();
 
     loop {
-        match once(paths, panel, &fingerprint, &identity, applied_revision).await {
+        match once(
+            paths,
+            panel,
+            &fingerprint,
+            &identity,
+            applied_revision,
+            &control,
+            metrics_port,
+            &mut meter,
+        )
+        .await
+        {
             Ok(revision) => {
                 applied_revision = revision;
                 attempt = 0;
@@ -116,12 +135,16 @@ async fn serve(paths: &Paths, panel: &str) -> Result<(), AgentError> {
 }
 
 /// One connection, from greeting to the moment it breaks.
+#[allow(clippy::too_many_arguments)]
 async fn once(
     paths: &Paths,
     panel: &str,
     fingerprint: &str,
     identity: &identity::Identity,
     applied_revision: Option<uuid::Uuid>,
+    control: &Control,
+    metrics_port: u16,
+    meter: &mut Meter,
 ) -> Result<Option<uuid::Uuid>, AgentError> {
     let mut channel = link::connect(panel, fingerprint, Some(identity)).await?;
     let mut state = session::open(
@@ -134,7 +157,11 @@ async fn once(
     .await?;
     report(&state.posture);
 
-    let heartbeat = Duration::from_secs(u64::from(state.heartbeat_secs.max(1)));
+    // Whichever comes first: the panel says something, or it is time to read
+    // the counters again.
+    let heartbeat = Duration::from_secs(
+        u64::from(state.heartbeat_secs.max(1)).min(engine::READING_INTERVAL_SECS),
+    );
     loop {
         let received = tokio::time::timeout(heartbeat, channel.receive()).await;
         let now = OffsetDateTime::now_utc();
@@ -148,16 +175,60 @@ async fn once(
             Ok(Ok(None)) => return Ok(state.applied_revision),
             Ok(Err(reason)) => return Err(reason),
             // Nothing arrived within the heartbeat. The connection may be gone
-            // without having said so, and the cache may have run out.
+            // without having said so, the cache may have run out, and the
+            // counters are due to be read.
             Err(_) => {
                 let before = state.posture.is_serving();
                 state.reconsider(paths, now)?;
                 if before != state.posture.is_serving() {
                     report(&state.posture);
                 }
+                measure(control, metrics_port, meter, now).await;
+                if let Some(delivery) =
+                    meter.delivery(state_of_health(control, &state.posture).await, now)
+                {
+                    session::deliver(&mut channel, meter, delivery).await?;
+                }
             }
         }
     }
+}
+
+/// Reads the engine's counters into the meter.
+///
+/// A reading that does not arrive is not a reading of zero: the counters keep
+/// what they had and the next reading carries the difference from before the
+/// gap, so nothing is lost when the engine is briefly unreachable.
+async fn measure(control: &Control, metrics_port: u16, meter: &mut Meter, now: OffsetDateTime) {
+    let body = match control.metrics(metrics_port).await {
+        Ok(body) => body,
+        Err(reason) => {
+            eprintln!("engine metrics: {reason}");
+            return;
+        }
+    };
+    let reading = ap_engine::metrics::read(&body);
+    if reading.unread > 0 {
+        eprintln!("engine metrics: {} lines could not be read", reading.unread);
+    }
+    if let Err(reason) = meter.observe(&reading, now) {
+        eprintln!("engine metrics: {reason}");
+    }
+}
+
+/// What the node says about itself.
+async fn state_of_health(control: &Control, posture: &Posture) -> ap_proto::Health {
+    // The cover site is served by the front door, which does not exist yet, so
+    // there is nothing to ask about it. Saying so is not saying it is down.
+    let site = Site::Unknown;
+    let _ = posture;
+    health::report(control, site, None)
+        .await
+        .unwrap_or(ap_proto::Health {
+            engine: "down".to_owned(),
+            site: "unknown".to_owned(),
+            cert_not_after: None,
+        })
 }
 
 fn report(posture: &Posture) {

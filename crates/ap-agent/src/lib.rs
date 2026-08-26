@@ -2,9 +2,11 @@
 
 pub mod backoff;
 pub mod cache;
+pub mod engine;
 mod error;
 pub mod identity;
 pub mod link;
+pub mod meter;
 pub mod pin;
 pub mod posture;
 pub mod session;

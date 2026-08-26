@@ -218,6 +218,26 @@ impl Control {
     }
 }
 
+/// Takes the client addresses out of a reply before anyone can hold them.
+///
+/// The engine reports the addresses it is tracking — `active_unique_ips_list`
+/// and its kin — because tracking them is its job. Nothing above it may keep
+/// one: the tie between a person, an address and a time is the asset this
+/// design exists to not have. Removing them here means a caller that logs the
+/// whole reply, or forwards it, has nothing to leak.
+///
+/// A body that is not JSON passes through: the metrics are exposition text and
+/// carry counts, not addresses.
+fn without_addresses(body: &str) -> String {
+    let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(body) else {
+        return body.to_owned();
+    };
+    if ap_proto::guard::strip_address_fields(&mut payload) == 0 {
+        return body.to_owned();
+    }
+    payload.to_string()
+}
+
 /// One request and its reply, over plain HTTP on loopback.
 async fn request(
     address: SocketAddr,
@@ -272,7 +292,7 @@ async fn request(
 
     Ok(Reply {
         status,
-        body: String::from_utf8_lossy(&bytes).into_owned(),
+        body: without_addresses(&String::from_utf8_lossy(&bytes)),
     })
 }
 
@@ -311,6 +331,32 @@ mod tests {
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_reply_arrives_without_the_addresses_the_engine_was_tracking() {
+        let raw = r#"{"ok":true,"data":[{"username":"abc","current_connections":2,
+                      "active_unique_ips":2,
+                      "active_unique_ips_list":["203.0.113.7","203.0.113.8"],
+                      "recent_unique_ips_list":["203.0.113.9"]}]}"#;
+        let scrubbed = without_addresses(raw);
+
+        assert!(!scrubbed.contains("203.0.113"), "{scrubbed}");
+        assert!(scrubbed.contains("abc"));
+        assert!(scrubbed.contains("current_connections"));
+
+        // The count goes with them. The rule works on what a field is called,
+        // and a name that claims to be about addresses is not worth arguing
+        // with over one number: the device counts the panel receives come from
+        // the metrics, which carry numbers and no addresses at all.
+        assert!(!scrubbed.contains("active_unique_ips"), "{scrubbed}");
+    }
+
+    #[test]
+    fn a_body_that_is_not_json_passes_through_untouched() {
+        let body = "telemt_user_octets_to_client{user=\"abc\"} 4096
+";
+        assert_eq!(without_addresses(body), body);
     }
 
     #[test]

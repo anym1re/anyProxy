@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 ap-core = { path = "../ap-core" }
+ap-engine = { path = "../ap-engine" }
 ap-proto = { path = "../ap-proto" }
 clap.workspace = true
 hex.workspace = true
@@ -29,6 +30,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 ap-panel = { path = "../ap-panel" }
+serde_json.workspace = true
 ap-store = { path = "../ap-store" }
 sqlx.workspace = true
 

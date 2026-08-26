@@ -117,6 +117,30 @@ where
     Ok(session)
 }
 
+/// Sends a telemetry delivery and waits for the panel to acknowledge it.
+///
+/// An acknowledgement clears what the meter owes; anything else leaves it
+/// owed, and the same delivery goes again next time. The panel applies one
+/// delivery once, by its identifier, so a repeat costs nothing and a loss
+/// would cost traffic nobody counted.
+pub async fn deliver<S>(
+    link: &mut Link<S>,
+    meter: &mut crate::meter::Meter,
+    telemetry: ap_proto::Telemetry,
+) -> Result<bool, AgentError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let revision = telemetry.revision;
+    link.send(&Message::Telemetry(telemetry)).await?;
+
+    match link.receive().await? {
+        Some(Message::Ack(ack)) => Ok(meter.acknowledged(ack.revision) && ack.revision == revision),
+        Some(Message::Config(_)) | Some(_) => Ok(false),
+        None => Err(AgentError::Panel("the panel closed the channel".to_owned())),
+    }
+}
+
 /// Takes a configuration, or says why it was not taken.
 ///
 /// A revision the node already passed is refused rather than applied: the
