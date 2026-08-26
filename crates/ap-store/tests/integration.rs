@@ -33,8 +33,10 @@ macro_rules! db {
 }
 
 fn unique(prefix: &str) -> String {
+    // The first half of a version 7 identifier is a millisecond timestamp, so
+    // two calls inside one millisecond share it. The second half is random.
     let id = Uuid::now_v7().simple().to_string();
-    format!("{prefix}-{}", &id[..12])
+    format!("{prefix}-{}", &id[16..])
 }
 
 fn key() -> KeyStore {

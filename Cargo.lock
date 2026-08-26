@@ -77,6 +77,27 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "ap-agent"
 version = "0.0.0"
+dependencies = [
+ "ap-core",
+ "ap-panel",
+ "ap-proto",
+ "ap-store",
+ "clap",
+ "hex",
+ "rand 0.9.5",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "subtle",
+ "thiserror",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "uuid",
+]
 
 [[package]]
 name = "ap-cli"

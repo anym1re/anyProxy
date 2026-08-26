@@ -8,3 +8,30 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+ap-core = { path = "../ap-core" }
+ap-proto = { path = "../ap-proto" }
+clap.workspace = true
+hex.workspace = true
+rand.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "net", "time", "signal"] }
+tokio-rustls.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+ap-panel = { path = "../ap-panel" }
+ap-store = { path = "../ap-store" }
+sqlx.workspace = true
+
+[[bin]]
+name = "anyproxy-agent"
+path = "src/main.rs"

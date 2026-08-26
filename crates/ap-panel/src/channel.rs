@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ap_core::{AnyAccess, Credential, NodeKindTag};
@@ -16,7 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::TlsAcceptor;
 use uuid::Uuid;
 
-use crate::ca::{Authority, fingerprint_of};
+use crate::ca::Authority;
 use crate::{ApiError, AppState};
 
 /// How long the cache an agent keeps stays usable without contact.
@@ -29,15 +28,15 @@ const HEARTBEAT_SECS: u32 = 30;
 const READ_CEILING: usize = ap_proto::MAX_PAYLOAD + ap_proto::HEADER_LEN;
 
 /// Serves agents until the process stops.
+///
+/// Takes the listener already bound, so a caller can learn the port it was
+/// given before the first agent arrives.
 pub async fn serve(
     state: AppState,
     authority: Arc<Authority>,
-    bind: SocketAddr,
+    listener: tokio::net::TcpListener,
 ) -> Result<(), String> {
     let acceptor = acceptor(&authority)?;
-    let listener = tokio::net::TcpListener::bind(bind)
-        .await
-        .map_err(|error| format!("bind {bind}: {error}"))?;
 
     loop {
         let Ok((stream, _)) = listener.accept().await else {
@@ -397,11 +396,6 @@ async fn apply_telemetry(
 /// Whether a health report says the node is serving.
 pub fn is_serving(health: &Health) -> bool {
     health.engine == "up" && health.site != "down"
-}
-
-/// The digest an agent certificate is recognised by, for tests and tools.
-pub fn certificate_digest(pem: &str) -> Vec<u8> {
-    fingerprint_of(pem)
 }
 
 /// Builds the configuration a node would receive, without a channel.

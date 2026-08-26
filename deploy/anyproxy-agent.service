@@ -1,0 +1,55 @@
+[Unit]
+Description=anyProxy node agent
+Documentation=https://github.com/anym1re/anyProxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/anyproxy-agent run
+Restart=always
+RestartSec=5s
+
+User=anyproxy
+Group=anyproxy
+DynamicUser=no
+StateDirectory=anyproxy
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/anyproxy
+Environment=ANYPROXY_AGENT_DIR=/var/lib/anyproxy
+EnvironmentFile=/etc/anyproxy/agent.env
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+
+# The agent opens outbound connections and reads its own state directory.
+# Nothing it does needs a capability, so it is given none and may not regain
+# any.
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

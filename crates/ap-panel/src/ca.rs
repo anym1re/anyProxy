@@ -3,6 +3,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, DnType, IsCa, Issuer,
     KeyPair, KeyUsagePurpose,
 };
+use rustls::pki_types::{CertificateDer, pem::PemObject};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use time::{Duration, OffsetDateTime};
@@ -75,15 +76,25 @@ impl Authority {
     }
 
     /// The fingerprint an operator passes to the installer alongside the code.
+    ///
+    /// Taken over the encoded certificate rather than its PEM wrapper, so the
+    /// agent arrives at the same value from what the handshake gives it and
+    /// nothing depends on how the text was wrapped.
     pub fn fingerprint(&self) -> String {
-        hex::encode(Sha256::digest(self.certificate_pem.as_bytes()))
+        CertificateDer::pem_slice_iter(self.certificate_pem.as_bytes())
+            .next()
+            .and_then(Result::ok)
+            .map(|der| hex::encode(Sha256::digest(der.as_ref())))
+            .unwrap_or_default()
     }
 
-    /// Issues the certificate the panel presents to agents.
+    /// Issues the chain the panel presents to agents, and its key.
     ///
     /// A leaf signed by the authority rather than the authority itself: the
     /// agent pins the authority and validates the chain, so the key that signs
-    /// certificates is not also the key that terminates connections.
+    /// certificates is not also the key that terminates connections. The
+    /// authority follows the leaf, because an agent that has not enrolled yet
+    /// holds nothing but the fingerprint and has nowhere else to get it from.
     pub fn server_certificate(&self) -> Result<(String, String), String> {
         let pair = KeyPair::generate().map_err(|error| error.to_string())?;
         let mut params = CertificateParams::new(vec!["anyproxy-panel".to_owned()])
@@ -100,7 +111,10 @@ impl Authority {
         let certificate = params
             .signed_by(&pair, &issuer)
             .map_err(|error| error.to_string())?;
-        Ok((certificate.pem(), pair.serialize_pem()))
+        Ok((
+            format!("{}{}", certificate.pem(), self.certificate_pem),
+            pair.serialize_pem(),
+        ))
     }
 
     /// Signs a request from an agent.
@@ -132,23 +146,35 @@ impl Authority {
             .map_err(|_| ApiError::BadRequest("malformed_csr"))
     }
 }
-
-/// The digest a certificate is recognised by.
-pub fn fingerprint_of(certificate_pem: &str) -> Vec<u8> {
-    Sha256::digest(certificate_pem.as_bytes()).to_vec()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_fingerprint_is_stable_and_distinguishing() {
-        let first = fingerprint_of("-----BEGIN CERTIFICATE-----\nA\n");
-        let same = fingerprint_of("-----BEGIN CERTIFICATE-----\nA\n");
-        let other = fingerprint_of("-----BEGIN CERTIFICATE-----\nB\n");
-        assert_eq!(first, same);
-        assert_ne!(first, other);
-        assert_eq!(first.len(), 32);
+    fn the_presented_chain_ends_at_the_pinned_authority() {
+        let pair = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(Vec::new()).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        let root = params.self_signed(&pair).unwrap();
+        let authority = Authority {
+            certificate_pem: root.pem(),
+            key_pem: pair.serialize_pem(),
+        };
+
+        let (chain, _) = authority.server_certificate().unwrap();
+        let presented: Vec<_> = CertificateDer::pem_slice_iter(chain.as_bytes())
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(presented.len(), 2, "the authority was not sent");
+
+        assert_eq!(
+            hex::encode(Sha256::digest(presented[1].as_ref())),
+            authority.fingerprint()
+        );
+        assert_ne!(
+            hex::encode(Sha256::digest(presented[0].as_ref())),
+            authority.fingerprint(),
+            "the leaf answered to the pin"
+        );
     }
 }

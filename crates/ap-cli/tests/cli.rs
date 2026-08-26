@@ -22,12 +22,17 @@ fn key_file() -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("panel.key");
     if !path.exists() {
-        std::fs::write(&path, [5u8; 32]).unwrap();
+        // Test binaries share this file and one that saw it before its
+        // mode was set, or before its bytes arrived, would refuse to
+        // start. Assemble it under a name of its own and move it.
+        let staged = path.with_extension(uuid::Uuid::now_v7().simple().to_string());
+        std::fs::write(&staged, [5u8; 32]).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o400)).unwrap();
         }
+        std::fs::rename(&staged, &path).unwrap();
     }
     path
 }
@@ -55,8 +60,10 @@ fn have_database() -> bool {
 }
 
 fn unique(prefix: &str) -> String {
+    // The first half of a version 7 identifier is a millisecond timestamp, so
+    // two calls inside one millisecond share it. The second half is random.
     let id = uuid::Uuid::now_v7().simple().to_string();
-    format!("{prefix}-{}", &id[..12])
+    format!("{prefix}-{}", &id[16..])
 }
 
 #[test]

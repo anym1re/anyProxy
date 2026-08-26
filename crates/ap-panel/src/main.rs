@@ -51,7 +51,12 @@ async fn run(config: ap_panel::Config, channel_bind: std::net::SocketAddr) -> Re
         }
     };
 
-    let channel = ap_panel::channel::serve(state, authority, channel_bind);
+    let channel = async move {
+        let listener = tokio::net::TcpListener::bind(channel_bind)
+            .await
+            .map_err(|error| format!("bind {channel_bind}: {error}"))?;
+        ap_panel::channel::serve(state, authority, listener).await
+    };
 
     tokio::select! {
         outcome = rest => outcome,
