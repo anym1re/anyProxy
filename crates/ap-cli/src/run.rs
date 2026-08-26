@@ -1,18 +1,9 @@
-use std::path::PathBuf;
-
+use ap_core::Locale;
 use ap_core::i18n::{Argument, message, message_with};
-use ap_core::time::format_rfc3339;
-use ap_core::{
-    Access, AccessCommon, AccessState, AnyAccess, Client, ClientState, Credential, Domain,
-    KeyStore, Label, Locale, Node, NodeKind, NodeKindTag, Open, OpenMethod, Stealth, StealthMethod,
-    Tag, TagName,
-};
-use ap_store::{AccessRepo, AuditRepo, ClientRepo, NodeRepo, TagRepo};
 use clap::Subcommand;
-use sqlx::PgPool;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::api::{Api, Reply};
 use crate::args::{parse_size, parse_until};
 use crate::output::{Format, Rendered};
 
@@ -33,10 +24,10 @@ pub struct Context {
     pub locale: Locale,
     /// How the result is written.
     pub format: Format,
-    /// Where the panel keeps its data.
-    pub database_url: Option<String>,
-    /// File holding the key that seals secrets.
-    pub key_file: Option<PathBuf>,
+    /// The panel this client speaks to.
+    pub api: Api,
+    /// Where the session token is kept.
+    pub token_path: std::path::PathBuf,
 }
 
 type Outcome = Result<Rendered, Failure>;
@@ -146,7 +137,7 @@ pub enum TagCommand {
 
 #[derive(Subcommand)]
 pub enum NodeCommand {
-    /// Registers a node.
+    /// Registers a node and shows its enrolment code once.
     Add {
         /// Name the operator knows this node by.
         label: String,
@@ -164,6 +155,8 @@ pub enum NodeCommand {
 /// Runs one command.
 pub async fn dispatch(command: crate::Command, context: Context) -> Outcome {
     match command {
+        crate::Command::Login => login(context).await,
+        crate::Command::Logout => logout(context),
         crate::Command::Client(command) => client(command, context).await,
         crate::Command::Access(command) => access(command, context).await,
         crate::Command::Tag(command) => tag(command, context).await,
@@ -171,28 +164,58 @@ pub async fn dispatch(command: crate::Command, context: Context) -> Outcome {
     }
 }
 
-async fn pool(context: &Context) -> Result<PgPool, Failure> {
-    let url = context
-        .database_url
-        .as_deref()
-        .ok_or_else(|| Failure::Arguments("set DATABASE_URL or pass --database-url".to_owned()))?;
-    let pool = ap_store::connect(url, 5)
-        .await
-        .map_err(|error| Failure::Execution(error.to_string()))?;
-    ap_store::migrate(&pool)
-        .await
-        .map_err(|error| Failure::Execution(error.to_string()))?;
-    Ok(pool)
+// ── talking to the panel ─────────────────────────────────────────────────
+
+/// Turns a refusal into something the operator can read.
+///
+/// The panel's own message is discarded. It is written in whichever language
+/// the panel runs in, and nothing says that is the language of the person
+/// reading it; what travels is the code, and the sentence is made here.
+fn refused(reply: &Reply, locale: Locale) -> Failure {
+    let code = reply.code();
+    let key = format!("api-{}", code.replace('_', "-"));
+    let message = say(locale, &key, &[]).unwrap_or_else(|_| {
+        say(
+            locale,
+            "api-unknown",
+            &[("code", Argument::Text(code.as_str()))],
+        )
+        .unwrap_or(code.clone())
+    });
+
+    match reply.status {
+        401 | 403 => Failure::Execution(message),
+        404 => Failure::NotFound(message),
+        400 | 422 | 429 => Failure::Arguments(message),
+        _ => Failure::Execution(message),
+    }
 }
 
-fn key(context: &Context) -> Result<KeyStore, Failure> {
-    match context.key_file.as_deref() {
-        Some(path) => {
-            KeyStore::from_file(path).map_err(|error| Failure::Arguments(error.to_string()))
-        }
-        None => Err(Failure::Arguments(
-            "set ANYPROXY_KEY_FILE or pass --key-file".to_owned(),
-        )),
+/// Reads something, or says why not.
+async fn get(context: &Context, path: &str) -> Result<serde_json::Value, Failure> {
+    let reply = context.api.get(path).await.map_err(Failure::Execution)?;
+    if reply.ok() {
+        Ok(reply.json())
+    } else {
+        Err(refused(&reply, context.locale))
+    }
+}
+
+/// Asks for something to be done, or says why not.
+async fn post(
+    context: &Context,
+    path: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, Failure> {
+    let reply = context
+        .api
+        .post(path, body)
+        .await
+        .map_err(Failure::Execution)?;
+    if reply.ok() {
+        Ok(reply.json())
+    } else {
+        Err(refused(&reply, context.locale))
     }
 }
 
@@ -205,165 +228,230 @@ fn say(locale: Locale, key: &str, args: &[(&str, Argument<'_>)]) -> Result<Strin
     rendered.map_err(|error| Failure::Execution(error.to_string()))
 }
 
-fn label(text: &str) -> Result<Label, Failure> {
-    Label::try_from(text).map_err(|error| Failure::Arguments(error.to_string()))
+fn field(locale: Locale, key: &str, value: &str) -> Result<String, Failure> {
+    Ok(format!("{}: {value}", say(locale, key, &[])?))
 }
 
-fn moment(value: Option<OffsetDateTime>) -> Result<Option<String>, Failure> {
-    value
-        .map(|at| format_rfc3339(at).map_err(|error| Failure::Execution(error.to_string())))
-        .transpose()
+/// A string field, or an empty one.
+fn text(value: &serde_json::Value, key: &str) -> String {
+    value[key].as_str().unwrap_or_default().to_owned()
 }
+
+// ── signing in ───────────────────────────────────────────────────────────
+
+async fn login(context: Context) -> Outcome {
+    let locale = context.locale;
+
+    // Neither the password nor the code is ever an argument: an argument
+    // reaches the shell history and the process list, where anyone on the
+    // machine can read it. They are typed, and they are visible while typed —
+    // turning the terminal's echo off needs a foreign function interface,
+    // which this project forbids, and pretending otherwise would be worse
+    // than saying so.
+    let login = ask(locale, "cli-login-prompt")?;
+    let password = ask(locale, "cli-password-prompt")?;
+    let totp = ask(locale, "cli-totp-prompt")?;
+
+    let body = serde_json::json!({ "login": login, "password": password, "totp": totp });
+    let reply = context
+        .api
+        .post("/v1/session", body)
+        .await
+        .map_err(Failure::Execution)?;
+    if !reply.ok() {
+        return Err(refused(&reply, locale));
+    }
+
+    let token = reply.json()["token"]
+        .as_str()
+        .ok_or_else(|| Failure::Execution("the panel returned no token".to_owned()))?
+        .to_owned();
+    crate::api::write_token(&context.token_path, &token).map_err(Failure::Execution)?;
+
+    Ok(Rendered::line(say(
+        locale,
+        "cli-signed-in",
+        &[("login", Argument::Text(&login))],
+    )?))
+}
+
+fn logout(context: Context) -> Outcome {
+    crate::api::forget_token(&context.token_path).map_err(Failure::Execution)?;
+    Ok(Rendered::line(say(context.locale, "cli-signed-out", &[])?))
+}
+
+/// Asks the operator for one value.
+///
+/// Prompts go to standard error so that piping the output of a command does
+/// not swallow them, and so a value read here never lands in a redirect.
+fn ask(locale: Locale, key: &str) -> Result<String, Failure> {
+    use std::io::Write as _;
+
+    let prompt = say(locale, key, &[])?;
+    let mut err = std::io::stderr().lock();
+    let _ = write!(err, "{prompt} ");
+    let _ = err.flush();
+    drop(err);
+
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|error| Failure::Execution(error.to_string()))?;
+    Ok(line.trim_end().to_owned())
+}
+
+// ── clients ──────────────────────────────────────────────────────────────
 
 async fn client(command: ClientCommand, context: Context) -> Outcome {
     let locale = context.locale;
     match command {
         ClientCommand::Add {
-            label: text,
+            label,
             quota,
             until,
         } => {
-            let label = label(&text)?;
             let quota =
                 parse_size(&quota).map_err(|error| Failure::Arguments(error.to_string()))?;
             let until =
                 parse_until(&until).map_err(|error| Failure::Arguments(error.to_string()))?;
-
-            let mut record = Client::new(label.clone(), OffsetDateTime::now_utc());
-            if let Some(bytes) = quota {
-                record = record
-                    .with_quota(bytes)
-                    .map_err(|error| Failure::Arguments(error.to_string()))?;
-            }
-            if let Some(at) = until {
-                record = record.with_expiry(at);
-            }
-
-            let pool = pool(&context).await?;
-            ClientRepo::insert(&pool, &record, None)
-                .await
+            let expires_at = until
+                .map(ap_core::time::format_rfc3339)
+                .transpose()
                 .map_err(|error| Failure::Execution(error.to_string()))?;
+
+            post(
+                &context,
+                "/v1/clients",
+                serde_json::json!({
+                    "label": label,
+                    "quota_bytes": quota,
+                    "expires_at": expires_at,
+                }),
+            )
+            .await?;
 
             Ok(Rendered::line(say(
                 locale,
                 "cli-client-created",
-                &[("label", Argument::Text(label.as_str()))],
+                &[("label", Argument::Text(&label))],
             )?))
         }
-        ClientCommand::Show { label: text } => {
-            let label = label(&text)?;
-            let pool = pool(&context).await?;
-            let record = ClientRepo::by_label(&pool, &label)
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?
-                .ok_or_else(|| {
-                    Failure::NotFound(
-                        say(
-                            locale,
-                            "cli-client-not-found",
-                            &[("label", Argument::Text(label.as_str()))],
-                        )
-                        .unwrap_or_else(|_| text.clone()),
-                    )
-                })?;
-            let accesses = AccessRepo::by_client(&pool, record.id())
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?;
+        ClientCommand::Show { label } => {
+            let record = client_by_label(&context, &label).await?;
+            let id = text(&record, "id");
+            let accesses = get(&context, &format!("/v1/clients/{id}/accesses")).await?;
             show_client(&record, &accesses, &context)
         }
         ClientCommand::List => {
-            let pool = pool(&context).await?;
-            let clients = ClientRepo::list(&pool, 200)
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?;
+            let clients = get(&context, "/v1/clients").await?;
             list_clients(&clients, &context)
         }
-        ClientCommand::Suspend { label: text } => {
-            set_client_state(&text, ClientState::Suspended, &context).await
-        }
-        ClientCommand::Resume { label: text } => {
-            set_client_state(&text, ClientState::Active, &context).await
-        }
-        ClientCommand::Archive { label: text } => {
-            set_client_state(&text, ClientState::Archived, &context).await
-        }
+        ClientCommand::Suspend { label } => set_client_state(&context, &label, "suspended").await,
+        ClientCommand::Resume { label } => set_client_state(&context, &label, "active").await,
+        ClientCommand::Archive { label } => set_client_state(&context, &label, "archived").await,
     }
 }
 
-async fn set_client_state(text: &str, state: ClientState, context: &Context) -> Outcome {
-    let label = label(text)?;
-    let pool = pool(context).await?;
-    let record = ClientRepo::by_label(&pool, &label)
-        .await
-        .map_err(|error| Failure::Execution(error.to_string()))?
+/// The one client with this label, or nothing found.
+async fn client_by_label(context: &Context, label: &str) -> Result<serde_json::Value, Failure> {
+    let found = get(context, &format!("/v1/clients?label={label}")).await?;
+    found
+        .as_array()
+        .and_then(|rows| rows.first())
+        .cloned()
         .ok_or_else(|| {
             Failure::NotFound(
                 say(
                     context.locale,
                     "cli-client-not-found",
-                    &[("label", Argument::Text(label.as_str()))],
+                    &[("label", Argument::Text(label))],
                 )
-                .unwrap_or_else(|_| text.to_owned()),
+                .unwrap_or_else(|_| label.to_owned()),
             )
-        })?;
-    ClientRepo::set_state(&pool, record.id(), state)
-        .await
-        .map_err(|error| Failure::Execution(error.to_string()))?;
+        })
+}
+
+/// The one node with this label, or nothing found.
+async fn node_by_label(context: &Context, label: &str) -> Result<serde_json::Value, Failure> {
+    let found = get(context, &format!("/v1/nodes?label={label}")).await?;
+    found
+        .as_array()
+        .and_then(|rows| rows.first())
+        .cloned()
+        .ok_or_else(|| {
+            Failure::NotFound(
+                say(
+                    context.locale,
+                    "cli-node-not-found",
+                    &[("label", Argument::Text(label))],
+                )
+                .unwrap_or_else(|_| label.to_owned()),
+            )
+        })
+}
+
+async fn set_client_state(context: &Context, label: &str, state: &str) -> Outcome {
+    let record = client_by_label(context, label).await?;
+    let id = text(&record, "id");
+    post(
+        context,
+        &format!("/v1/clients/{id}/state"),
+        serde_json::json!({ "state": state }),
+    )
+    .await?;
     Ok(Rendered::Silent)
 }
 
-fn show_client(record: &Client, accesses: &[AnyAccess], context: &Context) -> Outcome {
+fn show_client(
+    record: &serde_json::Value,
+    accesses: &serde_json::Value,
+    context: &Context,
+) -> Outcome {
     let locale = context.locale;
-    let expires = moment(record.expires_at())?;
-    let created = moment(Some(record.created_at()))?.unwrap_or_default();
+    let rows = accesses.as_array().cloned().unwrap_or_default();
 
     match context.format {
-        Format::Json => Ok(Rendered::Json(serde_json::json!({
-            "id": record.id(),
-            "label": record.label().as_str(),
-            "state": record.state().as_stored(),
-            "quota_bytes": record.quota_bytes(),
-            "expires_at": expires,
-            "created_at": created,
-            "accesses": accesses
-                .iter()
-                .map(|access| serde_json::json!({
-                    "id": access.common().id(),
-                    "surface": access.surface_tag(),
-                    "method": method_name(access),
-                    "state": access.common().state().as_stored(),
-                }))
-                .collect::<Vec<_>>(),
-        }))),
+        Format::Json => {
+            let mut shown = record.clone();
+            shown["accesses"] = serde_json::json!(
+                rows.iter()
+                    .map(|access| serde_json::json!({
+                        "id": access["id"],
+                        "surface": access["surface"],
+                        "method": access["method"],
+                        "state": access["state"],
+                    }))
+                    .collect::<Vec<_>>()
+            );
+            Ok(Rendered::Json(shown))
+        }
         Format::Text => {
             let none = say(locale, "cli-value-none", &[])?;
+            let quota = record["quota_bytes"]
+                .as_i64()
+                .map(|bytes| bytes.to_string())
+                .unwrap_or_else(|| none.clone());
+            let expires = record["expires_at"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| none.clone());
+
             let mut lines = vec![
-                field(locale, "cli-field-label", record.label().as_str())?,
-                field(locale, "cli-field-state", record.state().as_stored())?,
-                field(
-                    locale,
-                    "cli-field-quota",
-                    &record
-                        .quota_bytes()
-                        .map(|bytes| bytes.to_string())
-                        .unwrap_or_else(|| none.clone()),
-                )?,
-                field(
-                    locale,
-                    "cli-field-expires",
-                    expires.as_deref().unwrap_or(&none),
-                )?,
-                field(locale, "cli-field-created", &created)?,
+                field(locale, "cli-field-label", &text(record, "label"))?,
+                field(locale, "cli-field-state", &text(record, "state"))?,
+                field(locale, "cli-field-quota", &quota)?,
+                field(locale, "cli-field-expires", &expires)?,
+                field(locale, "cli-field-created", &text(record, "created_at"))?,
             ];
-            for access in accesses {
+            for access in &rows {
                 lines.push(field(
                     locale,
                     "cli-field-method",
                     &format!(
                         "{} {} {}",
-                        access.common().id(),
-                        method_name(access),
-                        access.common().state().as_stored()
+                        text(access, "id"),
+                        text(access, "method"),
+                        text(access, "state")
                     ),
                 )?);
             }
@@ -372,42 +460,32 @@ fn show_client(record: &Client, accesses: &[AnyAccess], context: &Context) -> Ou
     }
 }
 
-fn list_clients(clients: &[Client], context: &Context) -> Outcome {
+fn list_clients(clients: &serde_json::Value, context: &Context) -> Outcome {
+    let rows = clients.as_array().cloned().unwrap_or_default();
     match context.format {
         Format::Json => Ok(Rendered::Json(serde_json::json!(
-            clients
-                .iter()
+            rows.iter()
                 .map(|record| serde_json::json!({
-                    "id": record.id(),
-                    "label": record.label().as_str(),
-                    "state": record.state().as_stored(),
+                    "id": record["id"],
+                    "label": record["label"],
+                    "state": record["state"],
                 }))
                 .collect::<Vec<_>>()
         ))),
-        Format::Text if clients.is_empty() => Ok(Rendered::line(say(
+        Format::Text if rows.is_empty() => Ok(Rendered::line(say(
             context.locale,
             "cli-nothing-found",
             &[],
         )?)),
         Format::Text => Ok(Rendered::Text(
-            clients
-                .iter()
-                .map(|record| format!("{} {}", record.label().as_str(), record.state().as_stored()))
+            rows.iter()
+                .map(|record| format!("{} {}", text(record, "label"), text(record, "state")))
                 .collect(),
         )),
     }
 }
 
-fn field(locale: Locale, key: &str, value: &str) -> Result<String, Failure> {
-    Ok(format!("{}: {value}", say(locale, key, &[])?))
-}
-
-fn method_name(access: &AnyAccess) -> &'static str {
-    match access {
-        AnyAccess::Stealth(access) => access.method().as_stored(),
-        AnyAccess::Open(access) => access.method().as_stored(),
-    }
-}
+// ── accesses ─────────────────────────────────────────────────────────────
 
 async fn access(command: AccessCommand, context: Context) -> Outcome {
     let locale = context.locale;
@@ -420,145 +498,71 @@ async fn access(command: AccessCommand, context: Context) -> Outcome {
             quota,
             until,
         } => {
-            let client_label = label(&client_label)?;
-            let node_label = label(&node_label)?;
             let quota =
                 parse_size(&quota).map_err(|error| Failure::Arguments(error.to_string()))?;
             let until =
                 parse_until(&until).map_err(|error| Failure::Arguments(error.to_string()))?;
+            let expires_at = until
+                .map(ap_core::time::format_rfc3339)
+                .transpose()
+                .map_err(|error| Failure::Execution(error.to_string()))?;
 
-            let pool = pool(&context).await?;
-            let key = key(&context)?;
-
-            let client_record = ClientRepo::by_label(&pool, &client_label)
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?
-                .ok_or_else(|| {
-                    Failure::NotFound(
-                        say(
-                            locale,
-                            "cli-client-not-found",
-                            &[("label", Argument::Text(client_label.as_str()))],
-                        )
-                        .unwrap_or_default(),
-                    )
-                })?;
-            let node_record = NodeRepo::by_label(&pool, &node_label)
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?
-                .ok_or_else(|| {
-                    Failure::NotFound(
-                        say(
-                            locale,
-                            "cli-node-not-found",
-                            &[("label", Argument::Text(node_label.as_str()))],
-                        )
-                        .unwrap_or_default(),
-                    )
-                })?;
+            let client_record = client_by_label(&context, &client_label).await?;
+            let node_record = node_by_label(&context, &node_label).await?;
 
             let tag_id = match tag_name {
-                Some(name) => {
-                    let name = TagName::try_from(name.as_str())
-                        .map_err(|error| Failure::Arguments(error.to_string()))?;
-                    let record = TagRepo::by_name(&pool, &name)
-                        .await
-                        .map_err(|error| Failure::Execution(error.to_string()))?
-                        .ok_or_else(|| {
-                            Failure::NotFound(
-                                say(
-                                    locale,
-                                    "cli-tag-not-found",
-                                    &[("label", Argument::Text(name.as_str()))],
-                                )
-                                .unwrap_or_default(),
-                            )
-                        })?;
-                    Some(record.id())
-                }
+                Some(name) => Some(tag_by_name(&context, &name).await?),
                 None => None,
             };
 
-            let mut common = AccessCommon::new(
-                client_record.id(),
-                node_record.id(),
-                OffsetDateTime::now_utc(),
-            );
-            if let Some(id) = tag_id {
-                common = common.with_tag(id);
-            }
-            if let Some(bytes) = quota {
-                common = common
-                    .with_quota(bytes)
-                    .map_err(|error| Failure::Arguments(error.to_string()))?;
-            }
-            if let Some(at) = until {
-                common = common.with_expiry(at);
-            }
-
-            let built = build_access(node_record.kind().tag(), &method, common, locale)?;
-            let credential = match &built {
-                AnyAccess::Stealth(_) => Credential::generate_secret(),
-                AnyAccess::Open(access) => match access.method() {
-                    OpenMethod::Mtproto => Credential::generate_secret(),
-                    _ => Credential::generate_login(client_label.as_str().to_owned())
-                        .map_err(|error| Failure::Arguments(error.to_string()))?,
-                },
-            };
-
-            AccessRepo::insert(&pool, &built, &credential, &key)
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?;
+            post(
+                &context,
+                "/v1/accesses",
+                serde_json::json!({
+                    "client_id": client_record["id"],
+                    "node_id": node_record["id"],
+                    "method": method,
+                    "tag_id": tag_id,
+                    "quota_bytes": quota,
+                    "expires_at": expires_at,
+                }),
+            )
+            .await?;
 
             Ok(Rendered::line(say(
                 locale,
                 "cli-access-created",
-                &[("node", Argument::Text(node_label.as_str()))],
+                &[("node", Argument::Text(&node_label))],
             )?))
         }
-        AccessCommand::List { client: text } => {
-            let label = label(&text)?;
-            let pool = pool(&context).await?;
-            let record = ClientRepo::by_label(&pool, &label)
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?
-                .ok_or_else(|| {
-                    Failure::NotFound(
-                        say(
-                            locale,
-                            "cli-client-not-found",
-                            &[("label", Argument::Text(label.as_str()))],
-                        )
-                        .unwrap_or_default(),
-                    )
-                })?;
-            let accesses = AccessRepo::by_client(&pool, record.id())
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?;
+        AccessCommand::List { client: label } => {
+            let record = client_by_label(&context, &label).await?;
+            let id = text(&record, "id");
+            let accesses = get(&context, &format!("/v1/clients/{id}/accesses")).await?;
+            let rows = accesses.as_array().cloned().unwrap_or_default();
+
             match context.format {
                 Format::Json => Ok(Rendered::Json(serde_json::json!(
-                    accesses
-                        .iter()
+                    rows.iter()
                         .map(|access| serde_json::json!({
-                            "id": access.common().id(),
-                            "surface": access.surface_tag(),
-                            "method": method_name(access),
-                            "state": access.common().state().as_stored(),
+                            "id": access["id"],
+                            "surface": access["surface"],
+                            "method": access["method"],
+                            "state": access["state"],
                         }))
                         .collect::<Vec<_>>()
                 ))),
-                Format::Text if accesses.is_empty() => {
+                Format::Text if rows.is_empty() => {
                     Ok(Rendered::line(say(locale, "cli-nothing-found", &[])?))
                 }
                 Format::Text => Ok(Rendered::Text(
-                    accesses
-                        .iter()
+                    rows.iter()
                         .map(|access| {
                             format!(
                                 "{} {} {}",
-                                access.common().id(),
-                                method_name(access),
-                                access.common().state().as_stored()
+                                text(access, "id"),
+                                text(access, "method"),
+                                text(access, "state")
                             )
                         })
                         .collect(),
@@ -567,242 +571,238 @@ async fn access(command: AccessCommand, context: Context) -> Outcome {
         }
         AccessCommand::Link { id, host, yes } => {
             if !yes {
+                // Refused here rather than at the panel: the acknowledgement is
+                // about what is printed on this terminal.
                 return Err(Failure::Arguments(say(locale, "cli-link-confirm", &[])?));
             }
-            let pool = pool(&context).await?;
-            let key = key(&context)?;
-            let access = AccessRepo::by_id(&pool, id)
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?
-                .ok_or_else(|| {
-                    Failure::NotFound(say(locale, "cli-access-not-found", &[]).unwrap_or_default())
-                })?;
-            let credential = AccessRepo::credential(&pool, id, &key)
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?
-                .ok_or_else(|| {
-                    Failure::NotFound(say(locale, "cli-access-not-found", &[]).unwrap_or_default())
-                })?;
-
-            let link = render_link(&pool, &access, &credential, &host).await?;
-
-            AuditRepo::record(
-                &pool,
-                None,
-                "access.link.rendered",
-                Some(&id.to_string()),
-                OffsetDateTime::now_utc(),
-                serde_json::json!({ "host": host }),
+            let answer = post(
+                &context,
+                &format!("/v1/accesses/{id}/link"),
+                serde_json::json!({ "host": host, "acknowledged": true }),
             )
-            .await
-            .map_err(|error| Failure::Execution(error.to_string()))?;
-
-            Ok(Rendered::line(link))
+            .await?;
+            let link = answer["link"]
+                .as_str()
+                .ok_or_else(|| Failure::Execution("the panel returned no link".to_owned()))?;
+            Ok(Rendered::line(link.to_owned()))
         }
-        AccessCommand::Disable { id } => {
-            set_access_state(id, AccessState::Disabled, &context).await
-        }
-        AccessCommand::Enable { id } => set_access_state(id, AccessState::Active, &context).await,
-        AccessCommand::Revoke { id } => set_access_state(id, AccessState::Revoked, &context).await,
+        AccessCommand::Disable { id } => set_access_state(&context, id, "disabled").await,
+        AccessCommand::Enable { id } => set_access_state(&context, id, "active").await,
+        AccessCommand::Revoke { id } => set_access_state(&context, id, "revoked").await,
     }
 }
 
-async fn set_access_state(id: Uuid, state: AccessState, context: &Context) -> Outcome {
-    let pool = pool(context).await?;
-    let changed = AccessRepo::set_state(&pool, id, state)
-        .await
-        .map_err(|error| Failure::Execution(error.to_string()))?;
-    if changed {
-        Ok(Rendered::line(say(
-            context.locale,
-            "cli-access-updated",
-            &[],
-        )?))
-    } else {
-        Err(Failure::NotFound(say(
-            context.locale,
-            "cli-access-not-found",
-            &[],
-        )?))
-    }
+async fn set_access_state(context: &Context, id: Uuid, state: &str) -> Outcome {
+    post(
+        context,
+        &format!("/v1/accesses/{id}/state"),
+        serde_json::json!({ "state": state }),
+    )
+    .await?;
+    Ok(Rendered::line(say(
+        context.locale,
+        "cli-access-updated",
+        &[],
+    )?))
 }
 
-fn build_access(
-    kind: NodeKindTag,
-    method: &str,
-    common: AccessCommon,
-    locale: Locale,
-) -> Result<AnyAccess, Failure> {
-    let refuse = || -> Failure {
-        Failure::Arguments(
-            say(
-                locale,
-                "cli-method-not-served",
-                &[
-                    ("kind", Argument::Text(kind.as_stored())),
-                    ("method", Argument::Text(method)),
-                ],
-            )
-            .unwrap_or_default(),
-        )
-    };
+// ── tags ─────────────────────────────────────────────────────────────────
 
-    match kind {
-        NodeKindTag::Stealth => {
-            let method = StealthMethod::from_stored(method).map_err(|_| refuse())?;
-            Ok(AnyAccess::Stealth(Access::<Stealth>::new(common, method)))
-        }
-        NodeKindTag::Open => {
-            let method = OpenMethod::from_stored(method).map_err(|_| refuse())?;
-            Ok(AnyAccess::Open(Access::<Open>::new(common, method)))
-        }
-    }
-}
-
-async fn render_link(
-    pool: &PgPool,
-    access: &AnyAccess,
-    credential: &Credential,
-    host: &str,
-) -> Result<String, Failure> {
-    let node = node_of(pool, access.common().node_id()).await?;
-    let secret = match credential {
-        Credential::Secret(secret) => secret,
-        Credential::Login { user, pass } => {
-            return Ok(format!("{host} {user} {pass}"));
-        }
-    };
-
-    match access {
-        AnyAccess::Stealth(access) => {
-            let domain = node
-                .kind()
-                .domain()
-                .ok_or_else(|| Failure::Execution("node has no domain".to_owned()))?;
-            ap_core::stealth_link(*access.method(), host, domain, secret)
-                .map_err(|error| Failure::Execution(error.to_string()))
-        }
-        AnyAccess::Open(_) => ap_core::mtproto_link(host, 8443, secret)
-            .map_err(|error| Failure::Execution(error.to_string())),
-    }
-}
-
-async fn node_of(pool: &PgPool, id: Uuid) -> Result<Node, Failure> {
-    NodeRepo::list(pool)
-        .await
-        .map_err(|error| Failure::Execution(error.to_string()))?
+async fn tag_by_name(context: &Context, name: &str) -> Result<serde_json::Value, Failure> {
+    let tags = get(context, "/v1/tags").await?;
+    tags.as_array()
         .into_iter()
-        .find(|node| node.id() == id)
-        .ok_or_else(|| Failure::NotFound("node".to_owned()))
+        .flatten()
+        .find(|tag| tag["name"].as_str() == Some(name))
+        .map(|tag| tag["id"].clone())
+        .ok_or_else(|| {
+            Failure::NotFound(
+                say(
+                    context.locale,
+                    "cli-tag-not-found",
+                    &[("label", Argument::Text(name))],
+                )
+                .unwrap_or_else(|_| name.to_owned()),
+            )
+        })
 }
 
 async fn tag(command: TagCommand, context: Context) -> Outcome {
     let locale = context.locale;
     match command {
         TagCommand::Add { name } => {
-            let name = TagName::try_from(name.as_str())
-                .map_err(|error| Failure::Arguments(error.to_string()))?;
-            let pool = pool(&context).await?;
-            TagRepo::insert(&pool, &Tag::new(name.clone()))
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?;
+            post(&context, "/v1/tags", serde_json::json!({ "name": name })).await?;
             Ok(Rendered::line(say(
                 locale,
                 "cli-tag-created",
-                &[("name", Argument::Text(name.as_str()))],
+                &[("name", Argument::Text(&name))],
             )?))
         }
         TagCommand::List => {
-            let pool = pool(&context).await?;
-            let tags = TagRepo::list(&pool)
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?;
+            let tags = get(&context, "/v1/tags").await?;
+            let rows = tags.as_array().cloned().unwrap_or_default();
             match context.format {
-                Format::Json => Ok(Rendered::Json(serde_json::json!(
-                    tags.iter()
-                        .map(|tag| serde_json::json!({
-                            "id": tag.id(),
-                            "name": tag.name().as_str(),
-                        }))
-                        .collect::<Vec<_>>()
-                ))),
-                Format::Text if tags.is_empty() => {
+                Format::Json => Ok(Rendered::Json(serde_json::json!(rows))),
+                Format::Text if rows.is_empty() => {
                     Ok(Rendered::line(say(locale, "cli-nothing-found", &[])?))
                 }
                 Format::Text => Ok(Rendered::Text(
-                    tags.iter().map(|tag| tag.name().to_string()).collect(),
+                    rows.iter().map(|tag| text(tag, "name")).collect(),
                 )),
             }
         }
     }
 }
 
+// ── nodes ────────────────────────────────────────────────────────────────
+
 async fn node(command: NodeCommand, context: Context) -> Outcome {
     let locale = context.locale;
     match command {
         NodeCommand::Add {
-            label: text,
+            label,
             kind,
             domain,
         } => {
-            let label = label(&text)?;
-            let tag = NodeKindTag::from_stored(&kind)
-                .map_err(|error| Failure::Arguments(error.to_string()))?;
-            let domain = domain
-                .map(|text| Domain::try_from(text.as_str()))
-                .transpose()
-                .map_err(|error| Failure::Arguments(error.to_string()))?;
-            let kind = NodeKind::from_parts(tag, domain)
-                .map_err(|error| Failure::Arguments(error.to_string()))?;
-
-            let pool = pool(&context).await?;
-            NodeRepo::insert(
-                &pool,
-                &Node::new(label.clone(), kind, OffsetDateTime::now_utc()),
+            let created = post(
+                &context,
+                "/v1/nodes",
+                serde_json::json!({ "label": label, "kind": kind, "domain": domain }),
             )
-            .await
-            .map_err(|error| Failure::Execution(error.to_string()))?;
-            Ok(Rendered::line(say(
-                locale,
-                "cli-node-created",
-                &[("label", Argument::Text(label.as_str()))],
-            )?))
+            .await?;
+            let id = text(&created, "id");
+
+            // The code is shown here and nowhere again: the panel keeps only
+            // its digest, so a second reading of the node does not carry it.
+            let issued = post(
+                &context,
+                &format!("/v1/nodes/{id}/enrollment"),
+                serde_json::json!({}),
+            )
+            .await?;
+            let code = text(&issued, "code");
+            let fingerprint = text(&issued, "fingerprint");
+            let command = format!(
+                "anyproxy-agent enroll --panel <panel-host>:8443 --code {code} \
+                 --fingerprint {fingerprint}"
+            );
+
+            Ok(Rendered::Text(vec![
+                say(
+                    locale,
+                    "cli-node-created",
+                    &[("label", Argument::Text(&label))],
+                )?,
+                say(
+                    locale,
+                    "cli-enrollment-code",
+                    &[("code", Argument::Text(&code))],
+                )?,
+                say(
+                    locale,
+                    "cli-enrollment-fingerprint",
+                    &[("fingerprint", Argument::Text(&fingerprint))],
+                )?,
+                say(
+                    locale,
+                    "cli-enrollment-command",
+                    &[("command", Argument::Text(&command))],
+                )?,
+            ]))
         }
         NodeCommand::List => {
-            let pool = pool(&context).await?;
-            let nodes = NodeRepo::list(&pool)
-                .await
-                .map_err(|error| Failure::Execution(error.to_string()))?;
+            let nodes = get(&context, "/v1/nodes").await?;
+            let rows = nodes.as_array().cloned().unwrap_or_default();
             match context.format {
-                Format::Json => Ok(Rendered::Json(serde_json::json!(
-                    nodes
-                        .iter()
-                        .map(|node| serde_json::json!({
-                            "id": node.id(),
-                            "label": node.label().as_str(),
-                            "kind": node.kind().tag().as_stored(),
-                            "domain": node.kind().domain().map(Domain::as_str),
-                            "state": node.state().as_stored(),
-                        }))
-                        .collect::<Vec<_>>()
-                ))),
-                Format::Text if nodes.is_empty() => {
+                Format::Json => Ok(Rendered::Json(serde_json::json!(rows))),
+                Format::Text if rows.is_empty() => {
                     Ok(Rendered::line(say(locale, "cli-nothing-found", &[])?))
                 }
                 Format::Text => Ok(Rendered::Text(
-                    nodes
-                        .iter()
+                    rows.iter()
                         .map(|node| {
                             format!(
                                 "{} {} {}",
-                                node.label().as_str(),
-                                node.kind().tag().as_stored(),
-                                node.state().as_stored()
+                                text(node, "label"),
+                                text(node, "kind"),
+                                text(node, "state")
                             )
                         })
                         .collect(),
                 )),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a_reply(status: u16, code: &str) -> Reply {
+        Reply {
+            status,
+            body: format!(r#"{{"error":{{"code":"{code}","message":"x"}}}}"#),
+        }
+    }
+
+    #[test]
+    fn each_status_becomes_the_exit_code_the_shell_acts_on() {
+        assert!(matches!(
+            refused(&a_reply(401, "unauthenticated"), Locale::En),
+            Failure::Execution(_)
+        ));
+        assert!(matches!(
+            refused(&a_reply(403, "forbidden"), Locale::En),
+            Failure::Execution(_)
+        ));
+        assert!(matches!(
+            refused(&a_reply(404, "not_found"), Locale::En),
+            Failure::NotFound(_)
+        ));
+        for status in [400, 422, 429] {
+            assert!(
+                matches!(
+                    refused(&a_reply(status, "method_not_served"), Locale::En),
+                    Failure::Arguments(_)
+                ),
+                "{status} did not become an argument error"
+            );
+        }
+    }
+
+    #[test]
+    fn a_known_code_is_said_in_the_operators_language() {
+        let english = refused(&a_reply(404, "not_found"), Locale::En);
+        let russian = refused(&a_reply(404, "not_found"), Locale::Ru);
+        assert_ne!(english, russian, "both languages said the same thing");
+
+        let Failure::NotFound(message) = english else {
+            panic!("expected a not-found failure");
+        };
+        assert!(!message.contains("not_found"), "the code was printed raw");
+    }
+
+    #[test]
+    fn a_code_nobody_has_a_sentence_for_is_not_printed_raw() {
+        let Failure::Execution(message) = refused(&a_reply(500, "some_future_code"), Locale::En)
+        else {
+            panic!("expected an execution failure");
+        };
+        // The code appears inside a sentence rather than as the whole message.
+        assert!(message.len() > "some_future_code".len());
+        assert!(message.contains("some_future_code"));
+    }
+
+    #[test]
+    fn the_panels_own_wording_never_reaches_the_operator() {
+        let reply = Reply {
+            status: 404,
+            body: r#"{"error":{"code":"not_found","message":"такого нет"}}"#.to_owned(),
+        };
+        let Failure::NotFound(message) = refused(&reply, Locale::En) else {
+            panic!("expected a not-found failure");
+        };
+        assert!(!message.contains("такого нет"));
     }
 }

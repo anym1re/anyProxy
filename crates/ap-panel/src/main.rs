@@ -1,6 +1,36 @@
+use std::io::Read as _;
 use std::path::PathBuf;
 
+use clap::{Parser, Subcommand};
+
+/// The panel: operator interface and agent channel.
+#[derive(Parser)]
+#[command(name = "anyproxy-panel", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Serves the operator interface and the agent channel. The default.
+    Serve,
+    /// Creates an administrator and prints the second-factor secret once.
+    ///
+    /// The password is read from standard input, never from an argument: an
+    /// argument reaches the shell history and the process list, where anyone
+    /// on the machine can read it.
+    AddAdmin {
+        /// Name the administrator signs in with.
+        login: String,
+        /// What they may do: superadmin, operator or reseller.
+        #[arg(long, default_value = "superadmin")]
+        role: String,
+    },
+}
+
 fn main() {
+    let cli = Cli::parse();
     let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -24,10 +54,42 @@ fn main() {
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| ([0, 0, 0, 0], 8443).into());
 
-    if let Err(reason) = runtime.block_on(run(config, channel_bind)) {
+    let outcome = match cli.command.unwrap_or(Command::Serve) {
+        Command::Serve => runtime.block_on(run(config, channel_bind)),
+        Command::AddAdmin { login, role } => runtime.block_on(add_admin(config, &login, &role)),
+    };
+
+    if let Err(reason) = outcome {
         eprintln!("{reason}");
         std::process::exit(1);
     }
+}
+
+/// Creates the administrator the panel is first reached with.
+async fn add_admin(config: ap_panel::Config, login: &str, role: &str) -> Result<(), String> {
+    let role = match role {
+        "superadmin" => ap_core::Role::Superadmin,
+        "operator" => ap_core::Role::Operator,
+        "reseller" => ap_core::Role::Reseller,
+        other => return Err(format!("unknown role: {other}")),
+    };
+
+    let mut password = String::new();
+    std::io::stdin()
+        .read_to_string(&mut password)
+        .map_err(|error| format!("password: {error}"))?;
+    let password = password.trim_end();
+    if password.is_empty() {
+        return Err("the password was empty".to_owned());
+    }
+
+    let state = ap_panel::AppState::build(&config).await?;
+    let secret = ap_panel::create_admin(&state, login, password, role).await?;
+
+    // Shown once. It is not stored in a form anyone can read back, so an
+    // operator who loses it needs a new administrator rather than a reminder.
+    println!("{secret}");
+    Ok(())
 }
 
 /// Serves the operator interface and the agent channel side by side.

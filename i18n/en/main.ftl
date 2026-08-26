@@ -60,3 +60,29 @@ cli-field-tag = tag
 cli-value-none = none
 cli-link-confirm = printing a link reveals a secret; pass --yes to proceed
 cli-method-not-served = a { $kind } node does not serve { $method }
+
+# What the panel refused, said in the operator's language rather than the
+# panel's: the code travels, the sentence is made here.
+api-unauthenticated = not signed in; run: anyproxy login
+api-invalid-credentials = the login, password or code was wrong
+api-forbidden = your role does not allow that
+api-not-found = not found
+api-too-many-requests = too many attempts; wait and try again
+api-acknowledgement-required = printing a link reveals a secret; pass --yes to proceed
+api-method-not-served = the node does not serve that method
+api-node-without-domain = a stealth node requires a domain
+api-access-not-on-this-node = that access belongs to another node
+api-host-required = a connection link needs a host
+api-already-enrolled = that node has already enrolled
+api-unknown = the panel refused the request ({ $code })
+
+cli-signed-in = signed in as { $login }
+cli-signed-out = signed out
+cli-login-prompt = login:
+cli-password-prompt = password:
+cli-totp-prompt = code:
+cli-password-not-an-argument = the password is read from the terminal, never from an argument
+cli-panel-required = set ANYPROXY_PANEL or pass --panel
+cli-enrollment-code = enrolment code (shown once): { $code }
+cli-enrollment-fingerprint = panel fingerprint: { $fingerprint }
+cli-enrollment-command = run on the node: { $command }

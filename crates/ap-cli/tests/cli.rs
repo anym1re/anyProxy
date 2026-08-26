@@ -1,58 +1,25 @@
-//! Runs the built binary. Skipped when DATABASE_URL is absent, so a machine
-//! without a database still builds and runs the unit tests.
+//! Runs the built binary against a panel it starts for itself.
+//!
+//! Skipped when DATABASE_URL is absent, so a machine without a database still
+//! builds and runs the unit tests. Nothing here reaches the database: the
+//! command line speaks to the panel and the panel speaks to the database,
+//! which is the point of the change these tests cover.
 
 // An integration test is a separate build target and does not inherit the
 // relaxations in clippy.toml. Failing loudly is what a test is for.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::io::Write as _;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
-fn binary() -> PathBuf {
+fn binary(name: &str) -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop();
     if path.ends_with("deps") {
         path.pop();
     }
-    path.join(format!("anyproxy{}", std::env::consts::EXE_SUFFIX))
-}
-
-fn key_file() -> PathBuf {
-    let dir = std::env::temp_dir().join("anyproxy-cli-test");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("panel.key");
-    if !path.exists() {
-        // Test binaries share this file and one that saw it before its
-        // mode was set, or before its bytes arrived, would refuse to
-        // start. Assemble it under a name of its own and move it.
-        let staged = path.with_extension(uuid::Uuid::now_v7().simple().to_string());
-        std::fs::write(&staged, [5u8; 32]).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o400)).unwrap();
-        }
-        std::fs::rename(&staged, &path).unwrap();
-    }
-    path
-}
-
-fn run(args: &[&str]) -> Output {
-    let url = std::env::var("DATABASE_URL").unwrap();
-    Command::new(binary())
-        .args(args)
-        .env("DATABASE_URL", url)
-        .env("ANYPROXY_KEY_FILE", key_file())
-        .output()
-        .unwrap()
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).trim().to_owned()
-}
-
-fn code(output: &Output) -> i32 {
-    output.status.code().unwrap_or(-1)
+    path.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn have_database() -> bool {
@@ -66,16 +33,208 @@ fn unique(prefix: &str) -> String {
     format!("{prefix}-{}", &id[16..])
 }
 
+/// The key the panel seals with.
+///
+/// The same file every panel binary in these tests uses: the panel identity in
+/// the database is sealed with it, and a panel holding a different key cannot
+/// open it — which is the point of sealing it.
+fn key_file() -> PathBuf {
+    let dir = std::env::temp_dir().join("anyproxy-panel-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("panel.key");
+    if !path.exists() {
+        // Assembled beside the target and moved onto it: a binary that saw it
+        // before its mode was set would refuse to start.
+        let staged = path.with_extension(uuid::Uuid::now_v7().simple().to_string());
+        std::fs::write(&staged, [11u8; 32]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o400)).unwrap();
+        }
+        std::fs::rename(&staged, &path).unwrap();
+    }
+    path
+}
+
+/// Two ports nothing else on this machine is using.
+fn free_ports() -> (u16, u16) {
+    let held: Vec<_> = (0..2)
+        .map(|_| std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap())
+        .collect();
+    let ports: Vec<u16> = held
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().port())
+        .collect();
+    drop(held);
+    (ports[0], ports[1])
+}
+
+/// A panel started for one test, and the session the commands use.
+struct Panel {
+    process: std::process::Child,
+    address: String,
+    token_file: PathBuf,
+}
+
+impl Drop for Panel {
+    fn drop(&mut self) {
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+    }
+}
+
+impl Panel {
+    /// Runs one command against this panel, signed in.
+    fn run(&self, args: &[&str]) -> Output {
+        Command::new(binary("anyproxy"))
+            .args(args)
+            .env("ANYPROXY_PANEL", &self.address)
+            .env("ANYPROXY_TOKEN_FILE", &self.token_file)
+            .env_remove("ANYPROXY_TOKEN")
+            .output()
+            .unwrap()
+    }
+
+    /// Runs one command with no session at all.
+    fn run_signed_out(&self, args: &[&str]) -> Output {
+        Command::new(binary("anyproxy"))
+            .args(args)
+            .env("ANYPROXY_PANEL", &self.address)
+            .env(
+                "ANYPROXY_TOKEN_FILE",
+                self.token_file.with_extension("absent"),
+            )
+            .env_remove("ANYPROXY_TOKEN")
+            .output()
+            .unwrap()
+    }
+}
+
+fn start_panel() -> Option<Panel> {
+    let url = std::env::var("DATABASE_URL").ok()?;
+    let (rest_port, channel_port) = free_ports();
+    let address = format!("127.0.0.1:{rest_port}");
+
+    let login = unique("a");
+    let password = "correct horse battery staple";
+
+    // The first administrator is made by the panel binary, which is how an
+    // operator makes one on a machine that has just been installed.
+    let mut made = Command::new(binary("anyproxy-panel"))
+        .args(["add-admin", &login])
+        .env("DATABASE_URL", &url)
+        .env("ANYPROXY_KEY_FILE", key_file())
+        .env("ANYPROXY_PANEL_BIND", &address)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    made.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(password.as_bytes())
+        .unwrap();
+    let made = made.wait_with_output().unwrap();
+    assert!(
+        made.status.success(),
+        "the administrator was not created: {}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let secret = String::from_utf8_lossy(&made.stdout).trim().to_owned();
+
+    let process = Command::new(binary("anyproxy-panel"))
+        .env("DATABASE_URL", &url)
+        .env("ANYPROXY_KEY_FILE", key_file())
+        .env("ANYPROXY_PANEL_BIND", &address)
+        .env("ANYPROXY_CHANNEL_BIND", format!("127.0.0.1:{channel_port}"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let token_file = std::env::temp_dir()
+        .join("anyproxy-cli-test")
+        .join(format!("token-{}", uuid::Uuid::now_v7().simple()));
+    let panel = Panel {
+        process,
+        address,
+        token_file,
+    };
+
+    for _ in 0..100 {
+        if std::net::TcpStream::connect(&panel.address).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // The step that is new: everything below this line needs a session.
+    let mut signing_in = Command::new(binary("anyproxy"))
+        .arg("login")
+        .env("ANYPROXY_PANEL", &panel.address)
+        .env("ANYPROXY_TOKEN_FILE", &panel.token_file)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let typed = format!("{login}\n{password}\n{}\n", code_now(&secret));
+    signing_in
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(typed.as_bytes())
+        .unwrap();
+    let signed_in = signing_in.wait_with_output().unwrap();
+    assert!(
+        signed_in.status.success(),
+        "signing in failed: {}",
+        String::from_utf8_lossy(&signed_in.stderr)
+    );
+
+    Some(panel)
+}
+
+macro_rules! panel {
+    () => {
+        match start_panel() {
+            Some(panel) => panel,
+            None => return,
+        }
+    };
+}
+
+fn code_now(secret: &str) -> String {
+    let bytes = totp_rs::Secret::Encoded(secret.to_owned())
+        .to_bytes()
+        .unwrap();
+    totp_rs::TOTP::new(totp_rs::Algorithm::SHA1, 6, 1, 30, bytes)
+        .unwrap()
+        .generate_current()
+        .unwrap()
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+fn code(output: &Output) -> i32 {
+    output.status.code().unwrap_or(-1)
+}
+
 #[test]
 fn the_phase_criterion_reproduces() {
     if !have_database() {
         return;
     }
+    let panel = panel!();
     let label = unique("alice");
     let tag = unique("friends");
 
-    assert_eq!(code(&run(&["tag", "add", &tag])), 0);
-    let added = run(&[
+    assert_eq!(code(&panel.run(&["tag", "add", &tag])), 0);
+    let added = panel.run(&[
         "client",
         "add",
         &label,
@@ -87,7 +246,7 @@ fn the_phase_criterion_reproduces() {
     ]);
     assert_eq!(code(&added), 2, "an unknown flag is an argument error");
 
-    let added = run(&[
+    let added = panel.run(&[
         "client",
         "add",
         &label,
@@ -103,7 +262,7 @@ fn the_phase_criterion_reproduces() {
         String::from_utf8_lossy(&added.stderr)
     );
 
-    let shown = run(&["client", "show", &label]);
+    let shown = panel.run(&["client", "show", &label]);
     assert_eq!(code(&shown), 0);
     assert!(
         stdout(&shown).contains("2026-12-31T23:59:59Z"),
@@ -111,8 +270,8 @@ fn the_phase_criterion_reproduces() {
         stdout(&shown)
     );
 
-    let english = run(&["--locale", "en", "client", "show", &label]);
-    let russian = run(&["--locale", "ru", "client", "show", &label]);
+    let english = panel.run(&["--locale", "en", "client", "show", &label]);
+    let russian = panel.run(&["--locale", "ru", "client", "show", &label]);
     assert!(stdout(&english).contains("2026-12-31T23:59:59Z"));
     assert!(stdout(&russian).contains("2026-12-31T23:59:59Z"));
     assert_ne!(
@@ -127,7 +286,8 @@ fn a_missing_client_reports_not_found() {
     if !have_database() {
         return;
     }
-    let output = run(&["client", "show", &unique("absent")]);
+    let panel = panel!();
+    let output = panel.run(&["client", "show", &unique("absent")]);
     assert_eq!(code(&output), 3);
 }
 
@@ -136,18 +296,22 @@ fn json_output_carries_no_secret() {
     if !have_database() {
         return;
     }
+    let panel = panel!();
     let label = unique("bob");
-    assert_eq!(code(&run(&["client", "add", &label])), 0);
+    assert_eq!(code(&panel.run(&["client", "add", &label])), 0);
     let node = unique("node");
-    assert_eq!(code(&run(&["node", "add", &node, "--kind", "open"])), 0);
     assert_eq!(
-        code(&run(&[
+        code(&panel.run(&["node", "add", &node, "--kind", "open"])),
+        0
+    );
+    assert_eq!(
+        code(&panel.run(&[
             "access", "add", &label, "--node", &node, "--method", "mtproto"
         ])),
         0
     );
 
-    let shown = run(&["--format", "json", "client", "show", &label]);
+    let shown = panel.run(&["--format", "json", "client", "show", &label]);
     assert_eq!(code(&shown), 0);
     let text = stdout(&shown);
     let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -161,22 +325,23 @@ fn json_output_carries_no_secret() {
 }
 
 #[test]
-fn a_method_the_node_does_not_serve_is_refused_before_the_database() {
+fn a_method_the_node_does_not_serve_is_refused() {
     if !have_database() {
         return;
     }
+    let panel = panel!();
     let label = unique("carol");
-    assert_eq!(code(&run(&["client", "add", &label])), 0);
+    assert_eq!(code(&panel.run(&["client", "add", &label])), 0);
     let node = unique("cover");
     let domain = format!("{}.example.com", unique("d"));
     assert_eq!(
-        code(&run(&[
+        code(&panel.run(&[
             "node", "add", &node, "--kind", "stealth", "--domain", &domain
         ])),
         0
     );
 
-    let refused = run(&[
+    let refused = panel.run(&[
         "access", "add", &label, "--node", &node, "--method", "socks5",
     ]);
     assert_eq!(
@@ -192,26 +357,30 @@ fn a_link_is_not_printed_without_acknowledgement() {
     if !have_database() {
         return;
     }
+    let panel = panel!();
     let label = unique("dave");
-    assert_eq!(code(&run(&["client", "add", &label])), 0);
+    assert_eq!(code(&panel.run(&["client", "add", &label])), 0);
     let node = unique("node");
-    assert_eq!(code(&run(&["node", "add", &node, "--kind", "open"])), 0);
     assert_eq!(
-        code(&run(&[
+        code(&panel.run(&["node", "add", &node, "--kind", "open"])),
+        0
+    );
+    assert_eq!(
+        code(&panel.run(&[
             "access", "add", &label, "--node", &node, "--method", "mtproto"
         ])),
         0
     );
 
-    let listed = run(&["--format", "json", "access", "list", &label]);
+    let listed = panel.run(&["--format", "json", "access", "list", &label]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout(&listed)).unwrap();
     let id = parsed[0]["id"].as_str().unwrap().to_owned();
 
-    let refused = run(&["access", "link", &id, "--host", "203.0.113.7"]);
+    let refused = panel.run(&["access", "link", &id, "--host", "203.0.113.7"]);
     assert_eq!(code(&refused), 2);
     assert!(stdout(&refused).is_empty());
 
-    let printed = run(&["access", "link", &id, "--host", "203.0.113.7", "--yes"]);
+    let printed = panel.run(&["access", "link", &id, "--host", "203.0.113.7", "--yes"]);
     assert_eq!(
         code(&printed),
         0,
@@ -226,6 +395,109 @@ fn a_bad_size_is_an_argument_error() {
     if !have_database() {
         return;
     }
-    let output = run(&["client", "add", &unique("eve"), "--quota", "50"]);
+    let panel = panel!();
+    let output = panel.run(&["client", "add", &unique("eve"), "--quota", "50"]);
     assert_eq!(code(&output), 2);
+}
+
+#[test]
+fn without_a_session_nothing_is_read() {
+    if !have_database() {
+        return;
+    }
+    let panel = panel!();
+    let output = panel.run_signed_out(&["client", "list"]);
+
+    assert_eq!(code(&output), 1, "an unauthenticated read was allowed");
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !said.contains("unauthenticated"),
+        "the panel's code was printed raw: {said}"
+    );
+}
+
+#[test]
+fn a_password_given_as_an_argument_is_not_a_way_in() {
+    if !have_database() {
+        return;
+    }
+    let panel = panel!();
+    // There is no flag to carry it: an argument reaches the shell history and
+    // the process list.
+    let output = panel.run(&["login", "--password", "correct horse battery staple"]);
+    assert_eq!(code(&output), 2, "a password flag was accepted");
+}
+
+#[test]
+fn adding_a_node_shows_its_enrolment_code_once() {
+    if !have_database() {
+        return;
+    }
+    let panel = panel!();
+    let node = unique("edge");
+
+    let added = panel.run(&["node", "add", &node, "--kind", "open"]);
+    assert_eq!(
+        code(&added),
+        0,
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let printed = stdout(&added);
+    assert!(
+        printed.contains("anyproxy-agent enroll"),
+        "no command to run on the node:\n{printed}"
+    );
+
+    // The code the operator carries to the node. It is sixteen bytes as
+    // hexadecimal, and it appears here and nowhere else.
+    let code_line = printed
+        .lines()
+        .find(|line| line.contains("enrol"))
+        .expect("a line carrying the code");
+    let enrolment: String = code_line
+        .split_whitespace()
+        .find(|word| word.len() == 32 && word.chars().all(|c| c.is_ascii_hexdigit()))
+        .expect("a code in the line")
+        .to_owned();
+
+    let listed = panel.run(&["--format", "json", "node", "list"]);
+    assert!(
+        !stdout(&listed).contains(&enrolment),
+        "the code came back on a later reading"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_token_others_can_read_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !have_database() {
+        return;
+    }
+    let panel = panel!();
+    std::fs::set_permissions(&panel.token_file, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+    let output = panel.run(&["client", "list"]);
+    assert_eq!(code(&output), 1, "a world-readable token was used");
+
+    #[cfg(unix)]
+    std::fs::set_permissions(&panel.token_file, std::fs::Permissions::from_mode(0o400)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn the_token_is_kept_readable_by_its_owner_alone() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !have_database() {
+        return;
+    }
+    let panel = panel!();
+    let mode = std::fs::metadata(&panel.token_file)
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o400);
 }

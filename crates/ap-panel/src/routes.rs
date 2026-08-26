@@ -177,6 +177,12 @@ async fn readyz(State(state): State<AppState>) -> Result<StatusCode, ApiError> {
 #[derive(Deserialize)]
 struct Page {
     limit: Option<i64>,
+    /// One label instead of a page of them.
+    ///
+    /// An operator names a client by its label, not by an identifier, and a
+    /// page has a ceiling: without this, naming the wrong one would depend on
+    /// how many clients exist.
+    label: Option<String>,
 }
 
 fn client_json(client: &Client) -> Result<serde_json::Value, ApiError> {
@@ -195,7 +201,11 @@ async fn list_clients(
     actor: Actor,
     Query(page): Query<Page>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let clients = state.guarded(&actor).clients(page.limit).await?;
+    let guarded = state.guarded(&actor);
+    let clients = match page.label.as_deref() {
+        Some(label) => vec![guarded.client_by_label(&Label::try_from(label)?).await?],
+        None => guarded.clients(page.limit).await?,
+    };
     let body: Result<Vec<_>, ApiError> = clients.iter().map(client_json).collect();
     Ok(Json(serde_json::json!(body?)))
 }
@@ -531,8 +541,13 @@ fn node_json(node: &Node) -> Result<serde_json::Value, ApiError> {
 async fn list_nodes(
     State(state): State<AppState>,
     actor: Actor,
+    Query(page): Query<Page>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let nodes = state.guarded(&actor).nodes().await?;
+    let guarded = state.guarded(&actor);
+    let nodes = match page.label.as_deref() {
+        Some(label) => vec![guarded.node_by_label(&Label::try_from(label)?).await?],
+        None => guarded.nodes().await?,
+    };
     let body: Result<Vec<_>, ApiError> = nodes.iter().map(node_json).collect();
     Ok(Json(serde_json::json!(body?)))
 }

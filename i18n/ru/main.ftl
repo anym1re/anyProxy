@@ -61,3 +61,29 @@ cli-field-tag = тег
 cli-value-none = нет
 cli-link-confirm = вывод ссылки раскрывает секрет; для продолжения укажите --yes
 cli-method-not-served = нода типа { $kind } не обслуживает { $method }
+
+# Отказ панели, сказанный на языке оператора, а не панели: по проводу идёт
+# код, предложение собирается здесь.
+api-unauthenticated = вход не выполнен; выполните: anyproxy login
+api-invalid-credentials = неверный логин, пароль или код
+api-forbidden = ваша роль этого не разрешает
+api-not-found = не найдено
+api-too-many-requests = слишком много попыток; подождите и повторите
+api-acknowledgement-required = печать ссылки раскрывает секрет; добавьте --yes
+api-method-not-served = нода не обслуживает этот метод
+api-node-without-domain = скрытной ноде нужен домен
+api-access-not-on-this-node = этот доступ принадлежит другой ноде
+api-host-required = для ссылки нужен адрес
+api-already-enrolled = эта нода уже зарегистрирована
+api-unknown = панель отклонила запрос ({ $code })
+
+cli-signed-in = вход выполнен: { $login }
+cli-signed-out = выход выполнен
+cli-login-prompt = логин:
+cli-password-prompt = пароль:
+cli-totp-prompt = код:
+cli-password-not-an-argument = пароль читается с терминала, а не из аргумента
+cli-panel-required = задайте ANYPROXY_PANEL или передайте --panel
+cli-enrollment-code = код регистрации (показывается один раз): { $code }
+cli-enrollment-fingerprint = отпечаток панели: { $fingerprint }
+cli-enrollment-command = выполните на ноде: { $command }

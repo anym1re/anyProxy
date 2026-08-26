@@ -69,12 +69,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
 name = "ap-agent"
 version = "0.0.0"
 dependencies = [
@@ -104,15 +98,16 @@ dependencies = [
 name = "ap-cli"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "ap-core",
- "ap-store",
  "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "serde_json",
- "sqlx",
  "thiserror",
  "time",
  "tokio",
+ "totp-rs",
  "uuid",
 ]
 
@@ -173,6 +168,7 @@ dependencies = [
  "ap-store",
  "argon2",
  "axum",
+ "clap",
  "hex",
  "http-body-util",
  "rand 0.9.5",

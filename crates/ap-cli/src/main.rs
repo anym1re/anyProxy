@@ -4,6 +4,7 @@
 //! speak JSON, which never carries a secret: a link is the one way a secret
 //! leaves, and that path is recorded in the audit log.
 
+mod api;
 mod args;
 mod output;
 mod run;
@@ -33,13 +34,13 @@ struct Cli {
     #[arg(long, global = true, default_value = "text")]
     format: output::Format,
 
-    /// Where the panel keeps its data.
-    #[arg(long, global = true, env = "DATABASE_URL")]
-    database_url: Option<String>,
+    /// Address of the panel, host and port.
+    #[arg(long, global = true, env = "ANYPROXY_PANEL")]
+    panel: Option<String>,
 
-    /// File holding the key that seals secrets.
-    #[arg(long, global = true, env = "ANYPROXY_KEY_FILE")]
-    key_file: Option<std::path::PathBuf>,
+    /// Session token, when it is not being read from the token file.
+    #[arg(long, global = true, env = "ANYPROXY_TOKEN")]
+    token: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -47,6 +48,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Signs in and keeps the session token.
+    Login,
+    /// Forgets the session token.
+    Logout,
     /// People the panel accounts for.
     #[command(subcommand)]
     Client(run::ClientCommand),
@@ -76,13 +81,32 @@ fn main() {
         }
     };
 
+    let token_path = api::token_path();
+    let token = match cli.token {
+        Some(token) => Some(token),
+        None => match api::read_token(&token_path) {
+            Ok(token) => token,
+            Err(reason) => {
+                output::fail(&reason);
+                std::process::exit(code::FAILURE);
+            }
+        },
+    };
+
+    let Some(panel) = cli.panel else {
+        let message = ap_core::i18n::message(locale, "cli-panel-required")
+            .unwrap_or_else(|_| "set ANYPROXY_PANEL or pass --panel".to_owned());
+        output::fail(&message);
+        std::process::exit(code::ARGUMENTS);
+    };
+
     let outcome = runtime.block_on(run::dispatch(
         cli.command,
         run::Context {
             locale,
             format: cli.format,
-            database_url: cli.database_url,
-            key_file: cli.key_file,
+            api: api::Api::new(panel, token),
+            token_path,
         },
     ));
 

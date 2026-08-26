@@ -174,12 +174,17 @@ async fn the_lock_is_released_when_the_migrator_is_done() {
 
     // A migrator that returned still holding its lock would stop the next one
     // for as long as its process lives.
-    let held: i64 =
-        sqlx::query("select count(*) as n from pg_locks where locktype = 'advisory' and granted")
-            .fetch_one(&pool)
-            .await
-            .unwrap()
-            .get("n");
+    //
+    // Counted on this database alone: every test here has one of its own, and
+    // a count across the server would include locks the other tests are
+    // holding at that moment.
+    let held: i64 = sqlx::query(
+        "select count(*) as n from pg_locks          where locktype = 'advisory' and granted            and database = (select oid from pg_database where datname = current_database())",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap()
+    .get("n");
     assert_eq!(held, 0, "the migrator kept the lock");
 
     drop(pool);

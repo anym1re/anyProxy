@@ -20,6 +20,7 @@ ap-proto = { path = "../ap-proto" }
 ap-store = { path = "../ap-store" }
 argon2.workspace = true
 axum.workspace = true
+clap.workspace = true
 
 hex.workspace = true
 rand.workspace = true
