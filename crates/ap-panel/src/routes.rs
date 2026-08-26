@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/tags", get(list_tags).post(create_tag))
         .route("/v1/nodes", get(list_nodes).post(create_node))
         .route("/v1/nodes/{id}/burn", post(burn_node))
+        .route("/v1/nodes/{id}/enrollment", post(issue_enrollment))
         .route("/v1/audit", get(read_audit))
         .with_state(state)
 }
@@ -561,6 +562,42 @@ async fn create_node(
         .await?;
 
     Ok((StatusCode::CREATED, Json(node_json(&node)?)).into_response())
+}
+
+/// Issues a one-time enrolment code.
+///
+/// The value is shown here and nowhere else: only its digest is kept, so it
+/// cannot be read back, only replaced.
+async fn issue_enrollment(
+    State(state): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let guarded = state.guarded(&actor);
+    guarded.node(id).await?;
+    if !actor.role().manages_nodes() {
+        return Err(ApiError::NotFound);
+    }
+
+    let issued = crate::enrollment::issue(&state, id).await?;
+    guarded
+        .record(
+            "node.enrollment.issued",
+            Some(&id.to_string()),
+            serde_json::json!({}),
+        )
+        .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        [("cache-control", "no-store")],
+        Json(serde_json::json!({
+            "code": issued.code,
+            "panel_fingerprint": issued.fingerprint,
+            "expires_at": issued.expires_at,
+        })),
+    )
+        .into_response())
 }
 
 async fn burn_node(

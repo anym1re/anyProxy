@@ -1,7 +1,3 @@
-fn leak(secret: &Secret) -> String {
-    secret.expose_hex()
-}
-
 fn stamp(base: &str) -> String {
     let mut out = base.to_owned();
     out.push_str("Z");

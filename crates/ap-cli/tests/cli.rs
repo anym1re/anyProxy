@@ -55,11 +55,8 @@ fn have_database() -> bool {
 }
 
 fn unique(prefix: &str) -> String {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("{prefix}-{}", stamp % 1_000_000_000)
+    let id = uuid::Uuid::now_v7().simple().to_string();
+    format!("{prefix}-{}", &id[..12])
 }
 
 #[test]

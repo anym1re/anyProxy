@@ -33,14 +33,15 @@ user_facing_literal() {
         | grep -vE '!\("(\{[^}]*\}|[[:space:]:,.;|/()\[\]<>=+*-])*"'
 }
 
-# A secret leaves only where a link is rendered, and that is audited.
+# A secret leaves by exactly two roads, and no third.
+#
+#   ap-core        rendering a connection link, which is audited
+#   ap-panel       handing the node its own accesses over the agent channel
+#
+# The second is not a leak: a node that does not know the secret cannot
+# recognise the client it belongs to. Every other appearance is one.
 secret_exposed() {
-    local crate
-    for crate in "${root}"/crates/*/; do
-        [ -d "$crate" ] || continue
-        case "$crate" in *ap-core/) continue ;; esac
-        grep -rnE --include='*.rs' '\.expose_hex\(\)' "$crate"
-    done
+    grep -rnE --include='*.rs' '\.expose_hex\(\)' "${root}/crates"         | grep -vE '(^|/)(ap-core|ap-panel/src/channel\.rs)'
 }
 
 # Appending to a formatted timestamp is how the expiry logic died in the tool

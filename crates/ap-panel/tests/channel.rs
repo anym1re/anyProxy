@@ -1,0 +1,552 @@
+//! The panel side of the agent channel, against a real PostgreSQL.
+//! Skipped when DATABASE_URL is absent.
+
+// An integration test is a separate build target and does not inherit the
+// relaxations in clippy.toml.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use ap_core::{
+    Access, AccessCommon, AccessState, AnyAccess, Client, Credential, Domain, KeyStore, Label,
+    Node, NodeKind, OpenMethod, StealthMethod,
+};
+use ap_panel::{AppState, Config as PanelConfig};
+use ap_proto::{DeviceCount, Health, Message, Telemetry, TrafficDelta};
+use rustls::pki_types::{CertificateDer, pem::PemObject};
+use sha2::{Digest, Sha256};
+use time::OffsetDateTime;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use uuid::Uuid;
+
+// The same key file as the api tests use. The panel identity in the database
+// is sealed with it, and a panel holding a different key cannot open it, which
+// is the point of sealing it. Two test binaries sharing one database must
+// therefore share one key.
+fn key_file() -> PathBuf {
+    let dir = std::env::temp_dir().join("anyproxy-panel-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("panel.key");
+    if !path.exists() {
+        std::fs::write(&path, [11u8; 32]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        }
+    }
+    path
+}
+
+async fn state() -> Option<AppState> {
+    let url = std::env::var("DATABASE_URL").ok()?;
+    Some(
+        AppState::build(&PanelConfig::loopback(0, url, key_file()))
+            .await
+            .expect("state"),
+    )
+}
+
+macro_rules! state {
+    () => {
+        match state().await {
+            Some(state) => state,
+            None => return,
+        }
+    };
+}
+
+fn unique(prefix: &str) -> String {
+    let id = uuid::Uuid::now_v7().simple().to_string();
+    format!("{prefix}-{}", &id[..12])
+}
+
+fn key() -> KeyStore {
+    KeyStore::from_bytes([11u8; 32])
+}
+
+async fn open_node(state: &AppState) -> Node {
+    let node = Node::new(
+        Label::try_from(unique("n").as_str()).unwrap(),
+        NodeKind::Open,
+        OffsetDateTime::now_utc(),
+    );
+    ap_store::NodeRepo::insert(ap_panel::channel::pool_of(state), &node)
+        .await
+        .unwrap();
+    node
+}
+
+async fn a_client(state: &AppState) -> Client {
+    let client = Client::new(
+        Label::try_from(unique("c").as_str()).unwrap(),
+        OffsetDateTime::now_utc(),
+    );
+    ap_store::ClientRepo::insert(ap_panel::channel::pool_of(state), &client, None)
+        .await
+        .unwrap();
+    client
+}
+
+async fn an_access(state: &AppState, client: &Client, node: &Node) -> AnyAccess {
+    let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
+    let access = AnyAccess::Open(Access::<ap_core::Open>::new(common, OpenMethod::Mtproto));
+    ap_store::AccessRepo::insert(
+        ap_panel::channel::pool_of(state),
+        &access,
+        &Credential::generate_secret(),
+        &key(),
+    )
+    .await
+    .unwrap();
+    access
+}
+
+fn csr() -> String {
+    let pair = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(Vec::new()).unwrap();
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "whatever the agent wants");
+    params.serialize_request(&pair).unwrap().pem().unwrap()
+}
+
+#[tokio::test]
+async fn a_code_works_once() {
+    let state = state!();
+    let node = open_node(&state).await;
+    let issued = ap_panel::enrollment::issue(&state, node.id())
+        .await
+        .unwrap();
+
+    let first =
+        ap_panel::channel::enrol_directly(&state, state.authority(), &issued.code, &csr()).await;
+    assert!(first.is_ok(), "the first enrolment failed");
+    assert_eq!(first.unwrap().node_id, node.id());
+
+    let second =
+        ap_panel::channel::enrol_directly(&state, state.authority(), &issued.code, &csr()).await;
+    assert!(second.is_err(), "the code was accepted twice");
+}
+
+#[tokio::test]
+async fn a_wrong_code_and_an_unknown_one_answer_alike() {
+    let state = state!();
+    let node = open_node(&state).await;
+    let issued = ap_panel::enrollment::issue(&state, node.id())
+        .await
+        .unwrap();
+    ap_panel::channel::enrol_directly(&state, state.authority(), &issued.code, &csr())
+        .await
+        .unwrap();
+
+    let used =
+        ap_panel::channel::enrol_directly(&state, state.authority(), &issued.code, &csr()).await;
+    let never =
+        ap_panel::channel::enrol_directly(&state, state.authority(), &unique("x"), &csr()).await;
+
+    assert_eq!(
+        format!("{:?}", used.err()),
+        format!("{:?}", never.err()),
+        "a spent code and one that never existed answer differently"
+    );
+}
+
+#[tokio::test]
+async fn the_certificate_names_the_node_not_the_request() {
+    let state = state!();
+    let node = open_node(&state).await;
+    let issued = ap_panel::enrollment::issue(&state, node.id())
+        .await
+        .unwrap();
+    let enrolled =
+        ap_panel::channel::enrol_directly(&state, state.authority(), &issued.code, &csr())
+            .await
+            .unwrap();
+
+    assert!(
+        enrolled.certificate.contains("BEGIN CERTIFICATE"),
+        "no certificate came back"
+    );
+    assert!(!enrolled.certificate.contains("whatever the agent wants"));
+
+    let der = CertificateDer::pem_slice_iter(enrolled.certificate.as_bytes())
+        .next()
+        .unwrap()
+        .unwrap();
+    let bound = ap_store::EnrollmentRepo::node_of_certificate(
+        ap_panel::channel::pool_of(&state),
+        &Sha256::digest(der.as_ref()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(bound, Some(node.id()));
+}
+
+#[tokio::test]
+async fn a_configuration_carries_only_this_node() {
+    let state = state!();
+    let mine = open_node(&state).await;
+    let theirs = Node::new(
+        Label::try_from(unique("n").as_str()).unwrap(),
+        NodeKind::Stealth {
+            domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
+        },
+        OffsetDateTime::now_utc(),
+    );
+    ap_store::NodeRepo::insert(ap_panel::channel::pool_of(&state), &theirs)
+        .await
+        .unwrap();
+
+    let client = a_client(&state).await;
+    an_access(&state, &client, &mine).await;
+
+    let config = ap_panel::channel::configuration_for(&state, mine.id())
+        .await
+        .unwrap();
+    let rendered = serde_json::to_string(&config).unwrap();
+
+    assert!(!rendered.contains(theirs.label().as_str()));
+    assert!(!rendered.contains(theirs.kind().domain().unwrap().as_str()));
+    assert!(!rendered.contains(&theirs.id().to_string()));
+    assert_eq!(config.accesses.len(), 1);
+}
+
+#[tokio::test]
+async fn a_withdrawn_access_is_absent_rather_than_marked() {
+    let state = state!();
+    let node = open_node(&state).await;
+    let client = a_client(&state).await;
+    let access = an_access(&state, &client, &node).await;
+
+    let before = ap_panel::channel::configuration_for(&state, node.id())
+        .await
+        .unwrap();
+    assert_eq!(before.accesses.len(), 1);
+
+    ap_store::AccessRepo::set_state(
+        ap_panel::channel::pool_of(&state),
+        access.common().id(),
+        AccessState::Revoked,
+    )
+    .await
+    .unwrap();
+
+    let after = ap_panel::channel::configuration_for(&state, node.id())
+        .await
+        .unwrap();
+    assert!(after.accesses.is_empty(), "a withdrawn access was sent");
+    assert!(
+        !serde_json::to_string(&after)
+            .unwrap()
+            .contains(&access.common().id().to_string())
+    );
+}
+
+#[tokio::test]
+async fn each_configuration_carries_a_later_revision() {
+    let state = state!();
+    let node = open_node(&state).await;
+    let first = ap_panel::channel::configuration_for(&state, node.id())
+        .await
+        .unwrap();
+    let second = ap_panel::channel::configuration_for(&state, node.id())
+        .await
+        .unwrap();
+    assert!(
+        second.revision > first.revision,
+        "revisions did not move forward"
+    );
+    let stored =
+        ap_store::EnrollmentRepo::last_revision(ap_panel::channel::pool_of(&state), node.id())
+            .await
+            .unwrap();
+    assert_eq!(stored, Some(second.revision));
+}
+
+#[tokio::test]
+async fn telemetry_for_a_foreign_access_is_refused() {
+    let state = state!();
+    let mine = open_node(&state).await;
+    let theirs = open_node(&state).await;
+    let client = a_client(&state).await;
+    let access = an_access(&state, &client, &theirs).await;
+
+    let telemetry = Telemetry {
+        revision: Uuid::now_v7(),
+        sent_at: ap_core::time::format_rfc3339(OffsetDateTime::now_utc()).unwrap(),
+        deltas: vec![TrafficDelta {
+            access_id: access.common().id(),
+            day: "2026-08-26".to_owned(),
+            bytes_in: 100,
+            bytes_out: 200,
+        }],
+        devices: Vec::new(),
+        health: Health {
+            engine: "up".to_owned(),
+            site: "up".to_owned(),
+            cert_not_after: None,
+        },
+    };
+
+    let outcome = ap_panel::channel::ingest_telemetry(&state, mine.id(), &telemetry).await;
+    assert!(outcome.is_err(), "a node reported on another node's access");
+
+    let totals =
+        ap_store::TrafficRepo::for_access(ap_panel::channel::pool_of(&state), access.common().id())
+            .await
+            .unwrap();
+    assert_eq!(totals.total(), 0, "the counter moved anyway");
+}
+
+#[tokio::test]
+async fn a_repeated_delivery_moves_the_counter_once() {
+    let state = state!();
+    let node = open_node(&state).await;
+    let client = a_client(&state).await;
+    let access = an_access(&state, &client, &node).await;
+
+    let telemetry = Telemetry {
+        revision: Uuid::now_v7(),
+        sent_at: ap_core::time::format_rfc3339(OffsetDateTime::now_utc()).unwrap(),
+        deltas: vec![TrafficDelta {
+            access_id: access.common().id(),
+            day: "2026-08-26".to_owned(),
+            bytes_in: 100,
+            bytes_out: 200,
+        }],
+        devices: vec![DeviceCount {
+            access_id: access.common().id(),
+            period: "2026-08-26".to_owned(),
+            unique: 2,
+        }],
+        health: Health {
+            engine: "up".to_owned(),
+            site: "up".to_owned(),
+            cert_not_after: None,
+        },
+    };
+
+    ap_panel::channel::ingest_telemetry(&state, node.id(), &telemetry)
+        .await
+        .unwrap();
+    ap_panel::channel::ingest_telemetry(&state, node.id(), &telemetry)
+        .await
+        .unwrap();
+
+    let totals =
+        ap_store::TrafficRepo::for_access(ap_panel::channel::pool_of(&state), access.common().id())
+            .await
+            .unwrap();
+    assert_eq!(totals.total(), 300);
+}
+
+// The node is decided by the certificate the connection presented. A frame
+// naming a different node changes nothing, which is what this checks: the
+// conversation is driven end to end over a pipe with node A's certificate
+// while the hello names node B.
+#[tokio::test]
+async fn a_frame_naming_another_node_changes_nothing() {
+    let state = state!();
+    let mine = open_node(&state).await;
+    let theirs = open_node(&state).await;
+
+    let issued = ap_panel::enrollment::issue(&state, mine.id())
+        .await
+        .unwrap();
+    let enrolled =
+        ap_panel::channel::enrol_directly(&state, state.authority(), &issued.code, &csr())
+            .await
+            .unwrap();
+    let der = CertificateDer::pem_slice_iter(enrolled.certificate.as_bytes())
+        .next()
+        .unwrap()
+        .unwrap();
+
+    let (mut ours, theirs_side) = tokio::io::duplex(64 * 1024);
+    let authority = state.authority_handle();
+    let served = tokio::spawn(ap_panel::channel::converse_over(
+        state.clone(),
+        Arc::clone(&authority),
+        theirs_side,
+        Some(der),
+    ));
+
+    let mut hello = ap_panel::channel::hello_of(theirs.id());
+    hello.node_id = theirs.id();
+    ours.write_all(&ap_proto::encode(&Message::Hello(hello)).unwrap())
+        .await
+        .unwrap();
+
+    let mut buffer = vec![0u8; 128 * 1024];
+    let read = ours.read(&mut buffer).await.unwrap();
+    ours.shutdown().await.ok();
+    let _ = served.await;
+
+    let mut cursor = &buffer[..read];
+    let mut config = None;
+    while let Ok(Some((message, consumed))) = ap_proto::decode(cursor) {
+        if let Message::Config(inner) = message {
+            config = Some(inner);
+        }
+        cursor = &cursor[consumed..];
+    }
+
+    let config = config.expect("no configuration came back");
+    assert_eq!(
+        config.node.kind,
+        mine.kind().tag().as_stored(),
+        "the panel answered about the node named in the frame"
+    );
+    let stored =
+        ap_store::EnrollmentRepo::last_revision(ap_panel::channel::pool_of(&state), mine.id())
+            .await
+            .unwrap();
+    assert_eq!(stored, Some(config.revision));
+}
+
+#[tokio::test]
+async fn a_connection_without_a_certificate_may_only_enrol() {
+    let state = state!();
+    let node = open_node(&state).await;
+
+    let (mut ours, theirs) = tokio::io::duplex(64 * 1024);
+    let authority = state.authority_handle();
+    let served = tokio::spawn(ap_panel::channel::converse_over(
+        state.clone(),
+        authority,
+        theirs,
+        None,
+    ));
+
+    ours.write_all(
+        &ap_proto::encode(&Message::Hello(ap_panel::channel::hello_of(node.id()))).unwrap(),
+    )
+    .await
+    .unwrap();
+    ours.shutdown().await.ok();
+
+    let outcome = served.await.unwrap();
+    assert!(outcome.is_err(), "a hello without a certificate was served");
+}
+
+#[tokio::test]
+async fn a_cache_key_is_fresh_for_every_connection() {
+    let state = state!();
+    let node = open_node(&state).await;
+    let issued = ap_panel::enrollment::issue(&state, node.id())
+        .await
+        .unwrap();
+    let enrolled =
+        ap_panel::channel::enrol_directly(&state, state.authority(), &issued.code, &csr())
+            .await
+            .unwrap();
+    let der = CertificateDer::pem_slice_iter(enrolled.certificate.as_bytes())
+        .next()
+        .unwrap()
+        .unwrap();
+
+    let mut keys = Vec::new();
+    for _ in 0..2 {
+        let (mut ours, theirs) = tokio::io::duplex(64 * 1024);
+        let authority = state.authority_handle();
+        let served = tokio::spawn(ap_panel::channel::converse_over(
+            state.clone(),
+            authority,
+            theirs,
+            Some(der.clone()),
+        ));
+        ours.write_all(
+            &ap_proto::encode(&Message::Hello(ap_panel::channel::hello_of(node.id()))).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let mut buffer = vec![0u8; 128 * 1024];
+        let read = ours.read(&mut buffer).await.unwrap();
+        ours.shutdown().await.ok();
+        let _ = served.await;
+
+        if let Ok(Some((Message::Welcome(welcome), _))) = ap_proto::decode(&buffer[..read]) {
+            keys.push(welcome.cache_key);
+        }
+    }
+
+    assert_eq!(keys.len(), 2, "two welcomes were expected");
+    assert_ne!(keys[0], keys[1], "the same cache key was handed out twice");
+    assert_eq!(keys[0].len(), 64);
+}
+
+#[tokio::test]
+async fn burning_a_node_withdraws_its_accesses_and_refuses_its_certificate() {
+    let state = state!();
+    let node = open_node(&state).await;
+    let client = a_client(&state).await;
+    let access = an_access(&state, &client, &node).await;
+
+    let issued = ap_panel::enrollment::issue(&state, node.id())
+        .await
+        .unwrap();
+    let enrolled =
+        ap_panel::channel::enrol_directly(&state, state.authority(), &issued.code, &csr())
+            .await
+            .unwrap();
+    let der = CertificateDer::pem_slice_iter(enrolled.certificate.as_bytes())
+        .next()
+        .unwrap()
+        .unwrap();
+    let digest = Sha256::digest(der.as_ref()).to_vec();
+
+    let pool = ap_panel::channel::pool_of(&state);
+    assert_eq!(
+        ap_store::EnrollmentRepo::node_of_certificate(pool, &digest)
+            .await
+            .unwrap(),
+        Some(node.id())
+    );
+
+    ap_store::AccessRepo::revoke_by_node(pool, node.id())
+        .await
+        .unwrap();
+    ap_store::NodeRepo::set_state(pool, node.id(), ap_core::NodeState::Burned)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        ap_store::EnrollmentRepo::node_of_certificate(pool, &digest)
+            .await
+            .unwrap(),
+        None,
+        "a burned node still answered to its certificate"
+    );
+
+    let read = ap_store::AccessRepo::by_id(pool, access.common().id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.common().state(), AccessState::Revoked);
+}
+
+#[tokio::test]
+async fn a_stealth_node_is_told_to_listen_on_443_alone() {
+    let state = state!();
+    let node = Node::new(
+        Label::try_from(unique("n").as_str()).unwrap(),
+        NodeKind::Stealth {
+            domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
+        },
+        OffsetDateTime::now_utc(),
+    );
+    ap_store::NodeRepo::insert(ap_panel::channel::pool_of(&state), &node)
+        .await
+        .unwrap();
+
+    let config = ap_panel::channel::configuration_for(&state, node.id())
+        .await
+        .unwrap();
+    assert_eq!(config.listeners.len(), 1);
+    assert_eq!(config.listeners[0].bind, "0.0.0.0:443");
+    assert_eq!(config.listeners[0].method, "faketls");
+    let _ = StealthMethod::FakeTls;
+}

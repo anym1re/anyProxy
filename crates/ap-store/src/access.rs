@@ -71,6 +71,17 @@ impl AccessRepo {
         rows.into_iter().map(read_access).collect()
     }
 
+    /// Every access a node serves, oldest first.
+    pub async fn by_node(pool: &PgPool, node_id: Uuid) -> Result<Vec<AnyAccess>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "select {COLUMNS} from access where node_id = $1 order by created_at, id"
+        ))
+        .bind(node_id)
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter().map(read_access).collect()
+    }
+
     /// Opens the credential of one access.
     pub async fn credential(
         pool: &PgPool,
@@ -108,6 +119,15 @@ impl AccessRepo {
                 .execute(pool)
                 .await?;
         Ok(result.rows_affected() == 1)
+    }
+
+    /// Withdraws every access on a node, in one statement.
+    pub async fn revoke_by_node(pool: &PgPool, node_id: Uuid) -> Result<u64, StoreError> {
+        let result = sqlx::query("update access set state = 'revoked' where node_id = $1")
+            .bind(node_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
     }
 
     /// Withdraws every access carrying a tag, in one statement.

@@ -16,22 +16,30 @@ path = "src/lib.rs"
 
 [dependencies]
 ap-core = { path = "../ap-core" }
+ap-proto = { path = "../ap-proto" }
 ap-store = { path = "../ap-store" }
 argon2.workspace = true
 axum.workspace = true
+
 hex.workspace = true
 rand.workspace = true
+rcgen.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+rustls.workspace = true
 sqlx.workspace = true
 time.workspace = true
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros", "signal"] }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros", "signal", "io-util"] }
+tokio-rustls.workspace = true
 totp-rs.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+ap-proto = { path = "../ap-proto" }
 http-body-util = "0.1"
+rcgen.workspace = true
+sha2.workspace = true
 tower = { version = "0.5", features = ["util"] }
 
 [lints]

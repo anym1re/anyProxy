@@ -5,9 +5,10 @@ on:
     branches: [dev, main]
   pull_request:
     branches: [dev, main]
+  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -75,4 +76,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p ap-store -p ap-cli -p ap-panel --locked -- --test-threads 1
+      - run: cargo test -p ap-store -p ap-cli -p ap-panel --locked

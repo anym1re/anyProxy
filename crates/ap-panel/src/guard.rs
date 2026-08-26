@@ -259,13 +259,18 @@ impl<'a> Guarded<'a> {
     }
 
     /// Destroys a node.
-    pub async fn burn_node(&self, id: Uuid) -> Result<(), ApiError> {
+    ///
+    /// The accesses go first. A node marked burned whose accesses still stand
+    /// would keep serving them until its cache ran out, which is the opposite
+    /// of what the button is for.
+    pub async fn burn_node(&self, id: Uuid) -> Result<u64, ApiError> {
         if !self.actor.role().manages_nodes() {
             return Err(ApiError::NotFound);
         }
         self.node(id).await?;
+        let withdrawn = AccessRepo::revoke_by_node(self.pool, id).await?;
         NodeRepo::set_state(self.pool, id, NodeState::Burned).await?;
-        Ok(())
+        Ok(withdrawn)
     }
 
     /// The audit log.

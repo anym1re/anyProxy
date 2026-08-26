@@ -5,6 +5,9 @@
 //! scanners, opportunists and a targeted attacker at once.
 
 mod auth;
+pub mod ca;
+pub mod channel;
+pub mod enrollment;
 mod error;
 mod guard;
 mod routes;
@@ -50,6 +53,7 @@ impl Config {
 pub struct AppState {
     pool: PgPool,
     key: Arc<KeyStore>,
+    authority: Arc<ca::Authority>,
     attempts: Arc<auth::Attempts>,
 }
 
@@ -67,9 +71,11 @@ impl AppState {
         ap_store::migrate(&pool)
             .await
             .map_err(|error| format!("migrations: {error}"))?;
+        let authority = ca::Authority::load_or_create(&pool, &key).await?;
         Ok(Self {
             pool,
             key: Arc::new(key),
+            authority: Arc::new(authority),
             attempts: Arc::new(auth::Attempts::default()),
         })
     }
@@ -85,6 +91,16 @@ impl AppState {
 
     pub(crate) fn key(&self) -> &KeyStore {
         &self.key
+    }
+
+    /// The authority that signs agent certificates.
+    pub fn authority(&self) -> &ca::Authority {
+        &self.authority
+    }
+
+    /// The authority, shared, for the agent channel.
+    pub fn authority_handle(&self) -> Arc<ca::Authority> {
+        Arc::clone(&self.authority)
     }
 
     pub(crate) fn attempts(&self) -> &auth::Attempts {

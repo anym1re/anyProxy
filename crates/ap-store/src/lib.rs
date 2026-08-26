@@ -7,6 +7,7 @@
 mod access;
 mod admin;
 mod audit;
+mod channel;
 mod client;
 mod error;
 mod node;
@@ -16,6 +17,7 @@ mod traffic;
 pub use access::AccessRepo;
 pub use admin::{AdminRepo, SessionRepo};
 pub use audit::{AuditEntry, AuditRepo};
+pub use channel::{EnrollmentRepo, PanelIdentity, PanelIdentityRepo};
 pub use client::ClientRepo;
 pub use error::StoreError;
 pub use node::NodeRepo;
@@ -52,33 +54,58 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0003_admin",
         include_str!("../../../migrations/0003_admin.sql"),
     ),
+    (
+        "0004_channel",
+        include_str!("../../../migrations/0004_channel.sql"),
+    ),
 ];
 
+/// What the migrator holds while it works. The value is the project's name in
+/// ASCII, so `pg_locks` says who is holding it.
+const MIGRATION_LOCK: i64 = 0x616e_7970_726f_7879;
+
 /// Applies every migration that has not run yet. Running it twice is a no-op.
+///
+/// Two processes may start at once — a panel and a command, or two panels
+/// behind one address — and against a database nobody has migrated yet both
+/// would see the same version as unapplied and both would try to apply it. The
+/// lock makes them take turns, and the one that arrives second finds the work
+/// already done.
+///
+/// Everything runs in one transaction, so the lock is released by the commit
+/// and a process that dies part way through leaves neither a half-applied
+/// schema nor a lock nobody will drop.
 pub async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
+    let mut transaction = pool.begin().await?;
+
+    sqlx::query("select pg_advisory_xact_lock($1)")
+        .bind(MIGRATION_LOCK)
+        .execute(&mut *transaction)
+        .await?;
+
     sqlx::query(
         "create table if not exists schema_migration (             version text primary key,              applied_at timestamptz not null default now())",
     )
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
 
     for (version, statements) in MIGRATIONS {
         let applied: Option<String> =
             sqlx::query_scalar("select version from schema_migration where version = $1")
                 .bind(version)
-                .fetch_optional(pool)
+                .fetch_optional(&mut *transaction)
                 .await?;
         if applied.is_some() {
             continue;
         }
 
-        let mut transaction = pool.begin().await?;
         sqlx::raw_sql(statements).execute(&mut *transaction).await?;
         sqlx::query("insert into schema_migration (version) values ($1)")
             .bind(version)
             .execute(&mut *transaction)
             .await?;
-        transaction.commit().await?;
     }
+
+    transaction.commit().await?;
     Ok(())
 }
