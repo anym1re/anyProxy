@@ -194,6 +194,7 @@ impl Error {
             Self::KeyFileLength => "error-key-file-length",
             Self::LinkHost => "error-link-host",
             Self::StoredValue => "error-stored-value",
+            Self::PasswordHash => "error-password-hash",
             Self::Catalogue | Self::MessageMissing => "error-sealed-value",
         }
     }
@@ -333,6 +334,7 @@ mod tests {
             Error::KeyFileLength,
             Error::LinkHost,
             Error::StoredValue,
+            Error::PasswordHash,
         ];
         for error in cases {
             for locale in Locale::all() {

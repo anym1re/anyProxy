@@ -18,6 +18,7 @@ error-key-file-permissions = the key file must not be readable by group or other
 error-key-file-length = the key file must hold exactly 32 bytes
 error-link-host = a connection link needs a host
 error-stored-value = the stored value is not a known variant
+error-password-hash = an administrator needs a password
 
 # Why an access is not served.
 reason-client-suspended = the client is suspended

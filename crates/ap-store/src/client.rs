@@ -5,19 +5,22 @@ use uuid::Uuid;
 
 use crate::StoreError;
 
-const COLUMNS: &str =
-    "id, label, note_nonce, note_ciphertext, state, quota_bytes, expires_at, created_at";
+const COLUMNS: &str = "id, label, note_nonce, note_ciphertext, state, quota_bytes, expires_at, \n     created_at, owner_id";
 
 /// Reads and writes clients.
 pub struct ClientRepo;
 
 impl ClientRepo {
     /// Writes a new client.
-    pub async fn insert(pool: &PgPool, client: &Client) -> Result<(), StoreError> {
+    pub async fn insert(
+        pool: &PgPool,
+        client: &Client,
+        owner: Option<Uuid>,
+    ) -> Result<(), StoreError> {
         let (nonce, ciphertext) = split_note(client);
         sqlx::query(
             "insert into client (id, label, note_nonce, note_ciphertext, state, quota_bytes, \
-             expires_at, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8)",
+             expires_at, created_at, owner_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(client.id())
         .bind(client.label().as_str())
@@ -27,6 +30,7 @@ impl ClientRepo {
         .bind(client.quota_bytes())
         .bind(client.expires_at())
         .bind(client.created_at())
+        .bind(owner)
         .execute(pool)
         .await?;
         Ok(())
@@ -50,14 +54,40 @@ impl ClientRepo {
         row.map(read_client).transpose()
     }
 
-    /// Every client, oldest first.
-    pub async fn list(pool: &PgPool) -> Result<Vec<Client>, StoreError> {
+    /// Every client, oldest first. A limit is always applied.
+    pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<Client>, StoreError> {
         let rows = sqlx::query(&format!(
-            "select {COLUMNS} from client order by created_at, id"
+            "select {COLUMNS} from client order by created_at, id limit $1"
         ))
+        .bind(limit)
         .fetch_all(pool)
         .await?;
         rows.into_iter().map(read_client).collect()
+    }
+
+    /// Every client one owner holds, oldest first.
+    pub async fn list_owned(
+        pool: &PgPool,
+        owner: Uuid,
+        limit: i64,
+    ) -> Result<Vec<Client>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "select {COLUMNS} from client where owner_id = $1 order by created_at, id limit $2"
+        ))
+        .bind(owner)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter().map(read_client).collect()
+    }
+
+    /// Who owns a client, when anyone does.
+    pub async fn owner_of(pool: &PgPool, id: Uuid) -> Result<Option<Uuid>, StoreError> {
+        let row = sqlx::query("select owner_id from client where id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+        Ok(row.and_then(|row| row.try_get("owner_id").ok()))
     }
 
     /// Moves a client to a new state.

@@ -46,7 +46,7 @@ async fn a_client(pool: &PgPool) -> Client {
         Label::try_from(unique("c").as_str()).unwrap(),
         OffsetDateTime::UNIX_EPOCH,
     );
-    ClientRepo::insert(pool, &client).await.unwrap();
+    ClientRepo::insert(pool, &client, None).await.unwrap();
     client
 }
 
@@ -116,7 +116,7 @@ async fn a_client_survives_a_round_trip() {
     .with_note(note)
     .with_quota(50)
     .unwrap();
-    ClientRepo::insert(&pool, &client).await.unwrap();
+    ClientRepo::insert(&pool, &client, None).await.unwrap();
 
     let read = ClientRepo::by_label(&pool, client.label())
         .await

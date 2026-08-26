@@ -59,6 +59,10 @@ pub enum Error {
     #[error("the message catalogue has no such key")]
     MessageMissing,
 
+    /// An administrator without a password verifier.
+    #[error("an administrator needs a password")]
+    PasswordHash,
+
     /// A stored value that no variant is spelled by.
     #[error("the stored value is not a known variant")]
     StoredValue,

@@ -240,7 +240,7 @@ async fn client(command: ClientCommand, context: Context) -> Outcome {
             }
 
             let pool = pool(&context).await?;
-            ClientRepo::insert(&pool, &record)
+            ClientRepo::insert(&pool, &record, None)
                 .await
                 .map_err(|error| Failure::Execution(error.to_string()))?;
 
@@ -273,7 +273,7 @@ async fn client(command: ClientCommand, context: Context) -> Outcome {
         }
         ClientCommand::List => {
             let pool = pool(&context).await?;
-            let clients = ClientRepo::list(&pool)
+            let clients = ClientRepo::list(&pool, 200)
                 .await
                 .map_err(|error| Failure::Execution(error.to_string()))?;
             list_clients(&clients, &context)

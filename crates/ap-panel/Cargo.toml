@@ -6,5 +6,33 @@ rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "anyproxy-panel"
+path = "src/main.rs"
+
+[lib]
+name = "ap_panel"
+path = "src/lib.rs"
+
+[dependencies]
+ap-core = { path = "../ap-core" }
+ap-store = { path = "../ap-store" }
+argon2.workspace = true
+axum.workspace = true
+hex.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros", "signal"] }
+totp-rs.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+
 [lints]
 workspace = true

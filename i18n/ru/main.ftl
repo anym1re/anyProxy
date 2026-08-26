@@ -18,6 +18,7 @@ error-key-file-permissions = файл ключа не должен быть до
 error-key-file-length = файл ключа должен содержать ровно 32 байта
 error-link-host = для ссылки нужен адрес узла
 error-stored-value = сохранённое значение не соответствует ни одному варианту
+error-password-hash = у администратора должен быть пароль
 
 # Почему доступ не обслуживается.
 reason-client-suspended = клиент приостановлен

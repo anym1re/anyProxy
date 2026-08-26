@@ -82,6 +82,11 @@ slug!(
     "Identifier of a client or a node, unique within its kind."
 );
 slug!(TagName, TAG_NAME_MAX, "Identifier of a tag.");
+slug!(
+    AdminLogin,
+    LABEL_MAX,
+    "Name an administrator signs in with."
+);
 
 /// Hostname a stealth node answers on, shared by its cover site and its clients.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

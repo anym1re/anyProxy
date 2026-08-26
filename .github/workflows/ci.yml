@@ -54,7 +54,7 @@ jobs:
           GITLEAKS_CONFIG: .gitleaks.toml
 
   store:
-    name: store and cli integration
+    name: store, panel and cli integration
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -75,4 +75,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p ap-store -p ap-cli --locked -- --test-threads 1
+      - run: cargo test -p ap-store -p ap-cli -p ap-panel --locked -- --test-threads 1

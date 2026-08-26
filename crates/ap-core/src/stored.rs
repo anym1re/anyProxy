@@ -1,6 +1,9 @@
 //! Stored spellings of the enumerations, so no other crate invents its own.
 
-use crate::{AccessState, ClientState, Error, NodeKindTag, NodeState, OpenMethod, StealthMethod};
+use crate::{
+    AccessState, AdminState, ClientState, Error, NodeKindTag, NodeState, OpenMethod, Role,
+    StealthMethod,
+};
 
 macro_rules! spelling {
     ($type:ty, $error:expr, $(($variant:path, $text:literal)),+ $(,)?) => {
@@ -70,6 +73,21 @@ spelling!(
     (Self::Http, "http"),
 );
 
+spelling!(
+    Role,
+    Error::StoredValue,
+    (Self::Superadmin, "superadmin"),
+    (Self::Operator, "operator"),
+    (Self::Reseller, "reseller"),
+);
+
+spelling!(
+    AdminState,
+    Error::StoredValue,
+    (Self::Active, "active"),
+    (Self::Disabled, "disabled"),
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +106,11 @@ mod tests {
         );
         assert_eq!(StealthMethod::from_stored("web"), Ok(StealthMethod::Web));
         assert_eq!(OpenMethod::from_stored("socks5"), Ok(OpenMethod::Socks5));
+        assert_eq!(Role::from_stored("reseller"), Ok(Role::Reseller));
+        assert_eq!(
+            AdminState::from_stored("disabled"),
+            Ok(AdminState::Disabled)
+        );
     }
 
     #[test]

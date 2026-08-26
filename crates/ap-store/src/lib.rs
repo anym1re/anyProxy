@@ -5,6 +5,7 @@
 //! by a live database, which the development machine does not have.
 
 mod access;
+mod admin;
 mod audit;
 mod client;
 mod error;
@@ -13,6 +14,7 @@ mod tag;
 mod traffic;
 
 pub use access::AccessRepo;
+pub use admin::{AdminRepo, SessionRepo};
 pub use audit::{AuditEntry, AuditRepo};
 pub use client::ClientRepo;
 pub use error::StoreError;
@@ -45,6 +47,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0002_app_role",
         include_str!("../../../migrations/0002_app_role.sql"),
+    ),
+    (
+        "0003_admin",
+        include_str!("../../../migrations/0003_admin.sql"),
     ),
 ];
 
