@@ -48,19 +48,29 @@ async fn answer(stream: &mut tokio::net::TcpStream, site: &Site) -> std::io::Res
 
     // A site of this kind reads and nothing else.
     if !verb.eq_ignore_ascii_case("GET") && !verb.eq_ignore_ascii_case("HEAD") {
-        return say(stream, 405, "text/plain; charset=utf-8", b"", true).await;
+        return say(stream, 405, "text/plain; charset=utf-8", b"", 0, true).await;
     }
 
     let (status, page) = match site.page(path) {
         Some(page) => (200, page),
         None => (404, site.missing()),
     };
+    // A head asked for on its own still reports the length the whole thing
+    // would have had.
     let body: &[u8] = if verb.eq_ignore_ascii_case("HEAD") {
         &[]
     } else {
         &page.bytes
     };
-    say(stream, status, page.content_type, body, false).await
+    say(
+        stream,
+        status,
+        page.content_type,
+        body,
+        page.bytes.len(),
+        false,
+    )
+    .await
 }
 
 /// Writes one answer.
@@ -69,6 +79,7 @@ async fn say(
     status: u16,
     content_type: &str,
     body: &[u8],
+    length: usize,
     close: bool,
 ) -> std::io::Result<()> {
     let reason = match status {
@@ -84,7 +95,7 @@ async fn say(
          Content-Length: {}\r\n\
          Cache-Control: public, max-age=600\r\n\
          Connection: {}\r\n\r\n",
-        body.len(),
+        length,
         if close { "close" } else { "keep-alive" },
     );
     stream.write_all(head.as_bytes()).await?;
@@ -184,11 +195,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn asking_for_the_head_alone_returns_no_body() {
-        let (address, _) = a_site_on_loopback().await;
+    async fn asking_for_the_head_alone_returns_no_body_but_the_right_length() {
+        // Saying nothing follows and saying nothing exists are different
+        // answers, and a crawler given the second would take the page for
+        // empty.
+        let (address, site) = a_site_on_loopback().await;
         let said = ask(&address, "HEAD / HTTP/1.1\r\nHost: x\r\n\r\n").await;
         assert!(said.starts_with("HTTP/1.1 200 OK"), "{said}");
         assert!(!said.contains("<!doctype html>"), "{said}");
+
+        let length = site.page("/").unwrap().bytes.len();
+        assert!(
+            said.contains(&format!("Content-Length: {length}")),
+            "the length was not the one a whole request would give: {said}"
+        );
     }
 
     #[tokio::test]
