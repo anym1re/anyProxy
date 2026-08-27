@@ -46,6 +46,11 @@ where
         .next()
         .is_some_and(|verb| verb.eq_ignore_ascii_case("CONNECT"))
     {
+        // Answered rather than dropped. A silent close is what a broken
+        // network looks like, and someone who points a browser at this port to
+        // see whether it is alive learns nothing from it — which is how an
+        // afternoon goes into a listener that was working the whole time.
+        answer_only_connect(stream).await?;
         return Err(InboundError::Protocol("http"));
     }
     let target = parts.next().ok_or(InboundError::Protocol("http"))?;
@@ -112,6 +117,25 @@ where
         .write_all(
             b"HTTP/1.1 407 Proxy Authentication Required\r\n\
               Proxy-Authenticate: Basic realm=\"\"\r\n\
+              Content-Length: 0\r\n\
+              Connection: close\r\n\r\n",
+        )
+        .await?;
+    Ok(())
+}
+
+/// Tells a client that asked for something else that this is not that.
+///
+/// No banner and no explanation: enough for a browser to show a status rather
+/// than an empty page, and nothing that describes what is listening here.
+pub async fn answer_only_connect<S>(stream: &mut S) -> Result<(), InboundError>
+where
+    S: AsyncWrite + Unpin,
+{
+    stream
+        .write_all(
+            b"HTTP/1.1 405 Method Not Allowed\r\n\
+              Allow: CONNECT\r\n\
               Content-Length: 0\r\n\
               Connection: close\r\n\r\n",
         )
@@ -216,6 +240,34 @@ mod tests {
         ] {
             assert!(read_from(request).await.is_err(), "{request} was accepted");
         }
+    }
+
+    #[tokio::test]
+    async fn a_verb_other_than_connect_is_answered_rather_than_dropped() {
+        // A silent close is what a broken network looks like. Someone checking
+        // whether the listener is alive by pointing a browser at it learns
+        // nothing from silence, and spends the afternoon on a listener that
+        // was working the whole time.
+        let (mut client, mut server) = tokio::io::duplex(16 * 1024);
+        let asked = tokio::spawn(async move {
+            let _ = client.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").await;
+            let mut said = Vec::new();
+            let _ = client.read_to_end(&mut said).await;
+            said
+        });
+
+        assert!(read_connect(&mut server).await.is_err());
+        drop(server);
+
+        let said = String::from_utf8_lossy(&asked.await.unwrap()).into_owned();
+        assert!(
+            said.starts_with("HTTP/1.1 405 "),
+            "the client heard: {said}"
+        );
+        assert!(
+            !said.to_ascii_lowercase().contains("proxy"),
+            "the answer describes what is listening here: {said}"
+        );
     }
 
     #[tokio::test]
