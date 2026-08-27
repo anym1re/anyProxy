@@ -30,14 +30,16 @@ pub async fn serve(
         };
         let registry = Arc::clone(&registry);
         tokio::spawn(async move {
+            // No deadline on the whole conversation: a proxy connection lasts
+            // as long as the person using it needs it, and cutting it after a
+            // minute would make the node useless for anything but a single
+            // page. The opening has its own deadlines, which is where an
+            // idling client actually costs something.
+            //
             // Whatever went wrong is not written down. A log line saying which
             // address failed to authenticate, or where it wanted to go, is the
             // record this design exists to not keep.
-            let _ = tokio::time::timeout(
-                GREETING_TIMEOUT + REACH_TIMEOUT,
-                converse(stream, peer, method, registry),
-            )
-            .await;
+            let _ = converse(stream, peer, method, registry).await;
         });
     }
 }
@@ -133,7 +135,13 @@ where
     }
 }
 
-/// Moves bytes both ways and counts them against the access.
+/// Moves bytes both ways and counts them as they go.
+///
+/// Counted while the connection runs rather than when it ends. A connection
+/// that lasts an afternoon would otherwise be worth nothing until the
+/// afternoon was over, and one cut by a network fault — or by the node being
+/// restarted — would be worth nothing at all. The quota that is supposed to
+/// stop at fifty gigabytes has to be able to see them arriving.
 ///
 /// The two directions are named the way the panel counts them: what the client
 /// received and what it sent.
@@ -147,17 +155,44 @@ where
     C: AsyncRead + AsyncWrite + Unpin,
     U: AsyncRead + AsyncWrite + Unpin,
 {
-    let moved = tokio::io::copy_bidirectional(client, upstream).await;
+    let (mut from_client, mut to_client) = tokio::io::split(client);
+    let (mut from_upstream, mut to_upstream) = tokio::io::split(upstream);
 
-    // Counted whether the connection ended tidily or not: traffic that was
-    // carried was carried, and a client that hangs up mid-transfer must not
-    // get it free.
-    match moved {
-        Ok((from_client, to_client)) => {
-            registry.used(access, to_client as i64, from_client as i64);
-            Ok(())
+    let upward = pump(&mut from_client, &mut to_upstream, |moved| {
+        registry.used(access, 0, moved)
+    });
+    let downward = pump(&mut from_upstream, &mut to_client, |moved| {
+        registry.used(access, moved, 0)
+    });
+
+    // Either side ending ends the other: a half-open connection to a proxy is
+    // a slot nobody is using.
+    tokio::select! {
+        outcome = upward => outcome,
+        outcome = downward => outcome,
+    }
+}
+
+/// Copies one direction, telling the caller about each piece as it passes.
+async fn pump<R, W, F>(reader: &mut R, writer: &mut W, mut moved: F) -> Result<(), InboundError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    F: FnMut(i64),
+{
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let mut buffer = vec![0u8; 16 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            let _ = writer.shutdown().await;
+            return Ok(());
         }
-        Err(error) => Err(InboundError::Io(error)),
+        writer.write_all(&buffer[..read]).await?;
+        // Counted after the write, so what is counted is what was carried
+        // rather than what was merely received.
+        moved(read as i64);
     }
 }
 
@@ -346,5 +381,46 @@ mod tests {
         client.read_exact(&mut answer).await.unwrap();
 
         assert_eq!(answer, [1, 1], "an access crossed between listeners");
+    }
+
+    #[tokio::test]
+    async fn what_is_carried_is_counted_before_the_connection_ends() {
+        let access = an_access("socks5", "alice", "opens the door");
+        let (inbound, target, registry) = a_node(Method::Socks5, access.clone()).await;
+
+        let mut client = TcpStream::connect(inbound).await.unwrap();
+        client.write_all(&[5, 1, 2]).await.unwrap();
+        let mut answer = [0u8; 2];
+        client.read_exact(&mut answer).await.unwrap();
+        client.write_all(&[1, 5]).await.unwrap();
+        client.write_all(b"alice").await.unwrap();
+        client.write_all(&[14]).await.unwrap();
+        client.write_all(b"opens the door").await.unwrap();
+        client.read_exact(&mut answer).await.unwrap();
+
+        let mut request = vec![5u8, 1, 0, 1, 127, 0, 0, 1];
+        request.extend_from_slice(&target.port().to_be_bytes());
+        client.write_all(&request).await.unwrap();
+        let mut reply = [0u8; 10];
+        client.read_exact(&mut reply).await.unwrap();
+
+        client.write_all(b"hello").await.unwrap();
+        let mut echoed = [0u8; 5];
+        client.read_exact(&mut echoed).await.unwrap();
+
+        // The connection is still open. A count that only arrived at the end
+        // would be worth nothing to a quota, which has to stop something while
+        // it is happening.
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if let Some((bytes_in, bytes_out, _)) = registry.taken().get(&access.id).copied()
+                && bytes_in > 0
+                && bytes_out > 0
+            {
+                drop(client);
+                return;
+            }
+        }
+        panic!("nothing was counted while the connection was still open");
     }
 }
