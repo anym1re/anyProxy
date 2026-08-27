@@ -191,7 +191,24 @@ fn strip_scheme(target: &str) -> Option<&str> {
 }
 
 /// Host and port, with a default when the port is left out.
+///
+/// An address of the sixth version arrives in brackets, because it is full of
+/// the same colon that separates the port. The brackets belong to the way it
+/// was written and not to the address: passing them on to a resolver gets
+/// nothing back, and a data centre reached that way answers nothing at all.
 fn split_authority(authority: &str, default: Option<u16>) -> Result<(String, u16), InboundError> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, after) = rest.split_once(']').ok_or(InboundError::Protocol("http"))?;
+        let port = match after.strip_prefix(':') {
+            Some(port) => port.parse().map_err(|_| InboundError::Protocol("http"))?,
+            None => default.ok_or(InboundError::Protocol("http"))?,
+        };
+        if host.is_empty() {
+            return Err(InboundError::Protocol("http"));
+        }
+        return Ok((host.to_owned(), port));
+    }
+
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port)) => (
             host,
@@ -450,6 +467,52 @@ mod tests {
         assert!(head.contains("Content-Length: 4\r\n"), "{head}");
         assert!(head.contains("Host: 149.154.167.41\r\n"), "{head}");
         assert!(head.ends_with("\r\n\r\n"), "the head does not end: {head}");
+    }
+
+    #[tokio::test]
+    async fn an_address_of_the_sixth_version_loses_its_brackets() {
+        // Telegram offers data centres of both versions and tries them all.
+        // Brackets left on the address resolve to nothing, the connection is
+        // never made, and the client waits out its own patience for every one
+        // of them.
+        let forward = passed_on(
+            "POST http://[2001:67c:4e8:f002::a]:80/api HTTP/1.1\r\n\
+             Host: [2001:67c:4e8:f002::a]:80\r\n\
+             Content-Length: 0\r\n\r\n",
+        )
+        .await;
+        assert_eq!(forward.host, "2001:67c:4e8:f002::a");
+        assert_eq!(forward.port, 80);
+        assert!(
+            forward.host.parse::<std::net::Ipv6Addr>().is_ok(),
+            "what was passed on is not an address: {}",
+            forward.host
+        );
+
+        let head = String::from_utf8(forward.head).unwrap();
+        assert!(
+            head.contains("Host: [2001:67c:4e8:f002::a]:80"),
+            "the host header lost the brackets it needs: {head}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_to_the_sixth_version_loses_its_brackets_too() {
+        let connect = read_from("CONNECT [2001:67c:4e8:f002::a]:443 HTTP/1.1\r\n\r\n")
+            .await
+            .unwrap();
+        assert_eq!(connect.host, "2001:67c:4e8:f002::a");
+        assert_eq!(connect.port, 443);
+    }
+
+    #[tokio::test]
+    async fn brackets_that_do_not_close_are_refused() {
+        assert!(
+            asked_for("CONNECT [2001:67c:4e8:f002::a:443 HTTP/1.1\r\n\r\n")
+                .await
+                .is_err()
+        );
+        assert!(asked_for("CONNECT []:443 HTTP/1.1\r\n\r\n").await.is_err());
     }
 
     #[tokio::test]

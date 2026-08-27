@@ -84,13 +84,26 @@ where
 
         let mut upstream = match held.take() {
             Some(upstream) => upstream,
-            None => match replayable.is_some() {
-                true => match pool.take(&addressed.0, addressed.1) {
+            None => {
+                let warm = replayable
+                    .is_some()
+                    .then(|| pool.take(&addressed.0, addressed.1))
+                    .flatten();
+                match warm {
                     Some(warm) => warm,
-                    None => Pool::open(&addressed.0, addressed.1).await?,
-                },
-                false => Pool::open(&addressed.0, addressed.1).await?,
-            },
+                    None => match Pool::open(&addressed.0, addressed.1).await {
+                        Ok(fresh) => fresh,
+                        // Said rather than dropped. A client that hears
+                        // nothing waits out its own patience and tries again,
+                        // and every one of those attempts is time the person
+                        // using it is counting.
+                        Err(_) => {
+                            http::answer_unreachable(client).await?;
+                            return Err(InboundError::Protocol("upstream"));
+                        }
+                    },
+                }
+            }
         };
 
         let mut answer = None;
@@ -115,7 +128,13 @@ where
                 // closed at the other end. Nothing has reached the client yet,
                 // so the request can go again on a connection of its own.
                 Ok(Err(_)) | Err(_) if attempt == 0 && replayable.is_some() => {
-                    upstream = Pool::open(&addressed.0, addressed.1).await?;
+                    upstream = match Pool::open(&addressed.0, addressed.1).await {
+                        Ok(fresh) => fresh,
+                        Err(_) => {
+                            http::answer_unreachable(client).await?;
+                            return Err(InboundError::Protocol("upstream"));
+                        }
+                    };
                 }
                 Ok(Err(reason)) => return Err(reason),
                 Err(_) => return Err(InboundError::Protocol("upstream")),
