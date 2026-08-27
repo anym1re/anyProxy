@@ -54,6 +54,24 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
     writeln!(out, "ad_tag = \"{}\"", ad_tag(config)).ok();
     writeln!(out).ok();
 
+    // Which of telemt's client modes are allowed, decided by what the node
+    // actually serves. Both are off by default except the TLS one, so a node
+    // serving plain MTProto without this refuses every client it was issued
+    // links for — with the links looking perfectly correct.
+    let serves_plain = config
+        .listeners
+        .iter()
+        .any(|listener| listener.method == "mtproto");
+    let serves_masked = config
+        .listeners
+        .iter()
+        .any(|listener| listener.method == "faketls" || listener.method == "web");
+    writeln!(out, "[general.modes]").ok();
+    writeln!(out, "classic = false").ok();
+    writeln!(out, "secure = {serves_plain}").ok();
+    writeln!(out, "tls = {serves_masked}").ok();
+    writeln!(out).ok();
+
     writeln!(out, "[general.telemetry]").ok();
     writeln!(out, "core_enabled = true").ok();
     writeln!(out, "user_enabled = true").ok();
@@ -90,7 +108,7 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
     // engine imitates. These must be the same value: a link telling a client
     // to say one name while the node imitates another is a node that fails
     // the first thing anyone would check.
-    if let Some(domain) = masquerade(config) {
+    if let Some(domain) = masquerade(config).filter(|_| serves_masked) {
         writeln!(out, "[censorship]").ok();
         writeln!(out, "tls_domain = \"{domain}\"").ok();
         writeln!(out, "mask = true").ok();
@@ -349,6 +367,32 @@ mod tests {
         assert!(rendered.contains("ip = \"0.0.0.0\""));
         assert!(rendered.contains("port = 443"));
         assert!(rendered.contains("transport = \"mtproxy\""));
+    }
+
+    #[test]
+    fn a_node_allows_the_mode_the_links_it_issues_are_written_for() {
+        // A plain MTProto link carries a `dd` secret, which telemt calls the
+        // secure mode and leaves off unless told. Left off, every client the
+        // panel issued a link for is refused while the link looks right.
+        let plain = a_config(vec![a_listener("mtproto", "0.0.0.0:8443")], vec![]);
+        let rendered = render(&plain, &settings()).unwrap();
+        assert!(rendered.contains("secure = true"), "{rendered}");
+        assert!(rendered.contains("tls = false"));
+
+        // A masked link carries `ee`, which is the TLS mode.
+        let masked = a_config(vec![a_listener("faketls", "0.0.0.0:443")], vec![]);
+        let rendered = render(&masked, &settings()).unwrap();
+        assert!(rendered.contains("tls = true"), "{rendered}");
+        assert!(rendered.contains("secure = false"));
+
+        // Classic MTProxy has no secret worth the name and is never allowed.
+        for config in [plain, masked] {
+            assert!(
+                render(&config, &settings())
+                    .unwrap()
+                    .contains("classic = false")
+            );
+        }
     }
 
     #[test]

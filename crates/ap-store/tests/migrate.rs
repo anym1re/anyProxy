@@ -73,15 +73,7 @@ async fn migrating_an_untouched_database_leaves_every_version_applied() {
             .into_iter()
             .map(|row| row.get("version"))
             .collect();
-    assert_eq!(
-        versions,
-        vec![
-            "0001_initial",
-            "0002_app_role",
-            "0003_admin",
-            "0004_channel"
-        ]
-    );
+    assert_eq!(versions, ap_store::migration_versions());
 
     drop(pool);
     fresh.drop_it().await;
@@ -126,7 +118,11 @@ async fn migrators_that_start_together_do_not_collide() {
         .await
         .unwrap()
         .get("n");
-    assert_eq!(applied, 4, "a migration was recorded more than once");
+    assert_eq!(
+        applied,
+        ap_store::migration_versions().len() as i64,
+        "a migration was recorded more than once"
+    );
 
     drop(pool);
     fresh.drop_it().await;

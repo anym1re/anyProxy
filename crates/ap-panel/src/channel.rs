@@ -164,6 +164,16 @@ async fn handle(
             if hello.proto > PROTOCOL_VERSION {
                 return Err(ApiError::BadRequest("unsupported_protocol"));
             }
+            // The node is talking to us, so it is no longer merely registered.
+            ap_store::PresenceRepo::seen(
+                state.pool(),
+                node_id,
+                &hello.agent_version,
+                None,
+                OffsetDateTime::now_utc(),
+            )
+            .await
+            .map_err(ApiError::from)?;
             let welcome = Message::Welcome(Welcome {
                 proto: PROTOCOL_VERSION,
                 cache_key: hex::encode(cache_key()),
@@ -385,6 +395,52 @@ async fn apply_telemetry(
 ) -> Result<(), ApiError> {
     let pool = state.pool();
     let now = OffsetDateTime::now_utc();
+
+    // What the node says about itself travels with the traffic it reports.
+    ap_store::PresenceRepo::seen(
+        pool,
+        node_id,
+        "",
+        Some((
+            telemetry.health.engine.as_str(),
+            telemetry.health.site.as_str(),
+            telemetry
+                .health
+                .cert_not_after
+                .as_deref()
+                .and_then(|text| ap_core::time::parse_rfc3339(text).ok()),
+        )),
+        now,
+    )
+    .await
+    .map_err(ApiError::from)?;
+
+    for count in &telemetry.devices {
+        // The same ownership check the traffic gets: a node may only report on
+        // what it serves.
+        if !ap_store::EnrollmentRepo::access_belongs(pool, count.access_id, node_id)
+            .await
+            .map_err(ApiError::from)?
+        {
+            return Err(ApiError::BadRequest("access_not_on_this_node"));
+        }
+        let period = Date::parse(
+            &count.period,
+            &time::format_description::well_known::Iso8601::DATE,
+        )
+        .map_err(|_| ApiError::BadRequest("malformed_day"))?;
+
+        ap_store::PresenceRepo::devices(
+            pool,
+            telemetry.revision,
+            count.access_id,
+            period,
+            count.unique,
+            now,
+        )
+        .await
+        .map_err(ApiError::from)?;
+    }
 
     for delta in &telemetry.deltas {
         // An agent may only report on what it serves. Checked here rather than

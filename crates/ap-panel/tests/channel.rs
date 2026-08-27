@@ -601,3 +601,55 @@ async fn a_node_opens_a_socket_for_what_it_serves_and_no_other() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_node_whose_agent_is_talking_is_no_longer_merely_registered() {
+    let state = state!();
+    let node = open_node(&state).await;
+    assert_eq!(node.state(), ap_core::NodeState::Pending);
+
+    let issued = ap_panel::enrollment::issue(&state, node.id())
+        .await
+        .unwrap();
+    let enrolled =
+        ap_panel::channel::enrol_directly(&state, state.authority(), &issued.code, &csr())
+            .await
+            .unwrap();
+    let der = CertificateDer::pem_slice_iter(enrolled.certificate.as_bytes())
+        .next()
+        .unwrap()
+        .unwrap();
+
+    let (mut ours, theirs) = tokio::io::duplex(64 * 1024);
+    let served = tokio::spawn(ap_panel::channel::converse_over(
+        state.clone(),
+        state.authority_handle(),
+        theirs,
+        Some(der),
+    ));
+
+    let hello = ap_panel::channel::hello_of(node.id());
+    ours.write_all(&ap_proto::encode(&Message::Hello(hello)).unwrap())
+        .await
+        .unwrap();
+    let mut buffer = vec![0u8; 128 * 1024];
+    let _ = ours.read(&mut buffer).await.unwrap();
+    ours.shutdown().await.ok();
+    let _ = served.await;
+
+    let seen = ap_store::NodeRepo::list(ap_panel::channel::pool_of(&state))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|found| found.id() == node.id())
+        .expect("the node");
+
+    // A node that is serving clients must not read the same as one nobody has
+    // installed yet: an operator looking for one that stopped has to be able
+    // to tell them apart.
+    assert_eq!(seen.state(), ap_core::NodeState::Active);
+    assert!(
+        seen.last_seen_at().is_some(),
+        "nothing recorded the contact"
+    );
+}

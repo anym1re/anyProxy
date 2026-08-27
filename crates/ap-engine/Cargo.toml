@@ -24,4 +24,7 @@ tokio = { workspace = true, features = ["io-util", "net", "time"] }
 uuid.workspace = true
 
 [dev-dependencies]
+aes.workspace = true
+ctr.workspace = true
+rand.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }

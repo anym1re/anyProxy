@@ -17,7 +17,7 @@ mod traffic;
 pub use access::AccessRepo;
 pub use admin::{AdminRepo, SessionRepo};
 pub use audit::{AuditEntry, AuditRepo};
-pub use channel::{EnrollmentRepo, PanelIdentity, PanelIdentityRepo};
+pub use channel::{EnrollmentRepo, PanelIdentity, PanelIdentityRepo, PresenceRepo};
 pub use client::ClientRepo;
 pub use error::StoreError;
 pub use node::NodeRepo;
@@ -58,7 +58,21 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0004_channel",
         include_str!("../../../migrations/0004_channel.sql"),
     ),
+    (
+        "0005_node_seen",
+        include_str!("../../../migrations/0005_node_seen.sql"),
+    ),
 ];
+
+/// The migrations this build carries, in the order they apply.
+///
+/// Exposed so a test can check what was applied against what exists, rather
+/// than against a list written out beside it: a list that has to be edited
+/// whenever a migration is added is a list that will eventually be edited
+/// without looking.
+pub fn migration_versions() -> Vec<&'static str> {
+    MIGRATIONS.iter().map(|(version, _)| *version).collect()
+}
 
 /// What the migrator holds while it works. The value is the project's name in
 /// ASCII, so `pg_locks` says who is holding it.

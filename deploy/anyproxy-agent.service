@@ -24,7 +24,10 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
-PrivateUsers=yes
+# PrivateUsers is deliberately absent. It puts the service in a user
+# namespace, and a capability held there does not let a process bind a
+# privileged port in the host's network namespace: the node would answer on
+# nothing. The panel's unit keeps it, because the panel needs no capability.
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

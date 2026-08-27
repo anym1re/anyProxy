@@ -7,12 +7,14 @@ use crate::identity::{self, Paths};
 /// How often the node reads the engine's counters.
 pub const READING_INTERVAL_SECS: u64 = 60;
 
-/// Where a connection that fails to authenticate is sent.
+/// Where a connection that fails to authenticate is sent, on a test host.
 ///
-/// Somebody else's site, and deliberately so: until the front door on 443
-/// serves a site of ours, relaying a probe to our own address would either
-/// loop or answer with nothing, and answering a plausible handshake with
-/// nothing is the loudest thing a node can do.
+/// There is no value that is right everywhere, which is why this is only a
+/// fallback. An alibi works when the site the node imitates is dull and
+/// reachable *in the country the clients are in*; Cloudflare is partly blocked
+/// in Russia, so a node there pretending to be it either stands out or is
+/// caught by the same block. The operator sets this per node, and self-steal
+/// removes the question entirely by making the alibi the node's own site.
 const DEFAULT_MASK_HOST: &str = "www.cloudflare.com";
 
 /// Ports the engine answers on, on loopback and nowhere else.

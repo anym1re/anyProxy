@@ -177,3 +177,75 @@ impl EnrollmentRepo {
         Ok(row.is_some())
     }
 }
+
+/// What a node says about itself while its agent is connected.
+pub struct PresenceRepo;
+
+impl PresenceRepo {
+    /// Records that the agent is talking to the panel, and what it reports.
+    ///
+    /// A node that is serving clients should not read as pending: an operator
+    /// looking for one that stopped has to be able to tell the two apart.
+    pub async fn seen(
+        pool: &PgPool,
+        node_id: Uuid,
+        agent_version: &str,
+        health: Option<(&str, &str, Option<OffsetDateTime>)>,
+        at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        let (engine, site, cert_not_after) = match health {
+            Some((engine, site, expiry)) => (Some(engine), Some(site), expiry),
+            None => (None, None, None),
+        };
+
+        sqlx::query(
+            "update node set last_seen_at = $2, agent_version = $3, \
+             health_engine = coalesce($4, health_engine), \
+             health_site = coalesce($5, health_site), \
+             cert_not_after = coalesce($6, cert_not_after), \
+             state = case when state = 'pending' then 'active' else state end \
+             where id = $1 and state <> 'burned'",
+        )
+        .bind(node_id)
+        .bind(at)
+        .bind(agent_version)
+        .bind(engine)
+        .bind(site)
+        .bind(cert_not_after)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Records how many devices used one access in a period.
+    ///
+    /// A count, applied once per delivery. What it was derived from stays in
+    /// the engine's memory on the node: there is no column here that could
+    /// hold an address.
+    pub async fn devices(
+        pool: &PgPool,
+        revision: Uuid,
+        access_id: Uuid,
+        period: time::Date,
+        devices: i64,
+        at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "insert into device_count (access_id, period, devices, revision, updated_at) \
+             values ($1, $2, $3, $4, $5) \
+             on conflict (access_id, period) do update \
+                set devices = greatest(device_count.devices, excluded.devices), \
+                    revision = excluded.revision, \
+                    updated_at = excluded.updated_at \
+             where device_count.revision <> excluded.revision",
+        )
+        .bind(access_id)
+        .bind(period)
+        .bind(i32::try_from(devices).unwrap_or(i32::MAX))
+        .bind(revision)
+        .bind(at)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+}
