@@ -1,0 +1,58 @@
+[Unit]
+Description=anyProxy panel
+Documentation=https://github.com/anym1re/anyProxy
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/anyproxy-panel serve
+Restart=always
+RestartSec=5s
+
+User=anyproxy-panel
+Group=anyproxy-panel
+DynamicUser=no
+StateDirectory=anyproxy-panel
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/anyproxy-panel
+EnvironmentFile=/etc/anyproxy/panel.env
+
+# The operator interface listens on loopback and holds every secret. It is
+# reached over WireGuard, an mTLS front or an onion service, never by being
+# published; the agent channel is the listener that faces the nodes.
+Environment=ANYPROXY_PANEL_BIND=127.0.0.1:8080
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+
+# AF_UNIX is here and not in the agent's unit: a panel beside its database
+# reaches it over a socket in the filesystem.
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

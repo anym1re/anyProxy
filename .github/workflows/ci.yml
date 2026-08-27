@@ -88,3 +88,11 @@ jobs:
       # script refuses anything else.
       - run: echo "ANYPROXY_TELEMT=$(bash scripts/fetch-telemt.sh)" >> "$GITHUB_ENV"
       - run: cargo test -p ap-engine --locked
+
+  deploy:
+    name: deployment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - run: bash scripts/check-deploy.sh

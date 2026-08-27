@@ -681,7 +681,17 @@ async fn node(command: NodeCommand, context: Context) -> Outcome {
             )
             .await?;
             let code = text(&issued, "code");
-            let fingerprint = text(&issued, "fingerprint");
+            // The panel calls it what it is: the fingerprint of the panel, not
+            // of the node being added.
+            let fingerprint = text(&issued, "panel_fingerprint");
+            if code.is_empty() || fingerprint.is_empty() {
+                // A line telling an operator to pin nothing is worse than no
+                // line at all: it would be run, and the node would trust
+                // whatever answered.
+                return Err(Failure::Execution(
+                    "the panel issued an enrolment without a code or a fingerprint".to_owned(),
+                ));
+            }
             let command = format!(
                 "anyproxy-agent enroll --panel <panel-host>:8443 --code {code} \
                  --fingerprint {fingerprint}"

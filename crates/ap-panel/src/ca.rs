@@ -80,12 +80,16 @@ impl Authority {
     /// Taken over the encoded certificate rather than its PEM wrapper, so the
     /// agent arrives at the same value from what the handshake gives it and
     /// nothing depends on how the text was wrapped.
-    pub fn fingerprint(&self) -> String {
+    ///
+    /// A failure is a failure, not an empty string: a pin nobody can compute
+    /// would be handed to an operator as a pin of nothing, and the agent would
+    /// then have nothing to recognise the panel by.
+    pub fn fingerprint(&self) -> Result<String, ApiError> {
         CertificateDer::pem_slice_iter(self.certificate_pem.as_bytes())
             .next()
             .and_then(Result::ok)
             .map(|der| hex::encode(Sha256::digest(der.as_ref())))
-            .unwrap_or_default()
+            .ok_or(ApiError::Internal("authority_cert"))
     }
 
     /// Issues the chain the panel presents to agents, and its key.
@@ -169,11 +173,11 @@ mod tests {
 
         assert_eq!(
             hex::encode(Sha256::digest(presented[1].as_ref())),
-            authority.fingerprint()
+            authority.fingerprint().unwrap()
         );
         assert_ne!(
             hex::encode(Sha256::digest(presented[0].as_ref())),
-            authority.fingerprint(),
+            authority.fingerprint().unwrap(),
             "the leaf answered to the pin"
         );
     }

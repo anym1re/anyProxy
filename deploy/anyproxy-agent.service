@@ -42,11 +42,12 @@ MemoryDenyWriteExecute=yes
 RemoveIPC=yes
 UMask=0077
 
-# The agent opens outbound connections and reads its own state directory.
-# Nothing it does needs a capability, so it is given none and may not regain
-# any.
-CapabilityBoundingSet=
-AmbientCapabilities=
+# A node answers on 443, which is below the boundary the kernel guards, and the
+# engine the agent starts inherits what the agent holds. One capability is
+# granted for that and nothing else: the alternative is running as root, which
+# would hand every other capability over as well for the sake of one bind.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @obsolete
 SystemCallArchitectures=native

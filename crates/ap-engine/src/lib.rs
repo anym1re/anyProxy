@@ -6,5 +6,6 @@ mod error;
 pub mod health;
 pub mod metrics;
 pub mod pin;
+pub mod reconcile;
 
 pub use error::EngineError;

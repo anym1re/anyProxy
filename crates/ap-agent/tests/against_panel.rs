@@ -67,7 +67,7 @@ async fn panel() -> Option<Panel> {
         .await
         .expect("state");
     let authority = state.authority_handle();
-    let fingerprint = authority.fingerprint();
+    let fingerprint = authority.fingerprint().unwrap();
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await

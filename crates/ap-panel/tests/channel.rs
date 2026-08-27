@@ -557,3 +557,47 @@ async fn a_stealth_node_is_told_to_listen_on_443_alone() {
     assert_eq!(config.listeners[0].method, "faketls");
     let _ = StealthMethod::FakeTls;
 }
+
+#[tokio::test]
+async fn a_node_opens_a_socket_for_what_it_serves_and_no_other() {
+    let state = state!();
+    let node = open_node(&state).await;
+    let client = a_client(&state).await;
+
+    // Nothing granted yet: nothing to listen on.
+    let empty = ap_panel::channel::configuration_for(&state, node.id())
+        .await
+        .unwrap();
+    assert!(
+        empty.listeners.is_empty(),
+        "a node with nothing to serve opened {:?}",
+        empty.listeners
+    );
+
+    let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
+    let access = AnyAccess::Open(Access::<ap_core::Open>::new(common, OpenMethod::Mtproto));
+    ap_store::AccessRepo::insert(
+        ap_panel::channel::pool_of(&state),
+        &access,
+        &Credential::generate_secret(),
+        &key(),
+    )
+    .await
+    .unwrap();
+
+    let config = ap_panel::channel::configuration_for(&state, node.id())
+        .await
+        .unwrap();
+    let methods: Vec<&str> = config
+        .listeners
+        .iter()
+        .map(|listener| listener.method.as_str())
+        .collect();
+    assert_eq!(methods, vec!["mtproto"], "{:?}", config.listeners);
+    for unwanted in ["socks5", "http"] {
+        assert!(
+            !methods.contains(&unwanted),
+            "{unwanted} was opened with nothing behind it"
+        );
+    }
+}

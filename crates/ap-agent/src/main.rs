@@ -103,12 +103,25 @@ async fn serve(paths: &Paths, panel: &str) -> Result<(), AgentError> {
     let settings = engine::settings(paths)?;
     let control = Control::new(settings.api_port, settings.api_token.clone());
     let metrics_port = settings.metrics_port;
+    // The engine is started when the first configuration arrives: before that
+    // there is nothing for it to serve, and a node with nothing to serve is a
+    // node that should not be listening.
+    let mut engine_process: Option<std::process::Child> = None;
 
     let mut applied_revision = None;
     let mut attempt = 0u32;
     let mut meter = Meter::new();
 
     loop {
+        if let Some(child) = engine_process.as_mut()
+            && matches!(child.try_wait(), Ok(Some(_)))
+        {
+            // It stopped on its own. The next configuration starts it again;
+            // until then the cover site is what answers.
+            eprintln!("the engine stopped");
+            engine_process = None;
+        }
+
         match once(
             paths,
             panel,
@@ -118,6 +131,8 @@ async fn serve(paths: &Paths, panel: &str) -> Result<(), AgentError> {
             &control,
             metrics_port,
             &mut meter,
+            &settings,
+            &mut engine_process,
         )
         .await
         {
@@ -145,6 +160,8 @@ async fn once(
     control: &Control,
     metrics_port: u16,
     meter: &mut Meter,
+    settings: &ap_engine::config::Settings,
+    engine_process: &mut Option<std::process::Child>,
 ) -> Result<Option<uuid::Uuid>, AgentError> {
     let mut channel = link::connect(panel, fingerprint, Some(identity)).await?;
     let mut state = session::open(
@@ -157,6 +174,16 @@ async fn once(
     .await?;
     report(&state.posture);
 
+    if let ap_agent::posture::Posture::Serving(running) = &state.posture {
+        match engine_process {
+            Some(_) => settle(paths, settings, control, running).await,
+            None => match engine::start(paths, settings, running) {
+                Ok(child) => *engine_process = Some(child),
+                Err(reason) => eprintln!("the engine did not start: {reason}"),
+            },
+        }
+    }
+
     // Whichever comes first: the panel says something, or it is time to read
     // the counters again.
     let heartbeat = Duration::from_secs(
@@ -168,8 +195,14 @@ async fn once(
 
         match received {
             Ok(Ok(Some(Message::Config(config)))) => {
+                let revision = config.revision;
                 session::apply(&mut channel, &mut state, paths, config, now).await?;
                 report(&state.posture);
+                if state.applied_revision == Some(revision)
+                    && let ap_agent::posture::Posture::Serving(running) = &state.posture
+                {
+                    settle(paths, settings, control, running).await;
+                }
             }
             Ok(Ok(Some(_))) => {}
             Ok(Ok(None)) => return Ok(state.applied_revision),
@@ -229,6 +262,43 @@ async fn state_of_health(control: &Control, posture: &Posture) -> ap_proto::Heal
             site: "unknown".to_owned(),
             cert_not_after: None,
         })
+}
+
+/// Brings the engine to what the panel just sent.
+///
+/// The configuration file is rewritten and the users are reconciled through
+/// the control API, which the engine applies without restarting. Withdrawals
+/// go first, so a revoked access stops working before anything is added.
+async fn settle(
+    paths: &Paths,
+    settings: &ap_engine::config::Settings,
+    control: &Control,
+    config: &ap_proto::Config,
+) {
+    if let Err(reason) = engine::write_config(paths, settings, config) {
+        eprintln!("engine configuration: {reason}");
+        return;
+    }
+
+    let present = match control.present().await {
+        Ok(present) => present,
+        Err(reason) => {
+            eprintln!("engine users: {reason}");
+            return;
+        }
+    };
+    let steps = match ap_engine::reconcile::plan(&config.accesses, &present) {
+        Ok(steps) => steps,
+        Err(reason) => {
+            eprintln!("engine plan: {reason}");
+            return;
+        }
+    };
+    for step in &steps {
+        if let Err(reason) = control.take(step).await {
+            eprintln!("engine step: {reason}");
+        }
+    }
 }
 
 fn report(posture: &Posture) {

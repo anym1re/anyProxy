@@ -138,6 +138,45 @@ impl Control {
             .data()
     }
 
+    /// The users, as the reconciler reads them.
+    pub async fn present(&self) -> Result<Vec<crate::reconcile::Present>, EngineError> {
+        let listed = self.users().await?;
+        Ok(listed
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|user| {
+                Some(crate::reconcile::Present {
+                    username: user.get("username")?.as_str()?.to_owned(),
+                    enabled: user.get("enabled").and_then(|flag| flag.as_bool()) != Some(false),
+                })
+            })
+            .collect())
+    }
+
+    /// Carries out one step of a plan.
+    pub async fn take(&self, step: &crate::reconcile::Step) -> Result<(), EngineError> {
+        use crate::reconcile::Step;
+
+        let reply = match step {
+            Step::Create {
+                username,
+                secret_hex,
+            } => self.create_user(username, secret_hex).await?,
+            Step::Disable { username } => self.disable_user(username).await?,
+            Step::Enable { username } => self.enable_user(username).await?,
+            Step::Remove { username } => self.delete_user(username).await?,
+        };
+        if (200..300).contains(&reply.status) {
+            Ok(())
+        } else {
+            Err(EngineError::Control(format!(
+                "{} refused: {}",
+                reply.status, reply.body
+            )))
+        }
+    }
+
     /// Adds a user.
     pub async fn create_user(
         &self,

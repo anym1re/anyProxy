@@ -41,7 +41,7 @@ pub async fn issue(state: &AppState, node_id: Uuid) -> Result<Issued, ApiError> 
 
     Ok(Issued {
         code,
-        fingerprint: state.authority().fingerprint(),
+        fingerprint: state.authority().fingerprint()?,
         expires_at: ap_core::time::format_rfc3339(expires_at)?,
     })
 }

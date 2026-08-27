@@ -277,7 +277,7 @@ async fn build_config(state: &AppState, node_id: Uuid) -> Result<Config, ApiErro
                 .domain()
                 .map(|domain| domain.as_str().to_owned()),
         },
-        listeners: listeners_for(node.kind().tag()),
+        listeners: listeners_for(node.kind().tag(), &accesses),
         accesses,
         policy: Policy {
             log_level: "minimal".to_owned(),
@@ -286,27 +286,55 @@ async fn build_config(state: &AppState, node_id: Uuid) -> Result<Config, ApiErro
     })
 }
 
-fn listeners_for(kind: NodeKindTag) -> Vec<Listener> {
-    match kind {
-        NodeKindTag::Stealth => vec![Listener {
+/// The sockets a node opens.
+///
+/// The two kinds are not alike here. On a stealth node 443 is the disguise:
+/// it answers as an ordinary website whether or not anything is served behind
+/// it, and a closed 443 on a host with a domain and a certificate is itself
+/// the thing a probe is looking for. On an open node a socket is only a
+/// service, so one with nothing behind it is a port that answers for no
+/// reason — a node with one MTProto access has no business holding SOCKS5 and
+/// HTTP open as well.
+fn listeners_for(kind: NodeKindTag, accesses: &[WireAccess]) -> Vec<Listener> {
+    let mut listeners: Vec<Listener> = Vec::new();
+
+    if kind == NodeKindTag::Stealth {
+        listeners.push(Listener {
             method: "faketls".to_owned(),
             bind: "0.0.0.0:443".to_owned(),
-        }],
-        NodeKindTag::Open => vec![
-            Listener {
-                method: "mtproto".to_owned(),
-                bind: "0.0.0.0:8443".to_owned(),
-            },
-            Listener {
-                method: "socks5".to_owned(),
-                bind: "0.0.0.0:1080".to_owned(),
-            },
-            Listener {
-                method: "http".to_owned(),
-                bind: "0.0.0.0:3128".to_owned(),
-            },
-        ],
+        });
     }
+
+    for access in accesses {
+        let Some(bind) = bind_for(kind, &access.method) else {
+            continue;
+        };
+        let method = match kind {
+            // Everything a stealth node serves arrives on one socket behind
+            // the same masquerade.
+            NodeKindTag::Stealth => "faketls",
+            NodeKindTag::Open => access.method.as_str(),
+        };
+        if !listeners.iter().any(|listener| listener.bind == bind) {
+            listeners.push(Listener {
+                method: method.to_owned(),
+                bind,
+            });
+        }
+    }
+    listeners
+}
+
+/// Where one method is served on a node of this kind, if it is served at all.
+fn bind_for(kind: NodeKindTag, method: &str) -> Option<String> {
+    let port = match (kind, method) {
+        (NodeKindTag::Stealth, "faketls" | "web") => 443,
+        (NodeKindTag::Open, "mtproto") => 8443,
+        (NodeKindTag::Open, "socks5") => 1080,
+        (NodeKindTag::Open, "http") => 3128,
+        _ => return None,
+    };
+    Some(format!("0.0.0.0:{port}"))
 }
 
 fn wire_access(access: &AnyAccess, credential: &Credential) -> WireAccess {

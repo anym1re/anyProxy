@@ -1,0 +1,49 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  # Signing without a key we have to keep: the certificate is issued to this
+  # workflow on this tag, and that is what the installer checks against.
+  id-token: write
+
+jobs:
+  build:
+    name: build and sign
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            name: x86_64-linux-musl
+          - target: aarch64-unknown-linux-musl
+            name: aarch64-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo install cross --locked --version 0.2.5
+      - run: cross build --release --locked --target ${{ matrix.target }} -p ap-agent -p ap-panel -p ap-cli
+
+      - name: name the artefacts
+        run: |
+          mkdir -p out
+          cp target/${{ matrix.target }}/release/anyproxy-agent out/anyproxy-agent-${{ matrix.name }}
+          cp target/${{ matrix.target }}/release/anyproxy-panel out/anyproxy-panel-${{ matrix.name }}
+          cp target/${{ matrix.target }}/release/anyproxy out/anyproxy-${{ matrix.name }}
+          cd out && sha256sum * > SHA256SUMS-${{ matrix.name }}
+
+      - uses: sigstore/cosign-installer@v3
+      - name: sign each artefact
+        run: |
+          for file in out/anyproxy-*-${{ matrix.name }} out/SHA256SUMS-${{ matrix.name }}; do
+            cosign sign-blob --yes --bundle "${file}.bundle" "${file}"
+          done
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          fail_on_unmatched_files: true

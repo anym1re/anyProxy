@@ -37,6 +37,51 @@ pub fn settings(paths: &Paths) -> Result<Settings, AgentError> {
     })
 }
 
+/// Where the engine binary is, unless told otherwise.
+fn engine_binary() -> std::path::PathBuf {
+    std::env::var("ANYPROXY_TELEMT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/telemt"))
+}
+
+/// Where the configuration the engine reads is written.
+pub fn config_path(paths: &Paths) -> std::path::PathBuf {
+    paths.dir.join("telemt.toml")
+}
+
+/// Writes the configuration and starts the engine on it.
+///
+/// The file is written before the process exists, so there is no moment where
+/// the engine is running on something older than what the panel just sent.
+pub fn start(
+    paths: &Paths,
+    settings: &Settings,
+    config: &ap_proto::Config,
+) -> Result<std::process::Child, AgentError> {
+    write_config(paths, settings, config)?;
+    std::fs::create_dir_all(&settings.data_path)
+        .map_err(|error| AgentError::file(&settings.data_path, error))?;
+
+    let binary = engine_binary();
+    std::process::Command::new(&binary)
+        .arg("run")
+        .arg(config_path(paths))
+        .arg("--silent")
+        .spawn()
+        .map_err(|error| AgentError::file(binary.display(), error))
+}
+
+/// Writes what the engine reads, without touching the running one.
+pub fn write_config(
+    paths: &Paths,
+    settings: &Settings,
+    config: &ap_proto::Config,
+) -> Result<(), AgentError> {
+    let rendered = ap_engine::config::render(config, settings)
+        .map_err(|error| AgentError::Refused(error.to_string()))?;
+    identity::write_owner_only(&config_path(paths), rendered.as_bytes())
+}
+
 /// Thirty-two bytes of randomness, as hexadecimal.
 fn fresh_token() -> String {
     let mut bytes = [0u8; 32];

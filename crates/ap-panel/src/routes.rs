@@ -24,8 +24,8 @@ const SESSION_HOURS: i64 = 12;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/v1/healthz", get(healthz))
-        .route("/v1/readyz", get(readyz))
+        .route("/v1/health", get(health))
+        .route("/v1/ready", get(ready))
         .route("/v1/session", post(sign_in).get(whoami))
         .route("/v1/session", delete(sign_out))
         .route("/v1/clients", get(list_clients).post(create_client))
@@ -163,11 +163,11 @@ async fn sign_out(State(state): State<AppState>, actor: Actor) -> Result<StatusC
 
 // ── health ───────────────────────────────────────────────────────────────
 
-async fn healthz() -> StatusCode {
+async fn health() -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
-async fn readyz(State(state): State<AppState>) -> Result<StatusCode, ApiError> {
+async fn ready(State(state): State<AppState>) -> Result<StatusCode, ApiError> {
     ap_store::AdminRepo::count(state.pool()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
