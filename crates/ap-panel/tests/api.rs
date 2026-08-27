@@ -469,3 +469,63 @@ async fn an_account_is_offered_on_the_port_its_method_is_served_on() {
         assert!(answer["link"].is_null(), "{method} has no link form");
     }
 }
+
+#[tokio::test]
+async fn two_accesses_of_one_client_do_not_share_a_name() {
+    let panel = panel!();
+    let (_, boss) = admin(&panel, Role::Superadmin).await;
+
+    let node = call(
+        &panel.router,
+        "POST",
+        "/v1/nodes",
+        Some(&boss),
+        Some(serde_json::json!({ "label": unique("n"), "kind": "open" })),
+    )
+    .await;
+    let node_id = node.json()["id"].as_str().unwrap().to_owned();
+
+    let client = call(
+        &panel.router,
+        "POST",
+        "/v1/clients",
+        Some(&boss),
+        Some(serde_json::json!({ "label": unique("c") })),
+    )
+    .await;
+    let client_id = client.json()["id"].as_str().unwrap().to_owned();
+
+    // One client, two accesses. This is the case that was wrong.
+    let mut names = Vec::new();
+    for method in ["socks5", "http"] {
+        let created = call(
+            &panel.router,
+            "POST",
+            "/v1/accesses",
+            Some(&boss),
+            Some(serde_json::json!({
+                "client_id": client_id, "node_id": node_id, "method": method
+            })),
+        )
+        .await;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+        let access_id = created.json()["id"].as_str().unwrap().to_owned();
+
+        let reply = call(
+            &panel.router,
+            "POST",
+            &format!("/v1/accesses/{access_id}/link"),
+            Some(&boss),
+            Some(serde_json::json!({ "host": "203.0.113.7", "acknowledged": true })),
+        )
+        .await;
+        let user = reply.json()["user"].as_str().unwrap_or_default().to_owned();
+        assert!(!user.is_empty(), "{method}: {}", reply.body);
+        names.push(user);
+    }
+
+    // A node keys its accounts by name. Two accesses sharing one would leave
+    // it serving whichever it stored last and charging the traffic to that
+    // one, whoever actually used it.
+    assert_ne!(names[0], names[1], "two accesses were given the same name");
+}

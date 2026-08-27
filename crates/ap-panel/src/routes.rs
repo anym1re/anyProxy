@@ -371,7 +371,11 @@ async fn create_access(
 
     let credential = match &access {
         AnyAccess::Open(open) if !matches!(open.method(), OpenMethod::Mtproto) => {
-            Credential::generate_login(access.common().client_id().simple().to_string())?
+            // Named by the access, not by the client that holds it. A client
+            // with two accesses would otherwise have one name for both, and a
+            // node keyed by name would serve whichever it stored last while
+            // charging the traffic to whichever it happened to keep.
+            Credential::generate_login(access.common().id().simple().to_string())?
         }
         _ => Credential::generate_secret(),
     };
