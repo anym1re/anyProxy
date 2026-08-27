@@ -28,7 +28,7 @@ where
     C: AsyncRead + AsyncWrite + Unpin,
 {
     let mut addressed = (first.host.clone(), first.port);
-    let mut upstream = TcpStream::connect((addressed.0.as_str(), addressed.1)).await?;
+    let mut upstream = reach(&addressed).await?;
     let mut request = Some(first);
 
     loop {
@@ -48,7 +48,7 @@ where
         // reconnects rarely.
         if (asking.host.clone(), asking.port) != addressed {
             addressed = (asking.host.clone(), asking.port);
-            upstream = TcpStream::connect((addressed.0.as_str(), addressed.1)).await?;
+            upstream = reach(&addressed).await?;
         }
 
         upstream.write_all(&asking.head).await?;
@@ -72,6 +72,13 @@ where
             return Ok(());
         }
     }
+}
+
+/// Opens a connection that does not wait to be acknowledged before sending.
+async fn reach(addressed: &(String, u16)) -> Result<TcpStream, InboundError> {
+    let upstream = TcpStream::connect((addressed.0.as_str(), addressed.1)).await?;
+    let _ = upstream.set_nodelay(true);
+    Ok(upstream)
 }
 
 /// Whether a head asks for the connection to end after this message.

@@ -28,6 +28,11 @@ pub async fn serve(
         let Ok((stream, peer)) = listener.accept().await else {
             continue;
         };
+        // Small writes are what this carries: a request head, then its body,
+        // then an answer. Waiting for the previous one to be acknowledged
+        // before sending the next adds a delayed acknowledgement to every
+        // exchange, which is tens of milliseconds a client can feel.
+        let _ = stream.set_nodelay(true);
         let registry = Arc::clone(&registry);
         tokio::spawn(async move {
             // No deadline on the whole conversation: a proxy connection lasts
@@ -72,6 +77,7 @@ async fn converse(
 
     let mut upstream = match upstream {
         Ok(upstream) => {
+            let _ = upstream.set_nodelay(true);
             match method {
                 Method::Socks5 => socks5::answer_request(&mut stream, 0).await?,
                 Method::Http => http::answer_established(&mut stream).await?,
