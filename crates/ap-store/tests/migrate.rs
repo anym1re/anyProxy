@@ -186,3 +186,35 @@ async fn the_lock_is_released_when_the_migrator_is_done() {
     drop(pool);
     fresh.drop_it().await;
 }
+
+#[test]
+fn every_migration_on_disk_is_one_this_build_carries() {
+    // The list is written out by hand, so a migration can be added to the
+    // directory and never registered. Nothing then applies it, and the failure
+    // arrives later as a query against a column that does not exist.
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("migrations");
+
+    let mut on_disk: Vec<String> = std::fs::read_dir(&directory)
+        .expect("migrations")
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".sql").map(str::to_owned)
+        })
+        .collect();
+    on_disk.sort();
+
+    let mut carried: Vec<String> = ap_store::migration_versions()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    carried.sort();
+
+    assert_eq!(
+        on_disk, carried,
+        "a migration exists that no build applies, or the other way round"
+    );
+}

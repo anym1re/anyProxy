@@ -655,3 +655,78 @@ async fn a_node_refused_by_the_panel_is_told_why() {
         "the reason does not name what was wrong: {reason}"
     );
 }
+
+#[tokio::test]
+async fn a_delivery_counts_every_access_it_carries() {
+    // The revision names the delivery, not the delta. When only the revision
+    // was remembered, the first delta claimed it and the rest of the same
+    // delivery were taken for repeats: a node serving three accesses counted
+    // one of them, quietly, and every quota it fed was wrong.
+    let panel = panel!();
+    let node_id = a_node(&panel).await;
+    let code = a_code(&panel, node_id).await;
+    let paths = agent_dir("every-delta");
+    let first = an_access_on(&panel, node_id).await;
+    let second = an_access_on(&panel, node_id).await;
+
+    let mut channel = link::connect(&panel.address, &panel.fingerprint, None)
+        .await
+        .unwrap();
+    let identity = session::enrol(&mut channel, &code).await.unwrap();
+    drop(channel);
+
+    let mut channel = link::connect(&panel.address, &panel.fingerprint, Some(&identity))
+        .await
+        .unwrap();
+    let now = OffsetDateTime::now_utc();
+    session::open(&mut channel, identity.node_id, &paths, None, now)
+        .await
+        .unwrap();
+
+    let mut before = a_reading(first, 0, 0);
+    before
+        .by_access
+        .insert(second, ap_engine::metrics::Counters::default());
+    let mut after = a_reading(first, 4096, 1024);
+    after.by_access.insert(
+        second,
+        ap_engine::metrics::Counters {
+            bytes_in: 8192,
+            bytes_out: 2048,
+            ..Default::default()
+        },
+    );
+
+    let mut meter = Meter::new();
+    meter.observe(&before, now).unwrap();
+    meter.observe(&after, now).unwrap();
+    let delivery = meter
+        .delivery(
+            ap_proto::Health {
+                engine: "up".to_owned(),
+                site: "unknown".to_owned(),
+                cert_not_after: None,
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(delivery.deltas.len(), 2, "the meter owes both accesses");
+
+    assert!(
+        session::deliver(&mut channel, &mut meter, delivery)
+            .await
+            .unwrap()
+    );
+
+    let pool = ap_panel::channel::pool_of(&panel.state);
+    for (access, bytes_in, bytes_out) in [(first, 4096, 1024), (second, 8192, 2048)] {
+        let held = ap_store::TrafficRepo::for_access(pool, access)
+            .await
+            .unwrap();
+        assert_eq!(
+            (held.bytes_in, held.bytes_out),
+            (bytes_in, bytes_out),
+            "the panel dropped a delta the delivery carried"
+        );
+    }
+}

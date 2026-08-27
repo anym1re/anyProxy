@@ -62,6 +62,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0005_node_seen",
         include_str!("../../../migrations/0005_node_seen.sql"),
     ),
+    (
+        "0006_traffic_delta_per_access",
+        include_str!("../../../migrations/0006_traffic_delta_per_access.sql"),
+    ),
 ];
 
 /// The migrations this build carries, in the order they apply.

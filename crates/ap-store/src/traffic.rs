@@ -27,9 +27,13 @@ pub struct TrafficRepo;
 impl TrafficRepo {
     /// Adds a delta to a day, once.
     ///
-    /// An agent may resend a delta after a lost acknowledgement, so the
-    /// revision is recorded first and the counter moves only if that insert
-    /// was the first. Returns whether the delta was applied.
+    /// An agent may resend a delta after a lost acknowledgement, so what was
+    /// applied is recorded first and the counter moves only if that insert was
+    /// the first. Returns whether the delta was applied.
+    ///
+    /// What is remembered is the delta and not the delivery: one delivery
+    /// carries a delta for every access the node serves, and remembering only
+    /// the revision let the first of them stand for all the rest.
     pub async fn apply_delta(
         pool: &PgPool,
         revision: Uuid,
@@ -43,7 +47,8 @@ impl TrafficRepo {
 
         let claimed = sqlx::query(
             "insert into traffic_delta (revision, access_id, day, applied_at) \
-             values ($1, $2, $3, $4) on conflict (revision) do nothing",
+             values ($1, $2, $3, $4) \
+             on conflict (revision, access_id, day) do nothing",
         )
         .bind(revision)
         .bind(access_id)
