@@ -51,23 +51,20 @@ async fn converse(
     method: Method,
     registry: Arc<Registry>,
 ) -> Result<(), InboundError> {
-    let (access, host, port) = match method {
+    let opening = match method {
         Method::Socks5 => open_socks5(&mut stream, peer, &registry).await?,
         Method::Http => open_http(&mut stream, peer, &registry).await?,
     };
 
-    let upstream = tokio::time::timeout(REACH_TIMEOUT, TcpStream::connect((host.as_str(), port)))
-        .await
-        .map_err(|_| InboundError::Protocol("upstream"))?;
+    let upstream = tokio::time::timeout(
+        REACH_TIMEOUT,
+        TcpStream::connect((opening.host.as_str(), opening.port)),
+    )
+    .await
+    .map_err(|_| InboundError::Protocol("upstream"))?;
 
     let mut upstream = match upstream {
-        Ok(upstream) => {
-            match method {
-                Method::Socks5 => socks5::answer_request(&mut stream, 0).await?,
-                Method::Http => http::answer_established(&mut stream).await?,
-            }
-            upstream
-        }
+        Ok(upstream) => upstream,
         Err(_) => {
             match method {
                 // Five is "connection refused" in the protocol's own words.
@@ -78,7 +75,34 @@ async fn converse(
         }
     };
 
-    relay(&mut stream, &mut upstream, access, &registry).await
+    match opening.passed {
+        // A request being passed on: the server's own answer is what the
+        // client is waiting for, so nothing is said to it here.
+        Some(head) => {
+            use tokio::io::AsyncWriteExt as _;
+            upstream.write_all(&head).await?;
+            registry.used(opening.access, 0, head.len() as i64);
+        }
+        None => match method {
+            Method::Socks5 => socks5::answer_request(&mut stream, 0).await?,
+            Method::Http => http::answer_established(&mut stream).await?,
+        },
+    }
+
+    relay(&mut stream, &mut upstream, opening.access, &registry).await
+}
+
+/// Where a client wants to go, once it has been let in.
+struct Opening {
+    /// Which access it came in on.
+    access: Uuid,
+    /// Where it wants to go.
+    host: String,
+    /// The port it wants.
+    port: u16,
+    /// A request to hand the server first, when the client asked for one to be
+    /// passed on rather than for a tunnel.
+    passed: Option<Vec<u8>>,
 }
 
 /// The SOCKS5 opening, up to knowing where the client wants to go.
@@ -86,7 +110,7 @@ async fn open_socks5<S>(
     stream: &mut S,
     peer: SocketAddr,
     registry: &Registry,
-) -> Result<(Uuid, String, u16), InboundError>
+) -> Result<Opening, InboundError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -105,7 +129,12 @@ where
     let request = tokio::time::timeout(GREETING_TIMEOUT, socks5::request(stream))
         .await
         .map_err(|_| InboundError::Protocol("socks5"))??;
-    Ok((access, request.host, request.port))
+    Ok(Opening {
+        access,
+        host: request.host,
+        port: request.port,
+        passed: None,
+    })
 }
 
 /// The HTTP opening, up to knowing where the client wants to go.
@@ -113,21 +142,36 @@ async fn open_http<S>(
     stream: &mut S,
     peer: SocketAddr,
     registry: &Registry,
-) -> Result<(Uuid, String, u16), InboundError>
+) -> Result<Opening, InboundError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let connect = tokio::time::timeout(GREETING_TIMEOUT, http::read_connect(stream))
+    let asked = tokio::time::timeout(GREETING_TIMEOUT, http::read_request(stream))
         .await
         .map_err(|_| InboundError::Protocol("http"))??;
 
-    let Some((user, pass)) = connect.credentials else {
+    let (host, port, credentials, passed) = match asked {
+        http::Asked::Tunnel(connect) => (connect.host, connect.port, connect.credentials, None),
+        http::Asked::Forward(forward) => (
+            forward.host,
+            forward.port,
+            forward.credentials,
+            Some(forward.head),
+        ),
+    };
+
+    let Some((user, pass)) = credentials else {
         http::answer_unauthorised(stream).await?;
         return Err(InboundError::Refused);
     };
 
     match registry.admit(Method::Http, &user, &pass, peer.ip()) {
-        Ok(access) => Ok((access, connect.host, connect.port)),
+        Ok(access) => Ok(Opening {
+            access,
+            host,
+            port,
+            passed,
+        }),
         Err(refusal) => {
             http::answer_unauthorised(stream).await?;
             Err(refusal)

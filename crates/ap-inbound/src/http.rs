@@ -16,14 +16,120 @@ pub struct Connect {
     pub credentials: Option<(String, String)>,
 }
 
-/// Reads a CONNECT request.
+/// One request addressed to somewhere else, to be passed on unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Forward {
+    /// Where it is addressed.
+    pub host: String,
+    /// The port it is addressed to.
+    pub port: u16,
+    /// The name and password it offered, if it offered any.
+    pub credentials: Option<(String, String)>,
+    /// The request as the server it is addressed to should receive it.
+    pub head: Vec<u8>,
+}
+
+/// What the client asked this listener to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asked {
+    /// Open a tunnel and stay out of it.
+    Tunnel(Connect),
+    /// Pass one request on to where it is addressed.
+    Forward(Forward),
+}
+
+/// Reads what the client is asking for.
 ///
-/// Only CONNECT. Anything else would make this an ordinary forward proxy,
-/// which means reading and rewriting what people send in the clear — a thing
-/// this node has no business being able to do.
-pub async fn read_connect<S>(stream: &mut S) -> Result<Connect, InboundError>
+/// Two shapes, because clients use both. `CONNECT` opens a tunnel and the node
+/// never sees inside it. A request naming a whole `http://` address asks the
+/// node to pass it on, which is what Telegram does over an HTTP proxy: it
+/// posts to a data centre rather than tunnelling to one. A listener that knew
+/// only `CONNECT` refused every Telegram client that ever tried it.
+///
+/// Passing on is passing on. The request line loses the part naming this
+/// proxy, the headers that concern this hop are dropped, and nothing else is
+/// touched. `https://` is not accepted: passing that on would mean standing in
+/// for the other end, which is not a thing this node should be able to do.
+pub async fn read_request<S>(stream: &mut S) -> Result<Asked, InboundError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
+{
+    let head = read_head(stream).await?;
+    let text = String::from_utf8_lossy(&head);
+    let request = text.split("\r\n").next().unwrap_or_default();
+    let credentials = credentials_in(text.split("\r\n").skip(1));
+
+    let mut parts = request.split_whitespace();
+    let verb = parts.next().unwrap_or_default();
+    let target = parts.next().ok_or(InboundError::Protocol("http"))?;
+    let version = parts.next().unwrap_or("HTTP/1.1");
+
+    if verb.eq_ignore_ascii_case("CONNECT") {
+        let (host, port) = split_authority(target, None)?;
+        return Ok(Asked::Tunnel(Connect {
+            host,
+            port,
+            credentials,
+        }));
+    }
+
+    let Some(rest) = strip_scheme(target) else {
+        // Answered rather than dropped. A silent close is what a broken
+        // network looks like, and someone who points a browser at this port to
+        // see whether it is alive learns nothing from it — which is how an
+        // afternoon goes into a listener that was working the whole time.
+        answer_only_connect(stream).await?;
+        return Err(InboundError::Protocol("http"));
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(at) => (&rest[..at], &rest[at..]),
+        None => (rest, "/"),
+    };
+    let (host, port) = split_authority(authority, Some(80))?;
+
+    let mut passed = Vec::with_capacity(head.len());
+    passed.extend_from_slice(format!("{verb} {path} {version}\r\n").as_bytes());
+    let mut said_host = false;
+    for line in text.split("\r\n").skip(1) {
+        if line.is_empty() {
+            break;
+        }
+        let Some((name, _)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        // What concerns this hop stops at this hop.
+        if name.eq_ignore_ascii_case("proxy-authorization")
+            || name.eq_ignore_ascii_case("proxy-connection")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("keep-alive")
+        {
+            continue;
+        }
+        said_host |= name.eq_ignore_ascii_case("host");
+        passed.extend_from_slice(line.as_bytes());
+        passed.extend_from_slice(b"\r\n");
+    }
+    if !said_host {
+        passed.extend_from_slice(format!("Host: {authority}\r\n").as_bytes());
+    }
+    // One request to a connection. Keeping it alive would mean parsing every
+    // request that followed, and one that was not parsed would reach the
+    // server still naming this proxy.
+    passed.extend_from_slice(b"Connection: close\r\n\r\n");
+
+    Ok(Asked::Forward(Forward {
+        host,
+        port,
+        credentials,
+        head: passed,
+    }))
+}
+
+/// Reads up to the blank line that ends a request head.
+async fn read_head<S>(stream: &mut S) -> Result<Vec<u8>, InboundError>
+where
+    S: AsyncRead + Unpin,
 {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
@@ -37,32 +143,35 @@ where
         }
         head.push(byte[0]);
     }
+    Ok(head)
+}
 
-    let text = String::from_utf8_lossy(&head);
-    let mut lines = text.split("\r\n");
-    let request = lines.next().unwrap_or_default();
-    let mut parts = request.split_whitespace();
-    if !parts
-        .next()
-        .is_some_and(|verb| verb.eq_ignore_ascii_case("CONNECT"))
-    {
-        // Answered rather than dropped. A silent close is what a broken
-        // network looks like, and someone who points a browser at this port to
-        // see whether it is alive learns nothing from it — which is how an
-        // afternoon goes into a listener that was working the whole time.
-        answer_only_connect(stream).await?;
-        return Err(InboundError::Protocol("http"));
-    }
-    let target = parts.next().ok_or(InboundError::Protocol("http"))?;
-    let (host, port) = target
-        .rsplit_once(':')
-        .ok_or(InboundError::Protocol("http"))?;
-    let port: u16 = port.parse().map_err(|_| InboundError::Protocol("http"))?;
+/// What follows `http://`, and nothing else.
+fn strip_scheme(target: &str) -> Option<&str> {
+    target
+        .to_ascii_lowercase()
+        .starts_with("http://")
+        .then(|| &target[7..])
+}
+
+/// Host and port, with a default when the port is left out.
+fn split_authority(authority: &str, default: Option<u16>) -> Result<(String, u16), InboundError> {
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (
+            host,
+            port.parse().map_err(|_| InboundError::Protocol("http"))?,
+        ),
+        None => (authority, default.ok_or(InboundError::Protocol("http"))?),
+    };
     if host.is_empty() {
         return Err(InboundError::Protocol("http"));
     }
+    Ok((host.to_owned(), port))
+}
 
-    let mut credentials = None;
+/// The name and password a request offered, if it offered any.
+fn credentials_in<'a>(lines: impl Iterator<Item = &'a str>) -> Option<(String, String)> {
+    let mut found = None;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
@@ -82,15 +191,10 @@ where
         };
         let decoded = String::from_utf8_lossy(&decoded).into_owned();
         if let Some((user, pass)) = decoded.split_once(':') {
-            credentials = Some((user.to_owned(), pass.to_owned()));
+            found = Some((user.to_owned(), pass.to_owned()));
         }
     }
-
-    Ok(Connect {
-        host: host.to_owned(),
-        port,
-        credentials,
-    })
+    found
 }
 
 /// Tells the client the tunnel is open.
@@ -198,13 +302,27 @@ fn from_base64(text: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
-    async fn read_from(request: &str) -> Result<Connect, InboundError> {
+    async fn asked_for(request: &str) -> Result<Asked, InboundError> {
         let (mut client, mut server) = tokio::io::duplex(16 * 1024);
         let bytes = request.to_owned();
         tokio::spawn(async move {
             let _ = client.write_all(bytes.as_bytes()).await;
         });
-        read_connect(&mut server).await
+        read_request(&mut server).await
+    }
+
+    async fn read_from(request: &str) -> Result<Connect, InboundError> {
+        match asked_for(request).await? {
+            Asked::Tunnel(connect) => Ok(connect),
+            Asked::Forward(_) => Err(InboundError::Protocol("http")),
+        }
+    }
+
+    async fn passed_on(request: &str) -> Forward {
+        match asked_for(request).await {
+            Ok(Asked::Forward(forward)) => forward,
+            other => panic!("not passed on: {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -233,13 +351,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_verb_other_than_connect_is_refused() {
+    async fn a_request_naming_no_full_address_is_refused() {
+        // A request in origin form is addressed to whoever it reached, which
+        // for a proxy is nobody. Only a whole address says where to pass it.
         for request in [
-            "GET http://ya.ru/ HTTP/1.1\r\n\r\n",
-            "POST http://ya.ru/ HTTP/1.1\r\n\r\n",
+            "GET / HTTP/1.1\r\nHost: ya.ru\r\n\r\n",
+            "POST /api HTTP/1.1\r\nHost: ya.ru\r\n\r\n",
         ] {
-            assert!(read_from(request).await.is_err(), "{request} was accepted");
+            assert!(asked_for(request).await.is_err(), "{request} was accepted");
         }
+    }
+
+    #[tokio::test]
+    async fn a_request_naming_a_whole_address_is_passed_on() {
+        // What Telegram sends over an HTTP proxy, verbatim in shape: a post to
+        // a data centre rather than a tunnel to one.
+        let forward = passed_on(
+            "POST http://149.154.167.41:80/api HTTP/1.1\r\n\
+             Host: 149.154.167.41\r\n\
+             Content-Length: 4\r\n\
+             Proxy-Authorization: Basic YWxpY2U6b3BlbnMgdGhlIGRvb3I=\r\n\
+             Proxy-Connection: keep-alive\r\n\r\n",
+        )
+        .await;
+
+        assert_eq!(forward.host, "149.154.167.41");
+        assert_eq!(forward.port, 80);
+        assert_eq!(
+            forward.credentials,
+            Some(("alice".to_owned(), "opens the door".to_owned()))
+        );
+
+        let head = String::from_utf8(forward.head).unwrap();
+        assert!(
+            head.starts_with("POST /api HTTP/1.1\r\n"),
+            "the request still names this proxy: {head}"
+        );
+        assert!(
+            !head.to_ascii_lowercase().contains("proxy-authorization"),
+            "the password for this hop was passed on: {head}"
+        );
+        assert!(
+            !head.to_ascii_lowercase().contains("proxy-connection"),
+            "a header for this hop was passed on: {head}"
+        );
+        assert!(head.contains("Content-Length: 4\r\n"), "{head}");
+        assert!(head.contains("Host: 149.154.167.41\r\n"), "{head}");
+        assert!(head.ends_with("\r\n\r\n"), "the head does not end: {head}");
+    }
+
+    #[tokio::test]
+    async fn a_whole_address_without_a_port_is_passed_on_to_eighty() {
+        let forward = passed_on("GET http://ya.ru/ HTTP/1.1\r\nHost: ya.ru\r\n\r\n").await;
+        assert_eq!((forward.host.as_str(), forward.port), ("ya.ru", 80));
+    }
+
+    #[tokio::test]
+    async fn a_request_for_somewhere_over_tls_is_refused() {
+        // Passing this on would mean standing in for the other end.
+        assert!(
+            asked_for("GET https://ya.ru/ HTTP/1.1\r\nHost: ya.ru\r\n\r\n")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -256,7 +430,7 @@ mod tests {
             said
         });
 
-        assert!(read_connect(&mut server).await.is_err());
+        assert!(read_request(&mut server).await.is_err());
         drop(server);
 
         let said = String::from_utf8_lossy(&asked.await.unwrap()).into_owned();
@@ -287,7 +461,7 @@ mod tests {
                     .await;
             }
         });
-        assert!(read_connect(&mut server).await.is_err());
+        assert!(read_request(&mut server).await.is_err());
     }
 
     #[tokio::test]
