@@ -20,6 +20,10 @@ code=""
 fingerprint=""
 version=""
 reach=""
+domain=""
+email=""
+agreed=""
+handshake=""
 through="${ANYPROXY_THROUGH:-127.0.0.1:9050}"
 
 while [ $# -gt 0 ]; do
@@ -163,6 +167,16 @@ runuser -u "${service_user}" -- env \
     ANYPROXY_AGENT_DIR="${state}" \
     "${prefix}/anyproxy-agent" enroll \
         --panel "${panel}" --code "${code}" --fingerprint "${fingerprint}"
+
+# Before the agent is started: the engine takes 443 only when there is no door
+# in front of it, and a door raised afterwards would find the port taken.
+if [ -n "${domain}" ]; then
+    front=("${here}/install-front.sh" --domain "${domain}")
+    [ -n "${agreed}" ] && front+=(--agree-tos)
+    [ -n "${email}" ] && front+=(--email "${email}")
+    [ -n "${handshake}" ] && front+=(--handshake)
+    "${front[@]}"
+fi
 
 systemctl enable --now anyproxy-agent.service
 echo "the node is enrolled and running"
