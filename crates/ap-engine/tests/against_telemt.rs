@@ -111,6 +111,7 @@ async fn start(accesses: Vec<WireAccess>) -> Option<Engine> {
         // This host cannot reach Telegram's middle proxies, and waiting on
         // them would make every test here a test of the network.
         middle_proxy: false,
+        mask_host: "www.cloudflare.com".to_owned(),
     };
     std::fs::create_dir_all(dir.join("state")).unwrap();
 

@@ -25,6 +25,14 @@ pub struct Settings {
     /// back to routing to the data centres directly, and a test host has no
     /// business waiting on them at all.
     pub middle_proxy: bool,
+    /// Where a connection that fails to authenticate is sent instead.
+    ///
+    /// A probe that does not know a secret must see a real site with real TLS,
+    /// or the node answers a plausible handshake with something that is not
+    /// one — which is the single most telling thing it could do. Until the
+    /// front door on 443 serves a site of our own, this points at a site that
+    /// already exists.
+    pub mask_host: String,
 }
 
 /// The address every listener the node talks to itself on is bound to.
@@ -75,6 +83,19 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
         writeln!(out, "ip = \"{ip}\"").ok();
         writeln!(out, "port = {port}").ok();
         writeln!(out, "transport = \"{}\"", transport(&listener.method)?).ok();
+        writeln!(out).ok();
+    }
+
+    // What clients present as the name they are connecting to, and what the
+    // engine imitates. These must be the same value: a link telling a client
+    // to say one name while the node imitates another is a node that fails
+    // the first thing anyone would check.
+    if let Some(domain) = masquerade(config) {
+        writeln!(out, "[censorship]").ok();
+        writeln!(out, "tls_domain = \"{domain}\"").ok();
+        writeln!(out, "mask = true").ok();
+        writeln!(out, "mask_host = \"{}\"", settings.mask_host).ok();
+        writeln!(out, "mask_port = 443").ok();
         writeln!(out).ok();
     }
 
@@ -172,6 +193,17 @@ pub fn access_of(user: &str) -> Option<uuid::Uuid> {
     uuid::Uuid::parse_str(user).ok()
 }
 
+/// The name a stealth node answers to, when it is one.
+///
+/// An open node has none: it serves plain MTProto, SOCKS5 and HTTP, none of
+/// which pretends to be a website.
+fn masquerade(config: &Config) -> Option<&str> {
+    (config.node.kind == "stealth")
+        .then_some(config.node.domain.as_deref())
+        .flatten()
+        .filter(|domain| !domain.is_empty() && !domain.contains(['/', ' ']))
+}
+
 /// The sponsored-channel tag, or none at all.
 fn ad_tag(config: &Config) -> String {
     let _ = config;
@@ -224,6 +256,7 @@ mod tests {
             api_token: "Bearer opaque".to_owned(),
             data_path: "/var/lib/anyproxy/engine".to_owned(),
             middle_proxy: true,
+            mask_host: "www.cloudflare.com".to_owned(),
         }
     }
 
@@ -316,6 +349,47 @@ mod tests {
         assert!(rendered.contains("ip = \"0.0.0.0\""));
         assert!(rendered.contains("port = 443"));
         assert!(rendered.contains("transport = \"mtproxy\""));
+    }
+
+    #[test]
+    fn a_stealth_node_imitates_the_name_its_clients_are_told_to_present() {
+        let mut config = a_config(vec![a_listener("faketls", "0.0.0.0:443")], vec![]);
+        config.node.kind = "stealth".to_owned();
+        config.node.domain = Some("cover.example.com".to_owned());
+        let rendered = render(&config, &settings()).unwrap();
+
+        // The same name the link puts in the secret. A node imitating one site
+        // while its clients announce another fails the first thing a probe
+        // would compare.
+        assert!(
+            rendered.contains("tls_domain = \"cover.example.com\""),
+            "{rendered}"
+        );
+        assert!(rendered.contains("mask = true"));
+        assert!(rendered.contains("mask_host = \"www.cloudflare.com\""));
+    }
+
+    #[test]
+    fn an_open_node_pretends_to_be_nothing() {
+        let mut config = a_config(vec![a_listener("mtproto", "0.0.0.0:8443")], vec![]);
+        config.node.kind = "open".to_owned();
+        config.node.domain = None;
+        let rendered = render(&config, &settings()).unwrap();
+        assert!(!rendered.contains("[censorship]"), "{rendered}");
+    }
+
+    #[test]
+    fn a_domain_that_is_not_one_is_not_written_out() {
+        for bad in ["", "not a domain", "example.com/path"] {
+            let mut config = a_config(vec![a_listener("faketls", "0.0.0.0:443")], vec![]);
+            config.node.kind = "stealth".to_owned();
+            config.node.domain = Some(bad.to_owned());
+            let rendered = render(&config, &settings()).unwrap();
+            assert!(
+                !rendered.contains("tls_domain"),
+                "{bad:?} reached the engine"
+            );
+        }
     }
 
     #[test]

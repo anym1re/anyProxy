@@ -7,6 +7,14 @@ use crate::identity::{self, Paths};
 /// How often the node reads the engine's counters.
 pub const READING_INTERVAL_SECS: u64 = 60;
 
+/// Where a connection that fails to authenticate is sent.
+///
+/// Somebody else's site, and deliberately so: until the front door on 443
+/// serves a site of ours, relaying a probe to our own address would either
+/// loop or answer with nothing, and answering a plausible handshake with
+/// nothing is the loudest thing a node can do.
+const DEFAULT_MASK_HOST: &str = "www.cloudflare.com";
+
 /// Ports the engine answers on, on loopback and nowhere else.
 const API_PORT: u16 = 9091;
 const METRICS_PORT: u16 = 9090;
@@ -34,6 +42,8 @@ pub fn settings(paths: &Paths) -> Result<Settings, AgentError> {
         api_token: token,
         data_path: paths.dir.join("engine").display().to_string(),
         middle_proxy: true,
+        mask_host: std::env::var("ANYPROXY_MASK_HOST")
+            .unwrap_or_else(|_| DEFAULT_MASK_HOST.to_owned()),
     })
 }
 
