@@ -53,6 +53,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Link<S> {
                 .map_err(|error| AgentError::Refused(error.to_string()))?
             {
                 self.buffer.drain(..consumed);
+                // A refusal is the panel's last word on this connection, and it
+                // is the same answer wherever the conversation had got to. Read
+                // here so that every caller reports the reason rather than the
+                // silence that follows it.
+                if let Message::Refused(refusal) = message {
+                    return Err(AgentError::Panel(format!(
+                        "the panel refused the node: {}",
+                        refusal.reason
+                    )));
+                }
                 return Ok(Some(message));
             }
 

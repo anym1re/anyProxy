@@ -604,3 +604,54 @@ fn a_reading(access: Uuid, bytes_in: i64, bytes_out: i64) -> ap_engine::metrics:
         unread: 0,
     }
 }
+
+#[tokio::test]
+async fn a_node_refused_by_the_panel_is_told_why() {
+    // A refusal used to be a connection that simply dropped, which is exactly
+    // what a panel that is not running looks like. An operator then spends the
+    // evening on the network while the panel is up and objecting.
+    let panel = panel!();
+    let mine = a_node(&panel).await;
+    let someone_elses = a_node(&panel).await;
+    let access = an_access_on(&panel, someone_elses).await;
+    let code = a_code(&panel, mine).await;
+    let paths = agent_dir("refused");
+
+    let mut channel = link::connect(&panel.address, &panel.fingerprint, None)
+        .await
+        .unwrap();
+    let identity = session::enrol(&mut channel, &code).await.unwrap();
+    drop(channel);
+
+    let mut channel = link::connect(&panel.address, &panel.fingerprint, Some(&identity))
+        .await
+        .unwrap();
+    let now = OffsetDateTime::now_utc();
+    session::open(&mut channel, identity.node_id, &paths, None, now)
+        .await
+        .unwrap();
+
+    let mut meter = Meter::new();
+    meter.observe(&a_reading(access, 0, 0), now).unwrap();
+    meter.observe(&a_reading(access, 4096, 1024), now).unwrap();
+    let delivery = meter
+        .delivery(
+            ap_proto::Health {
+                engine: "up".to_owned(),
+                site: "unknown".to_owned(),
+                cert_not_after: None,
+            },
+            now,
+        )
+        .unwrap();
+
+    let outcome = session::deliver(&mut channel, &mut meter, delivery).await;
+    let reason = match outcome {
+        Err(ap_agent::AgentError::Panel(reason)) => reason,
+        other => panic!("the panel did not say why it refused: {other:?}"),
+    };
+    assert!(
+        reason.contains("access_not_on_this_node"),
+        "the reason does not name what was wrong: {reason}"
+    );
+}

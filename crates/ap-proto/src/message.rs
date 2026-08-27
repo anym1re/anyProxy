@@ -27,6 +27,8 @@ pub enum Message {
     Command(Command),
     /// Agent reports the outcome of an instruction.
     Result(CommandResult),
+    /// Panel says why it is ending the conversation.
+    Refused(Refusal),
 }
 
 impl Message {
@@ -270,4 +272,16 @@ pub struct CommandResult {
     pub status: String,
     /// Why, when it failed.
     pub detail: Option<String>,
+}
+
+/// Panel says why it is ending the conversation.
+///
+/// A node that is refused would otherwise see a connection that simply drops,
+/// which is what an unreachable panel looks like as well. The two need
+/// different answers from whoever is running the node, so they must not look
+/// alike.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Refusal {
+    /// The stable string naming what was wrong.
+    pub reason: String,
 }

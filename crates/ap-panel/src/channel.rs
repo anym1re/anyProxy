@@ -131,7 +131,23 @@ where
             ap_proto::decode(&buffer).map_err(|_| ApiError::BadRequest("malformed_frame"))?
         {
             buffer.drain(..consumed);
-            let replies = handle(&state, &authority, node_id, message).await?;
+            let replies = match handle(&state, &authority, node_id, message).await {
+                Ok(replies) => replies,
+                Err(refusal) => {
+                    // Said to the node and written down here. A connection that
+                    // simply drops is indistinguishable from a panel that is
+                    // not running, and the two need different answers from
+                    // whoever is looking after the node.
+                    say_no(&mut stream, refusal.code()).await;
+                    let code = refusal.code();
+                    let note = match node_id {
+                        Some(node) => format!("refused a frame from node {node}: {code}"),
+                        None => format!("refused a frame from a stranger: {code}"),
+                    };
+                    eprintln!("{note}");
+                    return Err(refusal);
+                }
+            };
             for reply in replies {
                 let frame =
                     ap_proto::encode(&reply).map_err(|_| ApiError::Internal("channel_encode"))?;
@@ -141,6 +157,19 @@ where
                     .map_err(|_| ApiError::Internal("channel_write"))?;
             }
         }
+    }
+}
+
+/// Tells the node why the conversation is over, if it can still be told.
+async fn say_no<S>(stream: &mut S, reason: &str)
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    let frame = ap_proto::encode(&Message::Refused(ap_proto::Refusal {
+        reason: reason.to_owned(),
+    }));
+    if let Ok(frame) = frame {
+        let _ = stream.write_all(&frame).await;
     }
 }
 
