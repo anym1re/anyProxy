@@ -20,4 +20,8 @@ pub enum InboundError {
     /// The access is at its device limit and this is a new device.
     #[error("too many devices")]
     TooManyDevices,
+
+    /// The client sent a head longer than this listener will hold.
+    #[error("the head is longer than this listener holds")]
+    TooLarge,
 }

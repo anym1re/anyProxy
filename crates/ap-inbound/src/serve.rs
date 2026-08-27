@@ -51,11 +51,13 @@ pub async fn serve(
 
 /// One client, from its greeting to the end of what it does.
 async fn converse(
-    mut stream: TcpStream,
+    stream: TcpStream,
     peer: SocketAddr,
     method: Method,
     registry: Arc<Registry>,
 ) -> Result<(), InboundError> {
+    // Held so a head can be read without swallowing the body that follows it.
+    let mut stream = crate::buffered::Buffered::new(stream);
     let opening = match method {
         Method::Socks5 => open_socks5(&mut stream, peer, &registry).await?,
         Method::Http => open_http(&mut stream, peer, &registry).await?,
@@ -144,7 +146,7 @@ where
 
 /// The HTTP opening, up to knowing where the client wants to go.
 async fn open_http<S>(
-    stream: &mut S,
+    stream: &mut crate::buffered::Buffered<S>,
     peer: SocketAddr,
     registry: &Registry,
 ) -> Result<Opening, InboundError>

@@ -5,6 +5,7 @@
 //! can report is how many distinct devices used an access and nothing that
 //! could be turned back into one of them.
 
+pub mod buffered;
 mod error;
 pub mod forward;
 pub mod http;

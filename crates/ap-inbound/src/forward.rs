@@ -11,15 +11,19 @@ use tokio::net::TcpStream;
 use uuid::Uuid;
 
 use crate::InboundError;
+use crate::buffered::Buffered;
 use crate::http::{self, Asked, Body, Forward};
 use crate::registry::Registry;
+
+/// Longest answer head this listener will hold from a server.
+const ANSWER_CEILING: usize = 64 * 1024;
 
 /// How long a server has to answer before the connection is given up on.
 const ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Carries requests from one client until it stops sending them.
 pub async fn carry<C>(
-    client: &mut C,
+    client: &mut Buffered<C>,
     first: Forward,
     access: Uuid,
     registry: &Registry,
@@ -56,7 +60,7 @@ where
         let sent = pass(client, &mut upstream, asking.body).await?;
         registry.used(access, 0, sent);
 
-        let answer = tokio::time::timeout(ANSWER_TIMEOUT, http::read_head(&mut upstream))
+        let answer = tokio::time::timeout(ANSWER_TIMEOUT, upstream.head(ANSWER_CEILING))
             .await
             .map_err(|_| InboundError::Protocol("upstream"))??;
         client.write_all(&answer).await?;
@@ -75,10 +79,10 @@ where
 }
 
 /// Opens a connection that does not wait to be acknowledged before sending.
-async fn reach(addressed: &(String, u16)) -> Result<TcpStream, InboundError> {
+async fn reach(addressed: &(String, u16)) -> Result<Buffered<TcpStream>, InboundError> {
     let upstream = TcpStream::connect((addressed.0.as_str(), addressed.1)).await?;
     let _ = upstream.set_nodelay(true);
-    Ok(upstream)
+    Ok(Buffered::new(upstream))
 }
 
 /// Whether a head asks for the connection to end after this message.

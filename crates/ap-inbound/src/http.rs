@@ -1,9 +1,14 @@
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::InboundError;
+use crate::buffered::Buffered;
 
-/// Longest request head this listener will read before giving up.
-const HEAD_CEILING: usize = 8 * 1024;
+/// Longest request head this listener will hold.
+///
+/// Generous, because real clients send heads that are mostly cookies and a
+/// head of several kilobytes is ordinary. A ceiling that a working client
+/// crosses is a ceiling that refuses working clients.
+const HEAD_CEILING: usize = 64 * 1024;
 
 /// What the client asked for, and who it says it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,11 +101,18 @@ pub enum Asked {
 /// proxy, the headers that concern this hop are dropped, and nothing else is
 /// touched. `https://` is not accepted: passing that on would mean standing in
 /// for the other end, which is not a thing this node should be able to do.
-pub async fn read_request<S>(stream: &mut S) -> Result<Asked, InboundError>
+pub async fn read_request<S>(stream: &mut Buffered<S>) -> Result<Asked, InboundError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let head = read_head(stream).await?;
+    let head = match stream.head(HEAD_CEILING).await {
+        Ok(head) => head,
+        Err(InboundError::TooLarge) => {
+            answer_head_too_large(stream).await?;
+            return Err(InboundError::TooLarge);
+        }
+        Err(reason) => return Err(reason),
+    };
     let text = String::from_utf8_lossy(&head);
     let request = text.split("\r\n").next().unwrap_or_default();
     let credentials = credentials_in(text.split("\r\n").skip(1));
@@ -168,26 +180,6 @@ where
         head: passed,
         body: Body::of(&text),
     }))
-}
-
-/// Reads up to the blank line that ends a request head.
-pub(crate) async fn read_head<S>(stream: &mut S) -> Result<Vec<u8>, InboundError>
-where
-    S: AsyncRead + Unpin,
-{
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        if head.len() >= HEAD_CEILING {
-            return Err(InboundError::Protocol("http"));
-        }
-        let read = stream.read(&mut byte).await?;
-        if read == 0 {
-            return Err(InboundError::Protocol("http"));
-        }
-        head.push(byte[0]);
-    }
-    Ok(head)
 }
 
 /// What follows `http://`, and nothing else.
@@ -291,6 +283,21 @@ where
     Ok(())
 }
 
+/// Tells the client its head is longer than this listener holds.
+pub async fn answer_head_too_large<S>(stream: &mut S) -> Result<(), InboundError>
+where
+    S: AsyncWrite + Unpin,
+{
+    stream
+        .write_all(
+            b"HTTP/1.1 431 Request Header Fields Too Large\r\n\
+              Content-Length: 0\r\n\
+              Connection: close\r\n\r\n",
+        )
+        .await?;
+    Ok(())
+}
+
 /// Tells the client the node could not reach where it asked to go.
 pub async fn answer_unreachable<S>(stream: &mut S) -> Result<(), InboundError>
 where
@@ -345,14 +352,15 @@ fn from_base64(text: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt;
 
     async fn asked_for(request: &str) -> Result<Asked, InboundError> {
-        let (mut client, mut server) = tokio::io::duplex(16 * 1024);
+        let (mut client, server) = tokio::io::duplex(16 * 1024);
         let bytes = request.to_owned();
         tokio::spawn(async move {
             let _ = client.write_all(bytes.as_bytes()).await;
         });
-        read_request(&mut server).await
+        read_request(&mut Buffered::new(server)).await
     }
 
     async fn read_from(request: &str) -> Result<Connect, InboundError> {
@@ -466,7 +474,7 @@ mod tests {
         // whether the listener is alive by pointing a browser at it learns
         // nothing from silence, and spends the afternoon on a listener that
         // was working the whole time.
-        let (mut client, mut server) = tokio::io::duplex(16 * 1024);
+        let (mut client, server) = tokio::io::duplex(16 * 1024);
         let asked = tokio::spawn(async move {
             let _ = client.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").await;
             let mut said = Vec::new();
@@ -474,8 +482,9 @@ mod tests {
             said
         });
 
-        assert!(read_request(&mut server).await.is_err());
-        drop(server);
+        let mut held = Buffered::new(server);
+        assert!(read_request(&mut held).await.is_err());
+        drop(held);
 
         let said = String::from_utf8_lossy(&asked.await.unwrap()).into_owned();
         assert!(
@@ -496,7 +505,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_head_that_never_ends_is_given_up_on() {
-        let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
         tokio::spawn(async move {
             let _ = client.write_all(b"CONNECT ya.ru:443 HTTP/1.1\r\n").await;
             for _ in 0..600 {
@@ -505,7 +514,7 @@ mod tests {
                     .await;
             }
         });
-        assert!(read_request(&mut server).await.is_err());
+        assert!(read_request(&mut Buffered::new(server)).await.is_err());
     }
 
     #[tokio::test]
