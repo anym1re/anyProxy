@@ -10,6 +10,7 @@ pub mod meter;
 pub mod only_one;
 pub mod pin;
 pub mod posture;
+pub mod say;
 pub mod session;
 
 pub use error::AgentError;

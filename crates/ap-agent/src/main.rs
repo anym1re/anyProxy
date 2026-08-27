@@ -4,7 +4,7 @@ use std::time::Duration;
 use ap_agent::identity::Paths;
 use ap_agent::meter::Meter;
 use ap_agent::posture::{Posture, Silent};
-use ap_agent::{AgentError, backoff, engine, identity, link, session};
+use ap_agent::{AgentError, backoff, engine, identity, link, say, session};
 use ap_engine::control::Control;
 use ap_engine::health::{self, Site};
 use ap_inbound::{Method, Registry};
@@ -245,14 +245,15 @@ async fn once(
                 if let Some(delivery) =
                     meter.delivery(state_of_health(control, &state.posture).await, now)
                 {
-                    // Said out loud because a node that reports nothing and a
-                    // node that reports zeroes look the same from the panel,
-                    // and the difference is where a fault lives.
-                    println!(
+                    // A node that reports nothing and one that reports zeroes
+                    // look the same from the panel, and the difference is
+                    // where a fault lives. Counting is per access, so it is
+                    // said only at the level that allows that.
+                    say::Voice::following(&state.posture).counted(&format!(
                         "reporting {} traffic and {} device counts",
                         delivery.deltas.len(),
                         delivery.devices.len()
-                    );
+                    ));
                     session::deliver(&mut channel, meter, delivery).await?;
                 }
             }
