@@ -9,6 +9,7 @@ pub mod buffered;
 mod error;
 pub mod forward;
 pub mod http;
+pub mod pool;
 pub mod registry;
 pub mod serve;
 pub mod socks5;

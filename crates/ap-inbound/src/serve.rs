@@ -24,6 +24,9 @@ pub async fn serve(
     method: Method,
     registry: Arc<Registry>,
 ) -> Result<(), InboundError> {
+    // Shared by every conversation this listener serves, so a client opening
+    // a second connection does not pay for reaching the destination again.
+    let pool = Arc::new(crate::pool::Pool::new());
     loop {
         let Ok((stream, peer)) = listener.accept().await else {
             continue;
@@ -34,6 +37,7 @@ pub async fn serve(
         // exchange, which is tens of milliseconds a client can feel.
         let _ = stream.set_nodelay(true);
         let registry = Arc::clone(&registry);
+        let pool = Arc::clone(&pool);
         tokio::spawn(async move {
             // No deadline on the whole conversation: a proxy connection lasts
             // as long as the person using it needs it, and cutting it after a
@@ -44,7 +48,7 @@ pub async fn serve(
             // Whatever went wrong is not written down. A log line saying which
             // address failed to authenticate, or where it wanted to go, is the
             // record this design exists to not keep.
-            let _ = converse(stream, peer, method, registry).await;
+            let _ = converse(stream, peer, method, registry, pool).await;
         });
     }
 }
@@ -55,6 +59,7 @@ async fn converse(
     peer: SocketAddr,
     method: Method,
     registry: Arc<Registry>,
+    pool: Arc<crate::pool::Pool>,
 ) -> Result<(), InboundError> {
     // Held so a head can be read without swallowing the body that follows it.
     let mut stream = crate::buffered::Buffered::new(stream);
@@ -67,7 +72,7 @@ async fn converse(
     // connection and sends more of them down it, so that conversation is
     // carried rather than relayed.
     if let Some(passed) = opening.passed {
-        return crate::forward::carry(&mut stream, passed, opening.access, &registry).await;
+        return crate::forward::carry(&mut stream, passed, opening.access, &registry, &pool).await;
     }
 
     let upstream = tokio::time::timeout(

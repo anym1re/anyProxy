@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::InboundError;
 use crate::buffered::Buffered;
 use crate::http::{self, Asked, Body, Forward};
+use crate::pool::Pool;
 use crate::registry::Registry;
 
 /// Longest answer head this listener will hold from a server.
@@ -21,18 +22,27 @@ const ANSWER_CEILING: usize = 64 * 1024;
 /// How long a server has to answer before the connection is given up on.
 const ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Largest body held in hand so a request can be sent a second time.
+///
+/// A connection taken from the pool may have been closed by the far end while
+/// it waited. That is only recoverable if the request can be sent again, which
+/// means holding it. Requests to a data centre are small; anything larger goes
+/// on a connection opened for it, where the question does not arise.
+const REPLAY_LIMIT: u64 = 64 * 1024;
+
 /// Carries requests from one client until it stops sending them.
 pub async fn carry<C>(
     client: &mut Buffered<C>,
     first: Forward,
     access: Uuid,
     registry: &Registry,
+    pool: &Pool,
 ) -> Result<(), InboundError>
 where
     C: AsyncRead + AsyncWrite + Unpin,
 {
     let mut addressed = (first.host.clone(), first.port);
-    let mut upstream = reach(&addressed).await?;
+    let mut held: Option<Buffered<TcpStream>> = None;
     let mut request = Some(first);
 
     loop {
@@ -40,29 +50,84 @@ where
             Some(asking) => asking,
             None => match http::read_request(client).await {
                 Ok(Asked::Forward(asking)) => asking,
-                // A tunnel asked for halfway through is a different
-                // conversation; the client can have it on its own connection.
-                Ok(Asked::Tunnel(_)) => return Ok(()),
-                Err(_) => return Ok(()),
+                // The client has nothing more to send, or asks for a tunnel,
+                // which is a different conversation it can have on its own
+                // connection. Either way what is still open to the destination
+                // outlives this client and is worth keeping warm.
+                Ok(Asked::Tunnel(_)) | Err(_) => {
+                    if let Some(spare) = held.take() {
+                        pool.keep(&addressed.0, addressed.1, spare);
+                    }
+                    return Ok(());
+                }
             },
         };
 
-        // The same connection serves whatever it is addressed to, until that
-        // changes. Telegram stays with one data centre for a while, so this
-        // reconnects rarely.
         if (asking.host.clone(), asking.port) != addressed {
+            if let Some(spare) = held.take() {
+                pool.keep(&addressed.0, addressed.1, spare);
+            }
             addressed = (asking.host.clone(), asking.port);
-            upstream = reach(&addressed).await?;
         }
 
-        upstream.write_all(&asking.head).await?;
-        registry.used(access, 0, asking.head.len() as i64);
-        let sent = pass(client, &mut upstream, asking.body).await?;
-        registry.used(access, 0, sent);
+        // A body small enough to keep lets a stale connection be retried. A
+        // larger one is streamed, and then only a connection opened for it
+        // will do.
+        let replayable = match asking.body {
+            Body::Counted(length) if length <= REPLAY_LIMIT => {
+                let mut body = Vec::with_capacity(length as usize);
+                (&mut *client).take(length).read_to_end(&mut body).await?;
+                Some(body)
+            }
+            _ => None,
+        };
 
-        let answer = tokio::time::timeout(ANSWER_TIMEOUT, upstream.head(ANSWER_CEILING))
-            .await
-            .map_err(|_| InboundError::Protocol("upstream"))??;
+        let mut upstream = match held.take() {
+            Some(upstream) => upstream,
+            None => match replayable.is_some() {
+                true => match pool.take(&addressed.0, addressed.1) {
+                    Some(warm) => warm,
+                    None => Pool::open(&addressed.0, addressed.1).await?,
+                },
+                false => Pool::open(&addressed.0, addressed.1).await?,
+            },
+        };
+
+        let mut answer = None;
+        let mut sent = 0i64;
+        for attempt in 0..2 {
+            upstream.write_all(&asking.head).await?;
+            sent = asking.head.len() as i64
+                + match &replayable {
+                    Some(body) => {
+                        upstream.write_all(body).await?;
+                        body.len() as i64
+                    }
+                    None => pass(client, &mut upstream, asking.body).await?,
+                };
+
+            match tokio::time::timeout(ANSWER_TIMEOUT, upstream.head(ANSWER_CEILING)).await {
+                Ok(Ok(head)) => {
+                    answer = Some(head);
+                    break;
+                }
+                // A connection that was waiting in the pool may have been
+                // closed at the other end. Nothing has reached the client yet,
+                // so the request can go again on a connection of its own.
+                Ok(Err(_)) | Err(_) if attempt == 0 && replayable.is_some() => {
+                    upstream = Pool::open(&addressed.0, addressed.1).await?;
+                }
+                Ok(Err(reason)) => return Err(reason),
+                Err(_) => return Err(InboundError::Protocol("upstream")),
+            }
+        }
+        let Some(answer) = answer else {
+            return Err(InboundError::Protocol("upstream"));
+        };
+
+        // Counted once the exchange stood, so a request sent twice on a stale
+        // connection is not charged twice.
+        registry.used(access, 0, sent);
         client.write_all(&answer).await?;
         registry.used(access, answer.len() as i64, 0);
 
@@ -71,18 +136,13 @@ where
         let back = pass(&mut upstream, client, framing).await?;
         registry.used(access, back, 0);
 
-        // Whoever says the connection ends, ends it.
+        // Whoever says the connection ends, ends it. What is left over is
+        // worth keeping only when the exchange finished on its own terms.
         if framing == Body::UntilClosed || says_close(&text) {
             return Ok(());
         }
+        held = Some(upstream);
     }
-}
-
-/// Opens a connection that does not wait to be acknowledged before sending.
-async fn reach(addressed: &(String, u16)) -> Result<Buffered<TcpStream>, InboundError> {
-    let upstream = TcpStream::connect((addressed.0.as_str(), addressed.1)).await?;
-    let _ = upstream.set_nodelay(true);
-    Ok(Buffered::new(upstream))
 }
 
 /// Whether a head asks for the connection to end after this message.
