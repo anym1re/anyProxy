@@ -48,7 +48,10 @@ secret_exposed() {
 # this project replaces. Time is parsed and printed, never edited.
 timestamp_string_op() {
     [ -d "${root}/crates" ] || return 0
-    grep -rnE --include='*.rs' '"Z"|'"'"'Z'"'"'' "${root}/crates"
+    # A byte literal is not a timestamp. Timestamps here are always strings,
+    # so b'Z' — which turns up in character ranges like b'A'..=b'Z' — cannot be
+    # the thing this rule exists to catch.
+    grep -rnE --include='*.rs' '"Z"|'"'"'Z'"'"'' "${root}/crates"         | grep -vF "b'Z'"
 }
 
 # Queries are built by the query macro, not by joining strings.

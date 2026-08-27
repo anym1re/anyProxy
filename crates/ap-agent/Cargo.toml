@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 ap-core = { path = "../ap-core" }
 ap-engine = { path = "../ap-engine" }
+ap-inbound = { path = "../ap-inbound" }
 ap-proto = { path = "../ap-proto" }
 clap.workspace = true
 hex.workspace = true

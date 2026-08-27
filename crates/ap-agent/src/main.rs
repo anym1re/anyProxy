@@ -7,6 +7,7 @@ use ap_agent::posture::{Posture, Silent};
 use ap_agent::{AgentError, backoff, engine, identity, link, session};
 use ap_engine::control::Control;
 use ap_engine::health::{self, Site};
+use ap_inbound::{Method, Registry};
 use ap_proto::Message;
 use clap::{Parser, Subcommand};
 use time::OffsetDateTime;
@@ -107,6 +108,10 @@ async fn serve(paths: &Paths, panel: &str) -> Result<(), AgentError> {
     // there is nothing for it to serve, and a node with nothing to serve is a
     // node that should not be listening.
     let mut engine_process: Option<std::process::Child> = None;
+    // The listeners an open node serves. The engine does MTProto and WEB; a
+    // login is carried here, and the two never share a machine.
+    let inbound = std::sync::Arc::new(Registry::new(&[], fresh_salt()));
+    let mut inbound_open = false;
 
     let mut applied_revision = None;
     let mut attempt = 0u32;
@@ -133,6 +138,8 @@ async fn serve(paths: &Paths, panel: &str) -> Result<(), AgentError> {
             &mut meter,
             &settings,
             &mut engine_process,
+            &inbound,
+            &mut inbound_open,
         )
         .await
         {
@@ -162,6 +169,8 @@ async fn once(
     meter: &mut Meter,
     settings: &ap_engine::config::Settings,
     engine_process: &mut Option<std::process::Child>,
+    inbound: &std::sync::Arc<Registry>,
+    inbound_open: &mut bool,
 ) -> Result<Option<uuid::Uuid>, AgentError> {
     let mut channel = link::connect(panel, fingerprint, Some(identity)).await?;
     let mut state = session::open(
@@ -175,6 +184,10 @@ async fn once(
     report(&state.posture);
 
     if let ap_agent::posture::Posture::Serving(running) = &state.posture {
+        inbound.replace(&running.accesses);
+        if !*inbound_open {
+            *inbound_open = open_inbounds(running, inbound).await;
+        }
         match engine_process {
             Some(_) => settle(paths, settings, control, running).await,
             None => match engine::start(paths, settings, running) {
@@ -201,6 +214,10 @@ async fn once(
                 if state.applied_revision == Some(revision)
                     && let ap_agent::posture::Posture::Serving(running) = &state.posture
                 {
+                    inbound.replace(&running.accesses);
+                    if !*inbound_open {
+                        *inbound_open = open_inbounds(running, inbound).await;
+                    }
                     settle(paths, settings, control, running).await;
                 }
             }
@@ -216,7 +233,7 @@ async fn once(
                 if before != state.posture.is_serving() {
                     report(&state.posture);
                 }
-                measure(control, metrics_port, meter, now).await;
+                measure(control, metrics_port, meter, inbound, now).await;
                 if let Some(delivery) =
                     meter.delivery(state_of_health(control, &state.posture).await, now)
                 {
@@ -232,21 +249,83 @@ async fn once(
 /// A reading that does not arrive is not a reading of zero: the counters keep
 /// what they had and the next reading carries the difference from before the
 /// gap, so nothing is lost when the engine is briefly unreachable.
-async fn measure(control: &Control, metrics_port: u16, meter: &mut Meter, now: OffsetDateTime) {
-    let body = match control.metrics(metrics_port).await {
-        Ok(body) => body,
+async fn measure(
+    control: &Control,
+    metrics_port: u16,
+    meter: &mut Meter,
+    inbound: &Registry,
+    now: OffsetDateTime,
+) {
+    let mut reading = match control.metrics(metrics_port).await {
+        Ok(body) => ap_engine::metrics::read(&body),
         Err(reason) => {
+            // A node with no engine still has its own listeners to report.
             eprintln!("engine metrics: {reason}");
-            return;
+            ap_engine::metrics::Reading::default()
         }
     };
-    let reading = ap_engine::metrics::read(&body);
     if reading.unread > 0 {
         eprintln!("engine metrics: {} lines could not be read", reading.unread);
     }
-    if let Err(reason) = meter.observe(&reading, now) {
-        eprintln!("engine metrics: {reason}");
+
+    // The node's own listeners count the same way the engine does: totals that
+    // only climb, so the meter takes the difference between two readings.
+    for (access, (bytes_in, bytes_out, devices)) in inbound.taken() {
+        reading.by_access.insert(
+            access,
+            ap_engine::metrics::Counters {
+                bytes_in,
+                bytes_out,
+                devices,
+                connections: 0,
+            },
+        );
     }
+
+    if let Err(reason) = meter.observe(&reading, now) {
+        eprintln!("metrics: {reason}");
+    }
+}
+
+/// Opens the listeners an open node serves, if it serves any.
+///
+/// Returns whether they are up: a node whose configuration names no login has
+/// nothing to open, and one whose ports are taken says so once rather than
+/// on every revision.
+async fn open_inbounds(config: &ap_proto::Config, registry: &std::sync::Arc<Registry>) -> bool {
+    let mut opened = false;
+    for listener in &config.listeners {
+        let method = match listener.method.as_str() {
+            "socks5" => Method::Socks5,
+            "http" => Method::Http,
+            _ => continue,
+        };
+        match tokio::net::TcpListener::bind(&listener.bind).await {
+            Ok(bound) => {
+                let registry = std::sync::Arc::clone(registry);
+                tokio::spawn(async move {
+                    let _ = ap_inbound::serve(bound, method, registry).await;
+                });
+                println!("serving {} on {}", method.as_stored(), listener.bind);
+                opened = true;
+            }
+            Err(reason) => eprintln!("{}: {reason}", listener.bind),
+        }
+    }
+    opened
+}
+
+/// The salt the node counts devices by.
+///
+/// Drawn once per process and never written down: a digest taken with it means
+/// nothing to another node or to this one after a restart, so the counts
+/// cannot be joined up into a history of who was where.
+fn fresh_salt() -> [u8; 32] {
+    use rand::RngCore as _;
+
+    let mut salt = [0u8; 32];
+    rand::rng().fill_bytes(&mut salt);
+    salt
 }
 
 /// What the node says about itself.
