@@ -6,6 +6,7 @@
 //! could be turned back into one of them.
 
 mod error;
+pub mod forward;
 pub mod http;
 pub mod registry;
 pub mod serve;

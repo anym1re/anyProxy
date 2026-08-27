@@ -27,6 +27,52 @@ pub struct Forward {
     pub credentials: Option<(String, String)>,
     /// The request as the server it is addressed to should receive it.
     pub head: Vec<u8>,
+    /// How much body follows the head.
+    pub body: Body,
+}
+
+/// How much of a message follows its head, and how to know when it has ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Body {
+    /// A stated number of bytes.
+    Counted(u64),
+    /// Lengths given ahead of each piece, ending with a piece of none.
+    Chunked,
+    /// Until whoever is sending it closes.
+    UntilClosed,
+}
+
+impl Body {
+    /// Reads the framing out of a head, request or response alike.
+    pub fn of(head: &str) -> Self {
+        for line in head.split("\r\n").skip(1) {
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            if name.eq_ignore_ascii_case("transfer-encoding")
+                && value.to_ascii_lowercase().contains("chunked")
+            {
+                return Self::Chunked;
+            }
+            if name.eq_ignore_ascii_case("content-length")
+                && let Ok(length) = value.trim().parse()
+            {
+                return Self::Counted(length);
+            }
+        }
+        // A request without either carries nothing; a response without either
+        // runs to the close. The caller knows which it is holding.
+        Self::Counted(0)
+    }
+
+    /// The same, for a response, where silence means "until closed".
+    pub fn of_answer(head: &str) -> Self {
+        match Self::of(head) {
+            Self::Counted(0) if !head.contains("Content-Length") => Self::UntilClosed,
+            other => other,
+        }
+    }
 }
 
 /// What the client asked this listener to do.
@@ -113,21 +159,19 @@ where
     if !said_host {
         passed.extend_from_slice(format!("Host: {authority}\r\n").as_bytes());
     }
-    // One request to a connection. Keeping it alive would mean parsing every
-    // request that followed, and one that was not parsed would reach the
-    // server still naming this proxy.
-    passed.extend_from_slice(b"Connection: close\r\n\r\n");
+    passed.extend_from_slice(b"\r\n");
 
     Ok(Asked::Forward(Forward {
         host,
         port,
         credentials,
         head: passed,
+        body: Body::of(&text),
     }))
 }
 
 /// Reads up to the blank line that ends a request head.
-async fn read_head<S>(stream: &mut S) -> Result<Vec<u8>, InboundError>
+pub(crate) async fn read_head<S>(stream: &mut S) -> Result<Vec<u8>, InboundError>
 where
     S: AsyncRead + Unpin,
 {

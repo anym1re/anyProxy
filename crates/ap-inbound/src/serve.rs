@@ -56,6 +56,13 @@ async fn converse(
         Method::Http => open_http(&mut stream, peer, &registry).await?,
     };
 
+    // A client that asked for its requests to be passed on keeps the
+    // connection and sends more of them down it, so that conversation is
+    // carried rather than relayed.
+    if let Some(passed) = opening.passed {
+        return crate::forward::carry(&mut stream, passed, opening.access, &registry).await;
+    }
+
     let upstream = tokio::time::timeout(
         REACH_TIMEOUT,
         TcpStream::connect((opening.host.as_str(), opening.port)),
@@ -64,7 +71,13 @@ async fn converse(
     .map_err(|_| InboundError::Protocol("upstream"))?;
 
     let mut upstream = match upstream {
-        Ok(upstream) => upstream,
+        Ok(upstream) => {
+            match method {
+                Method::Socks5 => socks5::answer_request(&mut stream, 0).await?,
+                Method::Http => http::answer_established(&mut stream).await?,
+            }
+            upstream
+        }
         Err(_) => {
             match method {
                 // Five is "connection refused" in the protocol's own words.
@@ -74,20 +87,6 @@ async fn converse(
             return Err(InboundError::Protocol("upstream"));
         }
     };
-
-    match opening.passed {
-        // A request being passed on: the server's own answer is what the
-        // client is waiting for, so nothing is said to it here.
-        Some(head) => {
-            use tokio::io::AsyncWriteExt as _;
-            upstream.write_all(&head).await?;
-            registry.used(opening.access, 0, head.len() as i64);
-        }
-        None => match method {
-            Method::Socks5 => socks5::answer_request(&mut stream, 0).await?,
-            Method::Http => http::answer_established(&mut stream).await?,
-        },
-    }
 
     relay(&mut stream, &mut upstream, opening.access, &registry).await
 }
@@ -100,9 +99,9 @@ struct Opening {
     host: String,
     /// The port it wants.
     port: u16,
-    /// A request to hand the server first, when the client asked for one to be
-    /// passed on rather than for a tunnel.
-    passed: Option<Vec<u8>>,
+    /// The first request to pass on, when the client asked for that rather
+    /// than for a tunnel.
+    passed: Option<http::Forward>,
 }
 
 /// The SOCKS5 opening, up to knowing where the client wants to go.
@@ -153,10 +152,10 @@ where
     let (host, port, credentials, passed) = match asked {
         http::Asked::Tunnel(connect) => (connect.host, connect.port, connect.credentials, None),
         http::Asked::Forward(forward) => (
-            forward.host,
+            forward.host.clone(),
             forward.port,
-            forward.credentials,
-            Some(forward.head),
+            forward.credentials.clone(),
+            Some(forward),
         ),
     };
 
