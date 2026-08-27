@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::StoreError;
 
-const COLUMNS: &str =
-    "id, label, kind, domain, address, agent_version, last_seen_at, state, created_at";
+const COLUMNS: &str = "id, label, kind, domain, alibi, address, agent_version, last_seen_at, \
+                       state, created_at";
 
 /// Reads and writes nodes.
 pub struct NodeRepo;
@@ -16,13 +16,15 @@ impl NodeRepo {
     /// Registers a node.
     pub async fn insert(pool: &PgPool, node: &Node) -> Result<(), StoreError> {
         sqlx::query(
-            "insert into node (id, label, kind, domain, address, agent_version, last_seen_at, \
-             state, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "insert into node (id, label, kind, domain, alibi, address, agent_version, \
+             last_seen_at, state, created_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(node.id())
         .bind(node.label().as_str())
         .bind(node.kind().tag().as_stored())
         .bind(node.kind().domain().map(Domain::as_str))
+        .bind(node.kind().alibi().map(Domain::as_str))
         .bind(node.address().map(|address| address.to_string()))
         .bind(node.agent_version())
         .bind(node.last_seen_at())
@@ -89,7 +91,11 @@ fn read_node(row: sqlx::postgres::PgRow) -> Result<Node, StoreError> {
         .try_get::<Option<String>, _>("domain")?
         .map(|text| Domain::try_from(text.as_str()))
         .transpose()?;
-    let kind = NodeKind::from_parts(tag, domain)?;
+    let alibi = row
+        .try_get::<Option<String>, _>("alibi")?
+        .map(|text| Domain::try_from(text.as_str()))
+        .transpose()?;
+    let kind = NodeKind::from_parts(tag, domain, alibi)?;
     let address = row
         .try_get::<Option<String>, _>("address")?
         .and_then(|text| text.parse::<IpAddr>().ok());

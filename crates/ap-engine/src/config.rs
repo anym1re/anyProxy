@@ -48,14 +48,6 @@ pub struct Settings {
     /// whose name does not resolve to the machine it runs on cannot serve this
     /// method at all.
     pub public_addr: String,
-    /// The name a forged handshake claims to be, when it is not the node's own.
-    ///
-    /// A node serving only the forged handshake has one name and it is the
-    /// alibi. A node that also serves a site has two: the site is its own and
-    /// carries a certificate for it, while the handshake goes on borrowing
-    /// somebody else's. The front door tells them apart by which one the
-    /// client asks for, so they must not be the same.
-    pub alibi: Option<String>,
 }
 
 /// The address every listener the node talks to itself on is bound to.
@@ -142,13 +134,7 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
     // that also serves a site needs both: the site answers to its own name and
     // holds a certificate for it, and the forged handshake goes on borrowing
     // somebody else's, which is what lets the front door tell them apart.
-    if let Some(domain) = settings
-        .alibi
-        .as_deref()
-        .filter(|alibi| !alibi.is_empty())
-        .or_else(|| masquerade(config))
-        .filter(|_| serves_masked)
-    {
+    if let Some(domain) = masquerade(config).filter(|_| serves_masked) {
         writeln!(out, "[censorship]").ok();
         writeln!(out, "tls_domain = \"{domain}\"").ok();
         writeln!(out, "mask = true").ok();
@@ -301,7 +287,14 @@ pub fn access_of(user: &str) -> Option<uuid::Uuid> {
 /// which pretends to be a website.
 fn masquerade(config: &Config) -> Option<&str> {
     (config.node.kind == "stealth")
-        .then_some(config.node.domain.as_deref())
+        .then_some(
+            config
+                .node
+                .alibi
+                .as_deref()
+                .filter(|alibi| !alibi.is_empty())
+                .or(config.node.domain.as_deref()),
+        )
         .flatten()
         .filter(|domain| !domain.is_empty() && !domain.contains(['/', ' ']))
 }
@@ -361,7 +354,6 @@ mod tests {
             mask_host: "www.cloudflare.com".to_owned(),
             cover_site: "http://127.0.0.1:8081".to_owned(),
             public_addr: "203.0.113.7:443".to_owned(),
-            alibi: None,
         }
     }
 
@@ -393,6 +385,7 @@ mod tests {
             node: NodeShape {
                 kind: "stealth".to_owned(),
                 domain: Some("cover.example.com".to_owned()),
+                alibi: None,
             },
             listeners,
             accesses,
@@ -710,13 +703,14 @@ mod alibi_tests {
     use ap_proto::{Listener, NodeShape, Policy};
     use uuid::Uuid;
 
-    fn a_stealth_config(domain: &str) -> Config {
+    fn a_stealth_config(domain: &str, alibi: Option<&str>) -> Config {
         Config {
             revision: Uuid::now_v7(),
             issued_at: "2026-08-27T10:00:00Z".to_owned(),
             node: NodeShape {
                 kind: "stealth".to_owned(),
                 domain: Some(domain.to_owned()),
+                alibi: alibi.map(str::to_owned),
             },
             listeners: vec![Listener {
                 method: "faketls".to_owned(),
@@ -730,7 +724,7 @@ mod alibi_tests {
         }
     }
 
-    fn settings_with(alibi: Option<&str>) -> Settings {
+    fn plain_settings() -> Settings {
         Settings {
             api_port: 9091,
             metrics_port: 9090,
@@ -740,13 +734,12 @@ mod alibi_tests {
             mask_host: "www.cloudflare.com".to_owned(),
             cover_site: "http://127.0.0.1:8081".to_owned(),
             public_addr: "203.0.113.7:443".to_owned(),
-            alibi: alibi.map(str::to_owned),
         }
     }
 
     #[test]
     fn a_node_without_an_alibi_claims_its_own_name() {
-        let rendered = render(&a_stealth_config("ya.ru"), &settings_with(None)).unwrap();
+        let rendered = render(&a_stealth_config("ya.ru", None), &plain_settings()).unwrap();
         assert!(rendered.contains("tls_domain = \"ya.ru\""));
     }
 
@@ -756,8 +749,8 @@ mod alibi_tests {
         // must claim a different one here, or the front door cannot tell a
         // client of the site from a client of the handshake.
         let rendered = render(
-            &a_stealth_config("203-0-113-110.sslip.io"),
-            &settings_with(Some("ya.ru")),
+            &a_stealth_config("203-0-113-110.sslip.io", Some("ya.ru")),
+            &plain_settings(),
         )
         .unwrap();
         assert!(rendered.contains("tls_domain = \"ya.ru\""));
@@ -769,7 +762,7 @@ mod alibi_tests {
 
     #[test]
     fn an_empty_alibi_is_no_alibi() {
-        let rendered = render(&a_stealth_config("ya.ru"), &settings_with(Some(""))).unwrap();
+        let rendered = render(&a_stealth_config("ya.ru", Some("")), &plain_settings()).unwrap();
         assert!(rendered.contains("tls_domain = \"ya.ru\""));
     }
 }

@@ -464,8 +464,18 @@ async fn render_link(
                 .kind()
                 .domain()
                 .ok_or(ApiError::Internal("node_without_domain"))?;
+            let claimed = node
+                .kind()
+                .claimed()
+                .ok_or(ApiError::Internal("node_without_domain"))?;
             serde_json::json!({
-                "link": ap_core::stealth_link(*access.method(), &body.host, domain, secret)?,
+                "link": ap_core::stealth_link(
+                    *access.method(),
+                    &body.host,
+                    domain,
+                    claimed,
+                    secret,
+                )?,
                 "method": access.method().as_stored(),
             })
         }
@@ -568,6 +578,9 @@ struct NewNode {
     label: String,
     kind: String,
     domain: Option<String>,
+    /// What the forged handshake claims to be, when it is not the node's own
+    /// name. Only a node that also serves a site of its own needs one.
+    alibi: Option<String>,
 }
 
 async fn create_node(
@@ -578,7 +591,8 @@ async fn create_node(
     let label = Label::try_from(body.label.as_str())?;
     let tag = NodeKindTag::from_stored(&body.kind)?;
     let domain = body.domain.as_deref().map(Domain::try_from).transpose()?;
-    let kind = NodeKind::from_parts(tag, domain)?;
+    let alibi = body.alibi.as_deref().map(Domain::try_from).transpose()?;
+    let kind = NodeKind::from_parts(tag, domain, alibi)?;
     let node = Node::new(label.clone(), kind, OffsetDateTime::now_utc());
 
     let guarded = state.guarded(&actor);

@@ -199,6 +199,7 @@ async fn a_configuration_carries_only_this_node() {
         Label::try_from(unique("n").as_str()).unwrap(),
         NodeKind::Stealth {
             domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
+            alibi: None,
         },
         OffsetDateTime::now_utc(),
     );
@@ -568,6 +569,7 @@ async fn a_stealth_node_is_told_to_listen_on_443_alone() {
         Label::try_from(unique("n").as_str()).unwrap(),
         NodeKind::Stealth {
             domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
+            alibi: None,
         },
         OffsetDateTime::now_utc(),
     );
@@ -594,6 +596,7 @@ async fn a_stealth_node_whose_clients_arrive_inside_a_site_serves_the_site() {
         Label::try_from(unique("n").as_str()).unwrap(),
         NodeKind::Stealth {
             domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
+            alibi: None,
         },
         OffsetDateTime::now_utc(),
     );
@@ -628,6 +631,7 @@ async fn a_stealth_node_serving_both_carriers_puts_both_behind_the_door() {
         Label::try_from(unique("n").as_str()).unwrap(),
         NodeKind::Stealth {
             domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
+            alibi: None,
         },
         OffsetDateTime::now_utc(),
     );

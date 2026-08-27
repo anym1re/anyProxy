@@ -147,6 +147,10 @@ pub enum NodeCommand {
         /// Hostname a stealth node answers on.
         #[arg(long)]
         domain: Option<String>,
+        /// Hostname the forged handshake claims to be, for a node that also
+        /// serves a site of its own.
+        #[arg(long)]
+        alibi: Option<String>,
     },
     /// Lists every node.
     List,
@@ -676,11 +680,17 @@ async fn node(command: NodeCommand, context: Context) -> Outcome {
             label,
             kind,
             domain,
+            alibi,
         } => {
             let created = post(
                 &context,
                 "/v1/nodes",
-                serde_json::json!({ "label": label, "kind": kind, "domain": domain }),
+                serde_json::json!({
+                    "label": label,
+                    "kind": kind,
+                    "domain": domain,
+                    "alibi": alibi,
+                }),
             )
             .await?;
             let id = text(&created, "id");

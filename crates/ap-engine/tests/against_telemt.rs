@@ -83,6 +83,7 @@ fn a_config(port: u16, accesses: Vec<WireAccess>) -> Config {
         node: NodeShape {
             kind: "stealth".to_owned(),
             domain: Some("cover.example.com".to_owned()),
+            alibi: None,
         },
         listeners: vec![Listener {
             method: "faketls".to_owned(),
@@ -114,7 +115,6 @@ async fn start(accesses: Vec<WireAccess>) -> Option<Engine> {
         mask_host: "www.cloudflare.com".to_owned(),
         cover_site: "http://127.0.0.1:8081".to_owned(),
         public_addr: "203.0.113.7:443".to_owned(),
-        alibi: None,
     };
     std::fs::create_dir_all(dir.join("state")).unwrap();
 

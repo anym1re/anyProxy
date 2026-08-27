@@ -2,13 +2,19 @@ use crate::{Domain, Error, OpenMethod, Secret, StealthMethod};
 
 /// Link for a method a stealth node serves.
 ///
-/// FakeTLS puts the cover domain in the secret so the client presents the
-/// right SNI; WEB names the domain directly, because the transport is real
-/// HTTPS to that host.
+/// FakeTLS puts a name in the secret so the client presents it as the one it
+/// is asking for; WEB names the host directly, because the transport is real
+/// HTTPS to it.
+///
+/// The two names can differ, and on a node serving both they must. The site
+/// answers to the node's own name and holds a certificate for it, while the
+/// forged handshake claims whatever the node borrows. A link that told a
+/// client to ask for the site's name would be answered by the site.
 pub fn stealth_link(
     method: StealthMethod,
     host: &str,
     domain: &Domain,
+    claimed: &Domain,
     secret: &Secret,
 ) -> Result<String, Error> {
     if host.is_empty() {
@@ -18,7 +24,7 @@ pub fn stealth_link(
         StealthMethod::FakeTls => format!(
             "https://t.me/proxy?server={host}&port=443&secret=ee{}{}",
             secret.expose_hex(),
-            hex::encode(domain.as_str())
+            hex::encode(claimed.as_str())
         ),
         StealthMethod::Web => format!(
             "https://t.me/webproxy?server={}&secret={}",
@@ -62,7 +68,14 @@ mod tests {
     #[test]
     fn fake_tls_carries_the_cover_domain_in_the_secret() {
         assert_eq!(
-            stealth_link(StealthMethod::FakeTls, "203.0.113.7", &domain(), &secret()).unwrap(),
+            stealth_link(
+                StealthMethod::FakeTls,
+                "203.0.113.7",
+                &domain(),
+                &domain(),
+                &secret()
+            )
+            .unwrap(),
             "https://t.me/proxy?server=203.0.113.7&port=443&secret=ee000102030405060708090a0b0c0d0e0f636f7665722e6578616d706c652e636f6d"
         );
     }
@@ -70,7 +83,14 @@ mod tests {
     #[test]
     fn web_names_the_domain_directly() {
         assert_eq!(
-            stealth_link(StealthMethod::Web, "203.0.113.7", &domain(), &secret()).unwrap(),
+            stealth_link(
+                StealthMethod::Web,
+                "203.0.113.7",
+                &domain(),
+                &domain(),
+                &secret()
+            )
+            .unwrap(),
             "https://t.me/webproxy?server=cover.example.com&secret=000102030405060708090a0b0c0d0e0f"
         );
     }
@@ -86,7 +106,7 @@ mod tests {
     #[test]
     fn an_empty_host_is_refused() {
         assert_eq!(
-            stealth_link(StealthMethod::FakeTls, "", &domain(), &secret()),
+            stealth_link(StealthMethod::FakeTls, "", &domain(), &domain(), &secret()),
             Err(Error::LinkHost)
         );
         assert_eq!(mtproto_link("", 8443, &secret()), Err(Error::LinkHost));

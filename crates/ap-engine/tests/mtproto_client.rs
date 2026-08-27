@@ -148,7 +148,6 @@ fn start() -> Option<Node> {
         mask_host: "www.cloudflare.com".to_owned(),
         cover_site: "http://127.0.0.1:8081".to_owned(),
         public_addr: "203.0.113.7:443".to_owned(),
-        alibi: None,
     };
 
     let config = Config {
@@ -157,6 +156,7 @@ fn start() -> Option<Node> {
         node: NodeShape {
             kind: "open".to_owned(),
             domain: None,
+            alibi: None,
         },
         listeners: vec![Listener {
             method: "mtproto".to_owned(),

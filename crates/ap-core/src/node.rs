@@ -15,6 +15,16 @@ pub enum NodeKind {
     Stealth {
         /// Hostname the cover site and the clients share.
         domain: Domain,
+        /// Hostname the forged handshake claims to be, when it is not the
+        /// node's own.
+        ///
+        /// A node serving only the forged handshake has one name and borrows
+        /// it: `domain` is somebody else's site and there is no alibi beside
+        /// it. A node that also serves a site of its own has two, because the
+        /// site answers to a name it holds a certificate for while the
+        /// handshake goes on borrowing. The front door tells the two apart by
+        /// which one a client asks for, so they must differ.
+        alibi: Option<Domain>,
     },
     /// Unmasked methods, each on its own port.
     Open,
@@ -41,18 +51,42 @@ impl NodeKind {
     /// Borrows the domain of a stealth node.
     pub fn domain(&self) -> Option<&Domain> {
         match self {
-            Self::Stealth { domain } => Some(domain),
+            Self::Stealth { domain, .. } => Some(domain),
+            Self::Open => None,
+        }
+    }
+
+    /// What the forged handshake claims to be.
+    ///
+    /// The alibi when there is one, the node's own name otherwise.
+    pub fn claimed(&self) -> Option<&Domain> {
+        match self {
+            Self::Stealth { domain, alibi } => Some(alibi.as_ref().unwrap_or(domain)),
+            Self::Open => None,
+        }
+    }
+
+    /// The alibi as stored, which is absent when the node has none.
+    pub fn alibi(&self) -> Option<&Domain> {
+        match self {
+            Self::Stealth { alibi, .. } => alibi.as_ref(),
             Self::Open => None,
         }
     }
 
     /// Rebuilds the kind from a stored tag and domain, rejecting the two
     /// combinations the type itself cannot express.
-    pub fn from_parts(tag: NodeKindTag, domain: Option<Domain>) -> Result<Self, Error> {
+    pub fn from_parts(
+        tag: NodeKindTag,
+        domain: Option<Domain>,
+        alibi: Option<Domain>,
+    ) -> Result<Self, Error> {
         match (tag, domain) {
-            (NodeKindTag::Stealth, Some(domain)) => Ok(Self::Stealth { domain }),
+            (NodeKindTag::Stealth, Some(domain)) => Ok(Self::Stealth { domain, alibi }),
             (NodeKindTag::Stealth, None) => Err(Error::StealthWithoutDomain),
-            (NodeKindTag::Open, None) => Ok(Self::Open),
+            (NodeKindTag::Open, None) if alibi.is_none() => Ok(Self::Open),
+            // An open node has nothing to pretend to be: it does not pretend.
+            (NodeKindTag::Open, None) => Err(Error::OpenWithDomain),
             (NodeKindTag::Open, Some(_)) => Err(Error::OpenWithDomain),
         }
     }
@@ -198,7 +232,10 @@ mod tests {
 
     #[test]
     fn a_stealth_node_always_carries_a_domain() {
-        let kind = NodeKind::Stealth { domain: domain() };
+        let kind = NodeKind::Stealth {
+            domain: domain(),
+            alibi: None,
+        };
         assert_eq!(kind.tag(), NodeKindTag::Stealth);
         assert_eq!(kind.domain(), Some(&domain()));
     }
@@ -213,7 +250,7 @@ mod tests {
     #[test]
     fn stealth_without_a_domain_is_rejected_at_the_boundary() {
         assert_eq!(
-            NodeKind::from_parts(NodeKindTag::Stealth, None),
+            NodeKind::from_parts(NodeKindTag::Stealth, None, None),
             Err(Error::StealthWithoutDomain)
         );
     }
@@ -221,7 +258,7 @@ mod tests {
     #[test]
     fn open_with_a_domain_is_rejected_at_the_boundary() {
         assert_eq!(
-            NodeKind::from_parts(NodeKindTag::Open, Some(domain())),
+            NodeKind::from_parts(NodeKindTag::Open, Some(domain()), None),
             Err(Error::OpenWithDomain)
         );
     }
@@ -229,11 +266,14 @@ mod tests {
     #[test]
     fn valid_pairs_are_rebuilt() {
         assert_eq!(
-            NodeKind::from_parts(NodeKindTag::Stealth, Some(domain())),
-            Ok(NodeKind::Stealth { domain: domain() })
+            NodeKind::from_parts(NodeKindTag::Stealth, Some(domain()), None),
+            Ok(NodeKind::Stealth {
+                domain: domain(),
+                alibi: None
+            })
         );
         assert_eq!(
-            NodeKind::from_parts(NodeKindTag::Open, None),
+            NodeKind::from_parts(NodeKindTag::Open, None, None),
             Ok(NodeKind::Open)
         );
     }

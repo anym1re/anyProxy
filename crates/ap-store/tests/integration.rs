@@ -175,6 +175,7 @@ async fn a_domain_belongs_to_one_node_only() {
             Label::try_from(unique("n").as_str()).unwrap(),
             NodeKind::Stealth {
                 domain: domain.clone(),
+                alibi: None,
             },
             OffsetDateTime::UNIX_EPOCH,
         );
@@ -296,7 +297,10 @@ async fn an_access_keeps_its_surface_across_a_round_trip() {
     let domain = Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap();
     let node = Node::new(
         Label::try_from(unique("n").as_str()).unwrap(),
-        NodeKind::Stealth { domain },
+        NodeKind::Stealth {
+            domain,
+            alibi: None,
+        },
         OffsetDateTime::UNIX_EPOCH,
     );
     NodeRepo::insert(&pool, &node).await.unwrap();

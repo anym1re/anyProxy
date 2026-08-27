@@ -105,6 +105,10 @@ pub struct NodeShape {
     pub kind: String,
     /// Hostname a stealth node answers on.
     pub domain: Option<String>,
+    /// Hostname the forged handshake claims to be, when it is not the node's
+    /// own. Absent on a node that borrows its only name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alibi: Option<String>,
 }
 
 /// One socket the node opens.

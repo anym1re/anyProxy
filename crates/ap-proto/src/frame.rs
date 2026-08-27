@@ -112,6 +112,7 @@ mod tests {
                 node: NodeShape {
                     kind: "stealth".to_owned(),
                     domain: Some("cover.example.com".to_owned()),
+                    alibi: None,
                 },
                 listeners: vec![Listener {
                     method: "faketls".to_owned(),

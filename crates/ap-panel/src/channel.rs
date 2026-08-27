@@ -315,6 +315,7 @@ async fn build_config(state: &AppState, node_id: Uuid) -> Result<Config, ApiErro
                 .kind()
                 .domain()
                 .map(|domain| domain.as_str().to_owned()),
+            alibi: node.kind().alibi().map(|alibi| alibi.as_str().to_owned()),
         },
         listeners: listeners_for(node.kind().tag(), &accesses),
         accesses,

@@ -59,9 +59,6 @@ pub fn settings(paths: &Paths) -> Result<Settings, AgentError> {
         public_addr: String::new(),
         mask_host: std::env::var("ANYPROXY_MASK_HOST")
             .unwrap_or_else(|_| DEFAULT_MASK_HOST.to_owned()),
-        alibi: std::env::var("ANYPROXY_ALIBI")
-            .ok()
-            .filter(|a| !a.is_empty()),
     })
 }
 
