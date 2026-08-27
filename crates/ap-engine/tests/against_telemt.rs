@@ -112,6 +112,8 @@ async fn start(accesses: Vec<WireAccess>) -> Option<Engine> {
         // them would make every test here a test of the network.
         middle_proxy: false,
         mask_host: "www.cloudflare.com".to_owned(),
+        cover_site: "http://127.0.0.1:8081".to_owned(),
+        public_addr: "203.0.113.7:443".to_owned(),
     };
     std::fs::create_dir_all(dir.join("state")).unwrap();
 

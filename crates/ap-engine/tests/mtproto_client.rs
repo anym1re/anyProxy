@@ -146,6 +146,8 @@ fn start() -> Option<Node> {
         // has a route to Telegram's middle proxies.
         middle_proxy: false,
         mask_host: "www.cloudflare.com".to_owned(),
+        cover_site: "http://127.0.0.1:8081".to_owned(),
+        public_addr: "203.0.113.7:443".to_owned(),
     };
 
     let config = Config {

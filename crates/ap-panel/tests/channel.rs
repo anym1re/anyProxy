@@ -585,6 +585,37 @@ async fn a_stealth_node_is_told_to_listen_on_443_alone() {
 }
 
 #[tokio::test]
+async fn a_stealth_node_whose_clients_arrive_inside_a_site_serves_the_site() {
+    // One socket on 443 carries one thing. A node holding an access that
+    // arrives inside a real site serves that; the forged handshake and the
+    // site cannot both have the port.
+    let state = state!();
+    let node = Node::new(
+        Label::try_from(unique("n").as_str()).unwrap(),
+        NodeKind::Stealth {
+            domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
+        },
+        OffsetDateTime::now_utc(),
+    );
+    let pool = ap_panel::channel::pool_of(&state);
+    ap_store::NodeRepo::insert(pool, &node).await.unwrap();
+
+    let client = a_client(&state).await;
+    let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
+    let access = AnyAccess::Stealth(Access::<ap_core::Stealth>::new(common, StealthMethod::Web));
+    ap_store::AccessRepo::insert(pool, &access, &Credential::generate_secret(), &key())
+        .await
+        .unwrap();
+
+    let config = ap_panel::channel::configuration_for(&state, node.id())
+        .await
+        .unwrap();
+    assert_eq!(config.listeners.len(), 1);
+    assert_eq!(config.listeners[0].bind, "0.0.0.0:443");
+    assert_eq!(config.listeners[0].method, "web");
+}
+
+#[tokio::test]
 async fn a_node_opens_a_socket_for_what_it_serves_and_no_other() {
     let state = state!();
     let node = open_node(&state).await;

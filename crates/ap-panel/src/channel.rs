@@ -338,8 +338,15 @@ fn listeners_for(kind: NodeKindTag, accesses: &[WireAccess]) -> Vec<Listener> {
     let mut listeners: Vec<Listener> = Vec::new();
 
     if kind == NodeKindTag::Stealth {
+        // One socket on 443, and one carrier through it. A node whose clients
+        // arrive inside a real site serves that site; otherwise it serves the
+        // forged handshake. The two cannot share the port, and a node that
+        // tried would answer half its clients with the wrong thing.
+        let inside_a_site = accesses
+            .iter()
+            .any(|access| access.method == "web" && access.state == "active");
         listeners.push(Listener {
-            method: "faketls".to_owned(),
+            method: if inside_a_site { "web" } else { "faketls" }.to_owned(),
             bind: "0.0.0.0:443".to_owned(),
         });
     }

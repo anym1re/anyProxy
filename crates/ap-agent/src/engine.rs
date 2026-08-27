@@ -21,6 +21,15 @@ const DEFAULT_MASK_HOST: &str = "www.cloudflare.com";
 const API_PORT: u16 = 9091;
 const METRICS_PORT: u16 = 9090;
 
+/// Where the cover site answers, on loopback and nowhere else.
+///
+/// A visitor reaches it through the front door on 443; nothing outside this
+/// machine talks to it directly.
+const COVER_PORT: u16 = 8081;
+
+/// The port clients reach a node serving web on.
+const WEB_PORT: u16 = 443;
+
 /// Reads the node's engine settings, making them on first use.
 ///
 /// The token is drawn once and kept, because the engine outlives a restart of
@@ -44,6 +53,10 @@ pub fn settings(paths: &Paths) -> Result<Settings, AgentError> {
         api_token: token,
         data_path: paths.dir.join("engine").display().to_string(),
         middle_proxy: true,
+        cover_site: format!("http://127.0.0.1:{COVER_PORT}"),
+        // Filled in when a configuration arrives and the node has a name to
+        // resolve. Until then there is nothing to reach it by.
+        public_addr: String::new(),
         mask_host: std::env::var("ANYPROXY_MASK_HOST")
             .unwrap_or_else(|_| DEFAULT_MASK_HOST.to_owned()),
     })
@@ -89,9 +102,45 @@ pub fn write_config(
     settings: &Settings,
     config: &ap_proto::Config,
 ) -> Result<(), AgentError> {
-    let rendered = ap_engine::config::render(config, settings)
+    let mut settings = settings.clone();
+    if serves_web(config) {
+        settings.public_addr = reachable_as(config)?;
+    }
+    let rendered = ap_engine::config::render(config, &settings)
         .map_err(|error| AgentError::Refused(error.to_string()))?;
     identity::write_owner_only(&config_path(paths), rendered.as_bytes())
+}
+
+/// Whether this configuration asks the engine to carry clients inside a site.
+fn serves_web(config: &ap_proto::Config) -> bool {
+    config
+        .listeners
+        .iter()
+        .any(|listener| listener.method == "web")
+}
+
+/// The address clients reach this node on, taken from its own name.
+///
+/// Resolved here rather than sent by the panel: the name is what clients ask
+/// for and what the certificate is issued to, so a name that does not lead to
+/// this machine is a node that cannot serve this method whatever the panel
+/// believes. Found out now rather than by every client in turn.
+fn reachable_as(config: &ap_proto::Config) -> Result<String, AgentError> {
+    use std::net::ToSocketAddrs as _;
+
+    let Some(domain) = config.node.domain.as_deref().filter(|d| !d.is_empty()) else {
+        return Err(AgentError::Refused(
+            "this node serves web and has no name".to_owned(),
+        ));
+    };
+    let found = (domain, WEB_PORT)
+        .to_socket_addrs()
+        .map_err(|error| AgentError::Refused(format!("{domain} leads nowhere: {error}")))?
+        // Of the fourth version: the engine wants one address and the node may
+        // have several. The one clients of both kinds can reach is this.
+        .find(|address| address.is_ipv4())
+        .ok_or_else(|| AgentError::Refused(format!("{domain} leads nowhere of the fourth kind")))?;
+    Ok(found.to_string())
 }
 
 /// Thirty-two bytes of randomness, as hexadecimal.

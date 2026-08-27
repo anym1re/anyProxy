@@ -33,6 +33,21 @@ pub struct Settings {
     /// front door on 443 serves a site of our own, this points at a site that
     /// already exists.
     pub mask_host: String,
+    /// Where the cover site answers, as an origin on this machine.
+    ///
+    /// The engine sends anything that is not a client of ours to this, so it
+    /// has to be a site and not a redirect: a visitor who followed a link and
+    /// found nothing there learns as much as one who found an error.
+    ///
+    /// Loopback or a private address, which is the engine's own rule. A cover
+    /// site somewhere else would be a second party who could see who visits.
+    pub cover_site: String,
+    /// The address clients reach this node on, with the port they reach it on.
+    ///
+    /// A literal address rather than a name: the engine wants one, and a node
+    /// whose name does not resolve to the machine it runs on cannot serve this
+    /// method at all.
+    pub public_addr: String,
 }
 
 /// The address every listener the node talks to itself on is bound to.
@@ -100,7 +115,13 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
         writeln!(out, "[[server.listeners]]").ok();
         writeln!(out, "ip = \"{ip}\"").ok();
         writeln!(out, "port = {port}").ok();
-        writeln!(out, "transport = \"{}\"", transport(&listener.method)?).ok();
+        let transport = transport(&listener.method)?;
+        writeln!(out, "transport = \"{transport}\"").ok();
+        if transport == "web" {
+            // Who is allowed to say where a request came from. The front door
+            // that ends the TLS runs on this machine, so nobody else is.
+            writeln!(out, "web_trusted_proxy_cidrs = [\"127.0.0.1/32\"]").ok();
+        }
         writeln!(out).ok();
     }
 
@@ -122,19 +143,63 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
             .map(|t| t == "web")
             .unwrap_or(false)
     }) {
-        writeln!(out, "[web]").ok();
-        writeln!(out, "enabled = true").ok();
-        writeln!(
-            out,
-            "carrier = \"{}\"",
-            carrier(&config.policy.carrier_mode)?
-        )
-        .ok();
-        writeln!(out).ok();
+        render_web(&mut out, config, settings)?;
     }
 
     render_access(&mut out, config)?;
     Ok(out)
+}
+
+/// The `[web]` tables: the name the node answers to, what a visitor sees, and
+/// which accesses arrive this way.
+///
+/// The carrier hides inside ordinary requests to a site that is really there.
+/// The site is ours and runs on this machine, so a visitor who followed a link
+/// out of curiosity is served by us and seen by nobody else.
+fn render_web(out: &mut String, config: &Config, settings: &Settings) -> Result<(), EngineError> {
+    let Some(domain) = config.node.domain.as_deref().filter(|d| !d.is_empty()) else {
+        return Err(EngineError::Refused(
+            "a node serving web has no name for clients to ask for".to_owned(),
+        ));
+    };
+
+    writeln!(out, "[web]").ok();
+    writeln!(out, "enabled = true").ok();
+    writeln!(
+        out,
+        "carrier = \"{}\"",
+        carrier(&config.policy.carrier_mode)?
+    )
+    .ok();
+    writeln!(out).ok();
+
+    writeln!(out, "[[web.vhosts]]").ok();
+    writeln!(out, "host = \"{domain}\"").ok();
+    writeln!(out, "public_addr = \"{}\"", settings.public_addr).ok();
+    writeln!(out).ok();
+
+    writeln!(out, "[web.vhosts.decoy]").ok();
+    writeln!(out, "mode = \"http_upstream\"").ok();
+    writeln!(out, "upstream = \"{}\"", settings.cover_site).ok();
+    writeln!(out).ok();
+
+    let mut any = false;
+    for access in &config.accesses {
+        if access.method != "web" || access.state != "active" {
+            continue;
+        }
+        any = true;
+        writeln!(out, "[[web.vhosts.profiles]]").ok();
+        writeln!(out, "user = \"{}\"", access.id.simple()).ok();
+        writeln!(out, "secret_mode = \"plain\"").ok();
+        writeln!(out).ok();
+    }
+    if !any {
+        return Err(EngineError::Refused(
+            "a node serving web has no access that arrives that way".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// The `[access]` tables: who may connect and under what limits.
@@ -275,6 +340,8 @@ mod tests {
             data_path: "/var/lib/anyproxy/engine".to_owned(),
             middle_proxy: true,
             mask_host: "www.cloudflare.com".to_owned(),
+            cover_site: "http://127.0.0.1:8081".to_owned(),
+            public_addr: "203.0.113.7:443".to_owned(),
         }
     }
 
@@ -438,11 +505,64 @@ mod tests {
 
     #[test]
     fn a_web_listener_brings_the_web_section_with_it() {
-        let config = a_config(vec![a_listener("web", "0.0.0.0:443")], vec![]);
+        let access = an_access("web");
+        let config = a_config(vec![a_listener("web", "0.0.0.0:443")], vec![access.clone()]);
         let rendered = render(&config, &settings()).unwrap();
+
         assert!(rendered.contains("transport = \"web\""));
+        assert!(rendered.contains("web_trusted_proxy_cidrs = [\"127.0.0.1/32\"]"));
         assert!(rendered.contains("[web]"));
         assert!(rendered.contains("carrier = \"https\""));
+        assert!(rendered.contains("host = \"cover.example.com\""));
+        assert!(rendered.contains("public_addr = \"203.0.113.7:443\""));
+        assert!(rendered.contains("mode = \"http_upstream\""));
+        assert!(
+            rendered.contains("upstream = \"http://127.0.0.1:8081\""),
+            "the cover site is not on this machine: {rendered}"
+        );
+        assert!(rendered.contains(&format!("user = \"{}\"", access.id.simple())));
+        assert!(rendered.contains("secret_mode = \"plain\""));
+    }
+
+    #[test]
+    fn a_node_serving_web_without_a_name_is_refused() {
+        // The whole method rests on a client asking for a name and getting a
+        // certificate for it. A node without one cannot serve this at all, and
+        // rendering something that starts and then fails every client is worse
+        // than saying so here.
+        let mut config = a_config(
+            vec![a_listener("web", "0.0.0.0:443")],
+            vec![an_access("web")],
+        );
+        config.node.domain = None;
+        assert!(render(&config, &settings()).is_err());
+    }
+
+    #[test]
+    fn a_node_serving_web_with_no_access_that_arrives_that_way_is_refused() {
+        let config = a_config(
+            vec![a_listener("web", "0.0.0.0:443")],
+            vec![an_access("faketls")],
+        );
+        assert!(render(&config, &settings()).is_err());
+    }
+
+    #[test]
+    fn an_access_that_is_not_active_brings_no_profile() {
+        let mut withdrawn = an_access("web");
+        withdrawn.state = "disabled".to_owned();
+        let serving = an_access("web");
+        let config = a_config(
+            vec![a_listener("web", "0.0.0.0:443")],
+            vec![withdrawn.clone(), serving.clone()],
+        );
+
+        let rendered = render(&config, &settings()).unwrap();
+        assert!(rendered.contains(&format!("user = \"{}\"", serving.id.simple())));
+        assert!(
+            !rendered.contains(&format!("user = \"{}\"", withdrawn.id.simple())),
+            "a withdrawn access still arrives by this road: {rendered}"
+        );
     }
 
     #[test]
@@ -535,7 +655,10 @@ mod tests {
 
     #[test]
     fn a_carrier_that_is_not_one_of_the_four_is_refused() {
-        let mut config = a_config(vec![a_listener("web", "0.0.0.0:443")], vec![]);
+        let mut config = a_config(
+            vec![a_listener("web", "0.0.0.0:443")],
+            vec![an_access("web")],
+        );
         config.policy.carrier_mode = "smoke signals".to_owned();
         assert!(matches!(
             render(&config, &settings()),
