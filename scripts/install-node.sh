@@ -19,6 +19,8 @@ panel=""
 code=""
 fingerprint=""
 version=""
+reach=""
+through="${ANYPROXY_THROUGH:-127.0.0.1:9050}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -26,6 +28,8 @@ while [ $# -gt 0 ]; do
         --code)        code="$2";        shift 2 ;;
         --fingerprint) fingerprint="$2"; shift 2 ;;
         --version)     version="$2";     shift 2 ;;
+        --reach)       reach="$2";       shift 2 ;;
+        --through)     through="$2";     shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -36,6 +40,73 @@ for required in panel code fingerprint; do
         exit 2
     fi
 done
+
+panel_host="${panel%:*}"
+
+# ── how this node reaches its panel ──────────────────────────────────────
+
+if [ -z "${reach}" ]; then
+    if [ -t 0 ]; then
+        echo "The panel listens on loopback. How does this node reach it?"
+        echo "  mtls       directly, over the pinned mutual TLS the channel already uses"
+        echo "  wireguard  through a tunnel that is already up on this machine"
+        echo "  onion      through a local Tor proxy, to an onion address"
+        printf 'reach: '
+        read -r reach
+    else
+        echo "missing --reach: say mtls, wireguard or onion" >&2
+        exit 2
+    fi
+fi
+
+case "${reach}" in
+    mtls)
+        # The channel is mutual TLS against a pinned authority whether or not
+        # anything else carries it. Nothing to arrange, and nothing to check
+        # beyond what enrolment will find out for itself.
+        ;;
+    wireguard)
+        command -v wg >/dev/null 2>&1 || {
+            echo "wireguard was chosen and wg is not installed" >&2
+            exit 2
+        }
+        interfaces="$(wg show interfaces 2>/dev/null || true)"
+        [ -n "${interfaces}" ] || {
+            echo "wireguard was chosen and no interface is up" >&2
+            exit 2
+        }
+        carried=""
+        for interface in ${interfaces}; do
+            if ip route get "${panel_host}" 2>/dev/null | grep -q "dev ${interface}"; then
+                carried="${interface}"
+                break
+            fi
+        done
+        [ -n "${carried}" ] || {
+            echo "no wireguard interface routes ${panel_host}" >&2
+            exit 2
+        }
+        ;;
+    onion)
+        case "${panel_host}" in
+            *.onion) ;;
+            *) echo "onion was chosen and ${panel_host} is not an onion address" >&2; exit 2 ;;
+        esac
+        # The proxy has to be answering now. A node installed against a Tor
+        # that is not running would enrol, fail, and retry for ever against a
+        # panel it was never able to reach.
+        proxy_host="${through%:*}"
+        proxy_port="${through##*:}"
+        (exec 3<>"/dev/tcp/${proxy_host}/${proxy_port}") 2>/dev/null || {
+            echo "onion was chosen and nothing answers at ${through}" >&2
+            exit 2
+        }
+        ;;
+    *)
+        echo "unknown way to reach the panel: ${reach}" >&2
+        exit 2
+        ;;
+esac
 
 [ "$(id -u)" = 0 ] || { echo "run this as root; the agent itself will not be" >&2; exit 1; }
 

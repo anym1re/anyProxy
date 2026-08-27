@@ -95,6 +95,21 @@ pub async fn connect(
     fingerprint: &str,
     identity: Option<&Identity>,
 ) -> Result<Link<TlsStream<TcpStream>>, AgentError> {
+    connect_through(address, fingerprint, identity, None).await
+}
+
+/// The same, by way of a proxy when the panel is not reachable directly.
+///
+/// The tunnel carries the connection; it does not stand in for the pin. What
+/// the panel proves about itself is proved through the tunnel exactly as it
+/// would be without one, so a proxy that lied about where it connected would
+/// still not be the panel.
+pub async fn connect_through(
+    address: &str,
+    fingerprint: &str,
+    identity: Option<&Identity>,
+    through: Option<&crate::through::Through>,
+) -> Result<Link<TlsStream<TcpStream>>, AgentError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = Arc::new(PinnedAuthority::from_hex(
         fingerprint,
@@ -124,9 +139,7 @@ pub async fn connect(
         None => builder.with_no_client_auth(),
     };
 
-    let stream = TcpStream::connect(address)
-        .await
-        .map_err(|error| AgentError::Panel(format!("{address}: {error}")))?;
+    let stream = crate::through::dial(address, through).await?;
     let name =
         ServerName::try_from(PANEL_NAME).map_err(|error| AgentError::Refused(error.to_string()))?;
     let stream = TlsConnector::from(Arc::new(config))

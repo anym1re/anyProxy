@@ -12,6 +12,7 @@ pub mod pin;
 pub mod posture;
 pub mod say;
 pub mod session;
+pub mod through;
 
 pub use error::AgentError;
 

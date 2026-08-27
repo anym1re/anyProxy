@@ -4,6 +4,7 @@ use std::time::Duration;
 use ap_agent::identity::Paths;
 use ap_agent::meter::Meter;
 use ap_agent::posture::{Posture, Silent};
+use ap_agent::through::Through;
 use ap_agent::{AgentError, backoff, engine, identity, link, say, session};
 use ap_engine::control::Control;
 use ap_engine::health::{self, Site};
@@ -24,6 +25,11 @@ struct Cli {
         default_value = "/var/lib/anyproxy"
     )]
     dir: PathBuf,
+
+    /// SOCKS5 proxy the panel is reached through, if it is not reached
+    /// directly. Either `host:port` or `user:pass@host:port`.
+    #[arg(long, global = true, env = "ANYPROXY_THROUGH")]
+    through: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -68,13 +74,18 @@ fn main() {
 
 async fn run(cli: Cli) -> Result<(), AgentError> {
     let paths = Paths::new(cli.dir);
+    // A setting that is not a proxy address stops the node here. Falling back
+    // to a direct connection would be a node reaching its panel by a way
+    // nobody chose, which on a machine that was meant to speak only through a
+    // tunnel is the one thing that must not happen.
+    let through = cli.through.as_deref().map(Through::parse).transpose()?;
     match cli.command {
         Command::Enroll {
             panel,
             code,
             fingerprint,
-        } => enrol(&paths, &panel, &code, &fingerprint).await,
-        Command::Run { panel } => serve(&paths, &panel).await,
+        } => enrol(&paths, &panel, &code, &fingerprint, through.as_ref()).await,
+        Command::Run { panel } => serve(&paths, &panel, through.as_ref()).await,
     }
 }
 
@@ -83,17 +94,18 @@ async fn enrol(
     panel: &str,
     code: &str,
     fingerprint: &str,
+    through: Option<&Through>,
 ) -> Result<(), AgentError> {
     // The pin is checked while the connection is being established, so a panel
     // that is not the pinned one never sees the code.
-    let mut channel = link::connect(panel, fingerprint, None).await?;
+    let mut channel = link::connect_through(panel, fingerprint, None, through).await?;
     let identity = session::enrol(&mut channel, code).await?;
     identity::store(paths, &identity)?;
     println!("enrolled as node {}", identity.node_id);
     Ok(())
 }
 
-async fn serve(paths: &Paths, panel: &str) -> Result<(), AgentError> {
+async fn serve(paths: &Paths, panel: &str, through: Option<&Through>) -> Result<(), AgentError> {
     // Held for as long as this agent runs. A second one on the same directory
     // would overwrite this one's cache and report an empty set of counters
     // over the top of what this one is actually carrying.
@@ -144,6 +156,7 @@ async fn serve(paths: &Paths, panel: &str) -> Result<(), AgentError> {
             &mut engine_process,
             &inbound,
             &mut inbound_open,
+            through,
         )
         .await
         {
@@ -175,8 +188,9 @@ async fn once(
     engine_process: &mut Option<std::process::Child>,
     inbound: &std::sync::Arc<Registry>,
     inbound_open: &mut bool,
+    through: Option<&Through>,
 ) -> Result<Option<uuid::Uuid>, AgentError> {
-    let mut channel = link::connect(panel, fingerprint, Some(identity)).await?;
+    let mut channel = link::connect_through(panel, fingerprint, Some(identity), through).await?;
     let mut state = session::open(
         &mut channel,
         identity.node_id,

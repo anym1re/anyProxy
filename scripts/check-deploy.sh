@@ -81,6 +81,32 @@ else
     report "the installer installs without verifying"
 fi
 
+# ── the node is told how it reaches its panel ────────────────────────────
+#
+# Each of these is run for real rather than read out of the file. The checks
+# happen before the installer asks for root, so they can be proved by anyone.
+
+installer="${root}/scripts/install-node.sh"
+
+refuses() {
+    local what="$1"
+    shift
+    local said
+    # Not a terminal, so an absent choice is refused rather than asked for.
+    said="$("${installer}" "$@" < /dev/null 2>&1)" && {
+        report "the installer accepted ${what}"
+        return
+    }
+    echo "  refused: ${what}"
+}
+
+common=(--panel "panel.invalid:8443" --code "code" --fingerprint "ff")
+
+refuses "no way of reaching the panel" "${common[@]}"
+refuses "a way of reaching the panel that does not exist" "${common[@]}" --reach carrier-pigeon
+refuses "an onion route to something that is not an onion address"     "${common[@]}" --reach onion
+refuses "an onion route with nothing answering"     --panel "nowhere.onion:8443" --code "code" --fingerprint "ff"     --reach onion --through "127.0.0.1:1"
+
 if [ "${failures}" -gt 0 ]; then
     echo "deployment check failed: ${failures}"
     exit 1
