@@ -94,6 +94,10 @@ async fn enrol(
 }
 
 async fn serve(paths: &Paths, panel: &str) -> Result<(), AgentError> {
+    // Held for as long as this agent runs. A second one on the same directory
+    // would overwrite this one's cache and report an empty set of counters
+    // over the top of what this one is actually carrying.
+    let _claim = ap_agent::only_one::claim(paths)?;
     let identity = identity::load(paths)?;
     let fingerprint = identity.fingerprint()?;
 
@@ -241,6 +245,14 @@ async fn once(
                 if let Some(delivery) =
                     meter.delivery(state_of_health(control, &state.posture).await, now)
                 {
+                    // Said out loud because a node that reports nothing and a
+                    // node that reports zeroes look the same from the panel,
+                    // and the difference is where a fault lives.
+                    println!(
+                        "reporting {} traffic and {} device counts",
+                        delivery.deltas.len(),
+                        delivery.devices.len()
+                    );
                     session::deliver(&mut channel, meter, delivery).await?;
                 }
             }

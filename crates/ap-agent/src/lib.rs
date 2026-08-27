@@ -7,6 +7,7 @@ mod error;
 pub mod identity;
 pub mod link;
 pub mod meter;
+pub mod only_one;
 pub mod pin;
 pub mod posture;
 pub mod session;
