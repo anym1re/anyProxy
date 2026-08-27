@@ -619,6 +619,47 @@ async fn a_stealth_node_whose_clients_arrive_inside_a_site_serves_the_site() {
 }
 
 #[tokio::test]
+async fn a_stealth_node_serving_both_carriers_puts_both_behind_the_door() {
+    // The site is served over real TLS, which the front door ends. It sends on
+    // by the name the client asked for, so the forged handshake can live on the
+    // same node — behind the door rather than on the port.
+    let state = state!();
+    let node = Node::new(
+        Label::try_from(unique("n").as_str()).unwrap(),
+        NodeKind::Stealth {
+            domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
+        },
+        OffsetDateTime::now_utc(),
+    );
+    let pool = ap_panel::channel::pool_of(&state);
+    ap_store::NodeRepo::insert(pool, &node).await.unwrap();
+
+    let client = a_client(&state).await;
+    for method in [StealthMethod::Web, StealthMethod::FakeTls] {
+        let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
+        let access = AnyAccess::Stealth(Access::<ap_core::Stealth>::new(common, method));
+        ap_store::AccessRepo::insert(pool, &access, &Credential::generate_secret(), &key())
+            .await
+            .unwrap();
+    }
+
+    let config = ap_panel::channel::configuration_for(&state, node.id())
+        .await
+        .unwrap();
+    let mut bound: Vec<(&str, &str)> = config
+        .listeners
+        .iter()
+        .map(|listener| (listener.method.as_str(), listener.bind.as_str()))
+        .collect();
+    bound.sort_unstable();
+    assert_eq!(
+        bound,
+        vec![("faketls", "127.0.0.1:8445"), ("web", "127.0.0.1:8444")],
+        "one of the two took the port the front door needs"
+    );
+}
+
+#[tokio::test]
 async fn a_node_opens_a_socket_for_what_it_serves_and_no_other() {
     let state = state!();
     let node = open_node(&state).await;
