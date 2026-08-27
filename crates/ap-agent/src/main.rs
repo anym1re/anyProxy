@@ -128,6 +128,9 @@ async fn serve(paths: &Paths, panel: &str, through: Option<&Through>) -> Result<
     // login is carried here, and the two never share a machine.
     let inbound = std::sync::Arc::new(Registry::new(&[], fresh_salt()));
     let mut inbound_open = false;
+    // The site a node serving web shows anyone else. Put up once, kept for as
+    // long as the agent runs.
+    let mut cover_open = false;
 
     let mut applied_revision = None;
     let mut attempt = 0u32;
@@ -156,6 +159,7 @@ async fn serve(paths: &Paths, panel: &str, through: Option<&Through>) -> Result<
             &mut engine_process,
             &inbound,
             &mut inbound_open,
+            &mut cover_open,
             through,
         )
         .await
@@ -188,6 +192,7 @@ async fn once(
     engine_process: &mut Option<std::process::Child>,
     inbound: &std::sync::Arc<Registry>,
     inbound_open: &mut bool,
+    cover_open: &mut bool,
     through: Option<&Through>,
 ) -> Result<Option<uuid::Uuid>, AgentError> {
     let mut channel = link::connect_through(panel, fingerprint, Some(identity), through).await?;
@@ -205,6 +210,9 @@ async fn once(
         inbound.replace(&running.accesses);
         if !*inbound_open {
             *inbound_open = open_inbounds(running, inbound).await;
+        }
+        if !*cover_open && shows_a_site(running) {
+            *cover_open = open_cover(identity.node_id, engine::COVER_PORT).await;
         }
         match engine_process {
             Some(_) => settle(paths, settings, control, running).await,
@@ -239,6 +247,9 @@ async fn once(
                     inbound.replace(&running.accesses);
                     if !*inbound_open {
                         *inbound_open = open_inbounds(running, inbound).await;
+                    }
+                    if !*cover_open && shows_a_site(running) {
+                        *cover_open = open_cover(identity.node_id, engine::COVER_PORT).await;
                     }
                     settle(paths, settings, control, running).await;
                 }
@@ -346,7 +357,38 @@ async fn open_inbounds(config: &ap_proto::Config, registry: &std::sync::Arc<Regi
     opened
 }
 
+/// Puts up the site a node shows anyone who is not a client of it.
+///
+/// Built from the node's own identifier, so this node looks the same every
+/// time it is asked and no two nodes look alike. It answers on loopback: what
+/// reaches it came through the front door on 443, which is on this machine.
+async fn open_cover(node_id: uuid::Uuid, port: u16) -> bool {
+    use sha2::{Digest, Sha256};
+
+    let seed: [u8; 32] = Sha256::digest(node_id.as_bytes()).into();
+    let site = std::sync::Arc::new(ap_cover::site(seed));
+    match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+        Ok(bound) => {
+            tokio::spawn(async move { ap_cover::serve(bound, site).await });
+            println!("showing a site on 127.0.0.1:{port}");
+            true
+        }
+        Err(reason) => {
+            eprintln!("127.0.0.1:{port}: {reason}");
+            false
+        }
+    }
+}
+
 /// Whether anything in this configuration is the engine's to serve.
+/// Whether this node carries its clients inside a site of its own.
+fn shows_a_site(config: &ap_proto::Config) -> bool {
+    config
+        .listeners
+        .iter()
+        .any(|listener| listener.method == "web")
+}
+
 fn needs_engine(config: &ap_proto::Config) -> bool {
     config
         .listeners

@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 ap-core = { path = "../ap-core" }
+ap-cover = { path = "../ap-cover" }
 ap-engine = { path = "../ap-engine" }
 ap-inbound = { path = "../ap-inbound" }
 ap-proto = { path = "../ap-proto" }

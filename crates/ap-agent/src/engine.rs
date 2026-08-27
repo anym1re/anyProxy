@@ -25,7 +25,7 @@ const METRICS_PORT: u16 = 9090;
 ///
 /// A visitor reaches it through the front door on 443; nothing outside this
 /// machine talks to it directly.
-const COVER_PORT: u16 = 8081;
+pub const COVER_PORT: u16 = 8081;
 
 /// The port clients reach a node serving web on.
 const WEB_PORT: u16 = 443;
