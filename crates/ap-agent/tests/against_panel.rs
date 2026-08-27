@@ -611,10 +611,9 @@ async fn a_node_refused_by_the_panel_is_told_why() {
     // what a panel that is not running looks like. An operator then spends the
     // evening on the network while the panel is up and objecting.
     let panel = panel!();
-    let mine = a_node(&panel).await;
-    let someone_elses = a_node(&panel).await;
-    let access = an_access_on(&panel, someone_elses).await;
-    let code = a_code(&panel, mine).await;
+    let node_id = a_node(&panel).await;
+    let access = an_access_on(&panel, node_id).await;
+    let code = a_code(&panel, node_id).await;
     let paths = agent_dir("refused");
 
     let mut channel = link::connect(&panel.address, &panel.fingerprint, None)
@@ -631,27 +630,33 @@ async fn a_node_refused_by_the_panel_is_told_why() {
         .await
         .unwrap();
 
-    let mut meter = Meter::new();
-    meter.observe(&a_reading(access, 0, 0), now).unwrap();
-    meter.observe(&a_reading(access, 4096, 1024), now).unwrap();
-    let delivery = meter
-        .delivery(
-            ap_proto::Health {
-                engine: "up".to_owned(),
-                site: "unknown".to_owned(),
-                cert_not_after: None,
-            },
-            now,
-        )
-        .unwrap();
+    let telemetry = ap_proto::Telemetry {
+        revision: Uuid::now_v7(),
+        sent_at: ap_core::time::format_rfc3339(now).unwrap(),
+        deltas: vec![ap_proto::TrafficDelta {
+            access_id: access,
+            // Not a day. Nothing sensible can be done with it, so it is a
+            // refusal rather than something to skip and carry on from.
+            day: "sometime last week".to_owned(),
+            bytes_in: 100,
+            bytes_out: 200,
+        }],
+        devices: Vec::new(),
+        health: ap_proto::Health {
+            engine: "up".to_owned(),
+            site: "unknown".to_owned(),
+            cert_not_after: None,
+        },
+    };
 
-    let outcome = session::deliver(&mut channel, &mut meter, delivery).await;
+    let mut meter = Meter::new();
+    let outcome = session::deliver(&mut channel, &mut meter, telemetry).await;
     let reason = match outcome {
         Err(ap_agent::AgentError::Panel(reason)) => reason,
         other => panic!("the panel did not say why it refused: {other:?}"),
     };
     assert!(
-        reason.contains("access_not_on_this_node"),
+        reason.contains("malformed_day"),
         "the reason does not name what was wrong: {reason}"
     );
 }

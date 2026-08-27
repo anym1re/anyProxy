@@ -273,22 +273,31 @@ async fn each_configuration_carries_a_later_revision() {
 }
 
 #[tokio::test]
-async fn telemetry_for_a_foreign_access_is_refused() {
+async fn telemetry_for_a_foreign_access_moves_nothing() {
     let state = state!();
     let mine = open_node(&state).await;
     let theirs = open_node(&state).await;
     let client = a_client(&state).await;
-    let access = an_access(&state, &client, &theirs).await;
+    let foreign = an_access(&state, &client, &theirs).await;
+    let ours = an_access(&state, &client, &mine).await;
 
     let telemetry = Telemetry {
         revision: Uuid::now_v7(),
         sent_at: ap_core::time::format_rfc3339(OffsetDateTime::now_utc()).unwrap(),
-        deltas: vec![TrafficDelta {
-            access_id: access.common().id(),
-            day: "2026-08-26".to_owned(),
-            bytes_in: 100,
-            bytes_out: 200,
-        }],
+        deltas: vec![
+            TrafficDelta {
+                access_id: foreign.common().id(),
+                day: "2026-08-26".to_owned(),
+                bytes_in: 100,
+                bytes_out: 200,
+            },
+            TrafficDelta {
+                access_id: ours.common().id(),
+                day: "2026-08-26".to_owned(),
+                bytes_in: 1,
+                bytes_out: 2,
+            },
+        ],
         devices: Vec::new(),
         health: Health {
             engine: "up".to_owned(),
@@ -297,14 +306,31 @@ async fn telemetry_for_a_foreign_access_is_refused() {
         },
     };
 
-    let outcome = ap_panel::channel::ingest_telemetry(&state, mine.id(), &telemetry).await;
-    assert!(outcome.is_err(), "a node reported on another node's access");
+    // The delivery is taken, because the panel cannot tell an access that was
+    // moved off this node from one that was never on it, and a node whose
+    // whole delivery was thrown away would keep sending the same one for ever
+    // — its own accesses uncounted along with the foreign one.
+    ap_panel::channel::ingest_telemetry(&state, mine.id(), &telemetry)
+        .await
+        .unwrap();
 
-    let totals =
-        ap_store::TrafficRepo::for_access(ap_panel::channel::pool_of(&state), access.common().id())
-            .await
-            .unwrap();
-    assert_eq!(totals.total(), 0, "the counter moved anyway");
+    let pool = ap_panel::channel::pool_of(&state);
+    let stolen = ap_store::TrafficRepo::for_access(pool, foreign.common().id())
+        .await
+        .unwrap();
+    assert_eq!(
+        stolen.total(),
+        0,
+        "a node wrote into an access that is not on it"
+    );
+    let counted = ap_store::TrafficRepo::for_access(pool, ours.common().id())
+        .await
+        .unwrap();
+    assert_eq!(
+        counted.total(),
+        3,
+        "the node's own traffic was lost along with the foreign delta"
+    );
 }
 
 #[tokio::test]

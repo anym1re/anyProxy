@@ -451,7 +451,8 @@ async fn apply_telemetry(
             .await
             .map_err(ApiError::from)?
         {
-            return Err(ApiError::BadRequest("access_not_on_this_node"));
+            not_ours(node_id, count.access_id);
+            continue;
         }
         let period = Date::parse(
             &count.period,
@@ -475,11 +476,18 @@ async fn apply_telemetry(
         // An agent may only report on what it serves. Checked here rather than
         // trusted, because a compromised node would otherwise write into any
         // client's counters.
+        //
+        // What is not this node's is not applied, and the rest of the delivery
+        // is. The panel cannot tell an access that was moved off this node
+        // from one that was never on it, and treating both as a violation let
+        // a single withdrawn access stop the accounting of every other access
+        // the node served — for as long as the node kept reporting it.
         if !ap_store::EnrollmentRepo::access_belongs(pool, delta.access_id, node_id)
             .await
             .map_err(ApiError::from)?
         {
-            return Err(ApiError::BadRequest("access_not_on_this_node"));
+            not_ours(node_id, delta.access_id);
+            continue;
         }
         let day = Date::parse(
             &delta.day,
@@ -504,6 +512,16 @@ async fn apply_telemetry(
         .await
         .map_err(ApiError::from)?;
     Ok(())
+}
+
+/// Writes down a node reporting on something that is not its to report on.
+///
+/// Said out loud because it is the one thing here that is either harmless — an
+/// access moved to another node, and this one has not caught up — or a node
+/// that has been taken, and nothing in the report itself tells the two apart.
+fn not_ours(node_id: Uuid, access_id: Uuid) {
+    let note = format!("node {node_id} reported on access {access_id}, which is not on it");
+    eprintln!("{note}");
 }
 
 /// Whether a health report says the node is serving.

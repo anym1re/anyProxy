@@ -104,6 +104,17 @@ impl Registry {
                 },
             );
         }
+        // What is no longer served is no longer counted. A node that kept
+        // counting for an access taken off it would report that access for as
+        // long as the process lived, and the panel — which cannot tell an
+        // access that was withdrawn from one that was never here — refuses the
+        // whole delivery. One withdrawn access would then stop the accounting
+        // of every other access on the node.
+        let served: std::collections::BTreeSet<Uuid> =
+            accounts.values().map(|account| account.access).collect();
+        if let Ok(mut usage) = self.usage.lock() {
+            usage.retain(|access, _| served.contains(access));
+        }
         if let Ok(mut held) = self.accounts.lock() {
             *held = accounts;
         }
@@ -394,5 +405,83 @@ mod tests {
         // in between must not throw it away.
         registry.replace(std::slice::from_ref(&access));
         assert_eq!(registry.taken().get(&access.id).unwrap().0, 10);
+    }
+}
+
+#[cfg(test)]
+mod forgetting {
+    use super::*;
+
+    fn an_access(user: &str, pass: &str) -> WireAccess {
+        WireAccess {
+            id: Uuid::now_v7(),
+            method: "socks5".to_owned(),
+            credential: WireCredential::Login {
+                user: user.to_owned(),
+                pass: pass.to_owned(),
+            },
+            max_devices: None,
+            state: "active".to_owned(),
+        }
+    }
+
+    #[test]
+    fn an_access_taken_off_the_node_stops_being_counted() {
+        // The panel cannot tell an access that was withdrawn from one that was
+        // never here, so it refuses a delivery naming either. A node that kept
+        // reporting a withdrawn access would take down the accounting of every
+        // other access it serves along with it.
+        let staying = an_access("stays", "one password");
+        let going = an_access("goes", "another password");
+        let registry = Registry::new(&[staying.clone(), going.clone()], [3u8; 32]);
+
+        let here = "203.0.113.9".parse().unwrap();
+        let first = registry
+            .admit(Method::Socks5, "stays", "one password", here)
+            .unwrap();
+        let second = registry
+            .admit(Method::Socks5, "goes", "another password", here)
+            .unwrap();
+        registry.used(first, 10, 20);
+        registry.used(second, 30, 40);
+        assert_eq!(registry.taken().len(), 2);
+
+        registry.replace(&[staying]);
+
+        let taken = registry.taken();
+        assert!(
+            !taken.contains_key(&second),
+            "an access the node no longer serves is still being counted"
+        );
+        assert_eq!(
+            taken.get(&first).map(|used| (used.0, used.1)),
+            Some((10, 20)),
+            "the access that stayed lost what it had carried"
+        );
+    }
+
+    #[test]
+    fn an_access_that_stays_keeps_its_totals_across_a_revision() {
+        // The totals only climb, and the meter takes differences between two
+        // readings. A revision that changes nothing must not look like a node
+        // that has just started, or the difference would be counted twice.
+        let access = an_access("stays", "one password");
+        let registry = Registry::new(std::slice::from_ref(&access), [4u8; 32]);
+        let id = registry
+            .admit(
+                Method::Socks5,
+                "stays",
+                "one password",
+                "203.0.113.9".parse().unwrap(),
+            )
+            .unwrap();
+        registry.used(id, 100, 200);
+
+        registry.replace(std::slice::from_ref(&access));
+
+        assert_eq!(
+            registry.taken().get(&id).map(|used| (used.0, used.1)),
+            Some((100, 200))
+        );
     }
 }
