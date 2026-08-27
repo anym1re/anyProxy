@@ -335,35 +335,39 @@ async fn build_config(state: &AppState, node_id: Uuid) -> Result<Config, ApiErro
 /// reason — a node with one MTProto access has no business holding SOCKS5 and
 /// HTTP open as well.
 fn listeners_for(kind: NodeKindTag, accesses: &[WireAccess]) -> Vec<Listener> {
-    let mut listeners: Vec<Listener> = Vec::new();
-
+    // A stealth node has one socket and one carrier through it. Everything it
+    // serves arrives the same way, which is what makes it look like one thing
+    // rather than a machine running several.
     if kind == NodeKindTag::Stealth {
-        // One socket on 443, and one carrier through it. A node whose clients
-        // arrive inside a real site serves that site; otherwise it serves the
-        // forged handshake. The two cannot share the port, and a node that
-        // tried would answer half its clients with the wrong thing.
         let inside_a_site = accesses
             .iter()
             .any(|access| access.method == "web" && access.state == "active");
-        listeners.push(Listener {
-            method: if inside_a_site { "web" } else { "faketls" }.to_owned(),
-            bind: "0.0.0.0:443".to_owned(),
-        });
+        return vec![if inside_a_site {
+            // Behind the front door rather than on the port itself. Clients
+            // arrive over real TLS, which something has to end, and what ends
+            // it hands the plain request to this.
+            Listener {
+                method: "web".to_owned(),
+                bind: format!("127.0.0.1:{WEB_BEHIND}"),
+            }
+        } else {
+            Listener {
+                method: "faketls".to_owned(),
+                bind: "0.0.0.0:443".to_owned(),
+            }
+        }];
     }
 
+    // An open node opens a socket for each method it actually serves, and none
+    // for the ones it does not.
+    let mut listeners: Vec<Listener> = Vec::new();
     for access in accesses {
         let Some(bind) = bind_for(kind, &access.method) else {
             continue;
         };
-        let method = match kind {
-            // Everything a stealth node serves arrives on one socket behind
-            // the same masquerade.
-            NodeKindTag::Stealth => "faketls",
-            NodeKindTag::Open => access.method.as_str(),
-        };
         if !listeners.iter().any(|listener| listener.bind == bind) {
             listeners.push(Listener {
-                method: method.to_owned(),
+                method: access.method.clone(),
                 bind,
             });
         }
@@ -372,6 +376,13 @@ fn listeners_for(kind: NodeKindTag, accesses: &[WireAccess]) -> Vec<Listener> {
 }
 
 /// Where one method is served on a node of this kind, if it is served at all.
+/// Where the engine listens for clients arriving inside a site.
+///
+/// Loopback: what reaches it has already come through the front door on 443,
+/// which is on the same machine. Not 8443, which is where a panel listens for
+/// its nodes: the two would collide wherever both ran.
+const WEB_BEHIND: u16 = 8444;
+
 fn bind_for(kind: NodeKindTag, method: &str) -> Option<String> {
     let port = match (kind, method) {
         (NodeKindTag::Stealth, "faketls" | "web") => 443,

@@ -611,8 +611,11 @@ async fn a_stealth_node_whose_clients_arrive_inside_a_site_serves_the_site() {
         .await
         .unwrap();
     assert_eq!(config.listeners.len(), 1);
-    assert_eq!(config.listeners[0].bind, "0.0.0.0:443");
     assert_eq!(config.listeners[0].method, "web");
+    assert_eq!(
+        config.listeners[0].bind, "127.0.0.1:8444",
+        "the engine was put on the port the front door needs"
+    );
 }
 
 #[tokio::test]
