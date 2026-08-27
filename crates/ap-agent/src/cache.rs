@@ -245,4 +245,28 @@ mod tests {
         assert!(key_from_hex("not hexadecimal").is_err());
         assert!(key_from_hex(&hex::encode([1u8; 32])).is_ok());
     }
+
+    #[test]
+    fn a_cache_written_by_another_run_is_the_same_as_none_to_this_one() {
+        // Two runs of the agent never share a cache key: the panel draws a
+        // fresh one for every connection. What the previous run wrote is not
+        // this one's to read, and treating that as a failure would end the
+        // session and start another that could not read it either.
+        let path = a_path("another-run");
+        let now = OffsetDateTime::now_utc();
+        write(
+            &path,
+            &a_config(),
+            3600,
+            &KeyStore::from_bytes([1u8; 32]),
+            now,
+        )
+        .unwrap();
+
+        let outcome = read(&path, &KeyStore::from_bytes([2u8; 32]), now);
+        assert!(
+            matches!(outcome, Err(AgentError::Cache)),
+            "the reason has to be one a caller can tell apart from a broken disk"
+        );
+    }
 }

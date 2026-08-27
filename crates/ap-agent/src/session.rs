@@ -61,7 +61,15 @@ impl Session {
     /// inside the sealed file, so this answers the same way after any number
     /// of failed reconnections.
     pub fn reconsider(&mut self, paths: &Paths, now: OffsetDateTime) -> Result<(), AgentError> {
-        self.posture = Posture::from_cache(cache::read(&paths.cache(), &self.cache_key, now)?);
+        self.posture = match cache::read(&paths.cache(), &self.cache_key, now) {
+            Ok(stored) => Posture::from_cache(stored),
+            // A cache this session cannot open is a cache belonging to some
+            // other run, which to this one is the same as none. Treating it as
+            // a failure would end the session and start another that could not
+            // open it either, over and over.
+            Err(AgentError::Cache) => Posture::from_cache(crate::cache::Stored::Absent),
+            Err(reason) => return Err(reason),
+        };
         Ok(())
     }
 }

@@ -190,10 +190,14 @@ async fn once(
         }
         match engine_process {
             Some(_) => settle(paths, settings, control, running).await,
-            None => match engine::start(paths, settings, running) {
+            // An open node serves logins and never runs the engine. Starting
+            // it to watch it refuse the configuration would be a failure
+            // reported every minute for something nobody asked for.
+            None if needs_engine(running) => match engine::start(paths, settings, running) {
                 Ok(child) => *engine_process = Some(child),
                 Err(reason) => eprintln!("the engine did not start: {reason}"),
             },
+            None => {}
         }
     }
 
@@ -313,6 +317,14 @@ async fn open_inbounds(config: &ap_proto::Config, registry: &std::sync::Arc<Regi
         }
     }
     opened
+}
+
+/// Whether anything in this configuration is the engine's to serve.
+fn needs_engine(config: &ap_proto::Config) -> bool {
+    config
+        .listeners
+        .iter()
+        .any(|listener| matches!(listener.method.as_str(), "faketls" | "web" | "mtproto"))
 }
 
 /// The salt the node counts devices by.
