@@ -443,3 +443,29 @@ async fn the_panel_refuses_to_start_without_a_key() {
     let outcome = AppState::build(&config).await;
     assert!(outcome.is_err(), "the panel started with no key");
 }
+
+#[tokio::test]
+async fn an_account_is_offered_on_the_port_its_method_is_served_on() {
+    let panel = panel!();
+    let (_, boss) = admin(&panel, Role::Superadmin).await;
+
+    for (method, expected) in [("socks5", 1080), ("http", 3128)] {
+        let (_, access_id) = an_access(&panel, &boss, method).await;
+        let reply = call(
+            &panel.router,
+            "POST",
+            &format!("/v1/accesses/{access_id}/link"),
+            Some(&boss),
+            Some(serde_json::json!({ "host": "203.0.113.7", "acknowledged": true })),
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+
+        let answer = reply.json();
+        // One port for both would send everyone holding an HTTP account to the
+        // SOCKS5 listener, which refuses them for speaking the wrong protocol.
+        assert_eq!(answer["port"], expected, "{method}: {}", reply.body);
+        assert!(answer["user"].as_str().is_some_and(|user| !user.is_empty()));
+        assert!(answer["link"].is_null(), "{method} has no link form");
+    }
+}

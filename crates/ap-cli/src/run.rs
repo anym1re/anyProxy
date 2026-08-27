@@ -581,10 +581,23 @@ async fn access(command: AccessCommand, context: Context) -> Outcome {
                 serde_json::json!({ "host": host, "acknowledged": true }),
             )
             .await?;
-            let link = answer["link"]
-                .as_str()
-                .ok_or_else(|| Failure::Execution("the panel returned no link".to_owned()))?;
-            Ok(Rendered::line(link.to_owned()))
+            // A masked or MTProto access has a link a client can be handed.
+            // SOCKS5 and HTTP have no link form at all, so what comes back is
+            // an address, a port and an account, and printing nothing for them
+            // is how an operator ends up believing the access does not work.
+            if let Some(link) = answer["link"].as_str() {
+                return Ok(Rendered::line(link.to_owned()));
+            }
+            let host = text(&answer, "host");
+            let user = text(&answer, "user");
+            let password = text(&answer, "password");
+            let port = answer["port"].as_i64().unwrap_or_default();
+            if host.is_empty() || user.is_empty() || port == 0 {
+                return Err(Failure::Execution(
+                    "the panel returned neither a link nor an account".to_owned(),
+                ));
+            }
+            Ok(Rendered::line(format!("{host} {port} {user} {password}")))
         }
         AccessCommand::Disable { id } => set_access_state(&context, id, "disabled").await,
         AccessCommand::Enable { id } => set_access_state(&context, id, "active").await,

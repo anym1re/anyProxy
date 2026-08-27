@@ -471,7 +471,14 @@ async fn render_link(
         }),
         (AnyAccess::Open(access), Credential::Login { user, pass }) => serde_json::json!({
             "host": body.host,
-            "port": 1080,
+            // The port the method is actually served on. One number for both
+            // would send everyone holding an HTTP account to the SOCKS5
+            // listener, which refuses them for looking like the wrong protocol.
+            "port": match access.method() {
+                OpenMethod::Socks5 => 1080,
+                OpenMethod::Http => 3128,
+                OpenMethod::Mtproto => 8443,
+            },
             "user": user,
             "password": pass,
             "method": access.method().as_stored(),
