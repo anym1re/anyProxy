@@ -171,14 +171,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ap-faketls"
-version = "0.0.0"
-
-[[package]]
-name = "ap-frontdoor"
-version = "0.0.0"
-
-[[package]]
 name = "ap-inbound"
 version = "0.0.0"
 dependencies = [
