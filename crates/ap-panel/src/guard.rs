@@ -1,6 +1,6 @@
 use ap_core::{
-    AccessState, AdTag, AdminUser, AnyAccess, Client, ClientState, Credential, Domain, KeyStore,
-    Label, Node, NodeState, Role, Tag, TagName,
+    AccessState, AdTag, AdminUser, AnyAccess, Client, ClientState, Credential, Domain, Holder,
+    KeyStore, Label, Node, NodeState, Role, Tag, TagName,
 };
 use ap_store::{AccessRepo, AuditRepo, ClientRepo, NodeRepo, TagRepo, TrafficRepo, TrafficTotals};
 use sqlx::PgPool;
@@ -62,6 +62,19 @@ impl<'a> Guarded<'a> {
 
     fn page(limit: Option<i64>) -> i64 {
         limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE)
+    }
+
+    /// Whether this actor may see a link, by who holds it.
+    ///
+    /// A public link belongs to nobody, so there is no ownership to check: it
+    /// is shown to whoever may see every client and hidden from a reseller,
+    /// who may see only what is theirs. Hidden rather than refused, the same
+    /// way a client they do not own is hidden.
+    async fn may_see(&self, holder: &Holder) -> Result<bool, ApiError> {
+        match holder {
+            Holder::Client(client_id) => self.owns(*client_id).await,
+            Holder::Public(_) => Ok(self.actor.role().reaches_every_client()),
+        }
     }
 
     async fn owns(&self, client_id: Uuid) -> Result<bool, ApiError> {
@@ -156,7 +169,7 @@ impl<'a> Guarded<'a> {
         let found = AccessRepo::by_id(self.pool, id)
             .await?
             .ok_or(ApiError::NotFound)?;
-        if self.owns(found.common().client_id()).await? {
+        if self.may_see(found.common().holder()).await? {
             Ok(found)
         } else {
             Err(ApiError::NotFound)
@@ -169,7 +182,7 @@ impl<'a> Guarded<'a> {
         access: &AnyAccess,
         credential: &Credential,
     ) -> Result<(), ApiError> {
-        if !self.owns(access.common().client_id()).await? {
+        if !self.may_see(access.common().holder()).await? {
             return Err(ApiError::NotFound);
         }
         AccessRepo::insert(self.pool, access, credential, self.key).await?;
@@ -288,6 +301,17 @@ impl<'a> Guarded<'a> {
         ap_core::NodeKind::from_parts(node.kind().tag(), domain.clone())?;
         NodeRepo::set_name(self.pool, id, domain.as_ref()).await?;
         Ok(())
+    }
+
+    /// Links the operator hands out themselves, which belong to no client.
+    ///
+    /// Only for roles that reach every client: a reseller sees what is theirs,
+    /// and these are nobody's.
+    pub async fn public_accesses(&self) -> Result<Vec<AnyAccess>, ApiError> {
+        if !self.actor.role().reaches_every_client() {
+            return Err(ApiError::NotFound);
+        }
+        Ok(AccessRepo::public(self.pool).await?)
     }
 
     /// Sets or clears the sponsorship tag a node carries.

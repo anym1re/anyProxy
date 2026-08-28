@@ -148,7 +148,11 @@ mod tests {
     }
 
     fn access() -> AccessCommon {
-        AccessCommon::new(Uuid::now_v7(), Uuid::now_v7(), OffsetDateTime::UNIX_EPOCH)
+        AccessCommon::new(
+            crate::Holder::Client(Uuid::now_v7()),
+            Uuid::now_v7(),
+            OffsetDateTime::UNIX_EPOCH,
+        )
     }
 
     #[test]

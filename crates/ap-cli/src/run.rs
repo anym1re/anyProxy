@@ -71,10 +71,15 @@ pub enum ClientCommand {
 
 #[derive(Subcommand)]
 pub enum AccessCommand {
-    /// Issues an access to a client on a node.
+    /// Issues an access on a node, to a client or to nobody.
     Add {
-        /// Client the access belongs to.
-        client: String,
+        /// Client the access belongs to. Left out for a link you hand out
+        /// yourself, which then needs --name.
+        client: Option<String>,
+        /// Name for a link that belongs to nobody, which is how you tell one
+        /// of them from another.
+        #[arg(long, conflicts_with = "client")]
+        name: Option<String>,
         /// Node the access lives on.
         #[arg(long)]
         node: String,
@@ -97,6 +102,8 @@ pub enum AccessCommand {
         /// Client the accesses belong to.
         client: String,
     },
+    /// Lists the links you hand out yourself, which belong to no client.
+    Public,
     /// Prints the connection link, revealing the secret.
     Link {
         /// Identifier of the access.
@@ -526,6 +533,7 @@ async fn access(command: AccessCommand, context: Context) -> Outcome {
     match command {
         AccessCommand::Add {
             client: client_label,
+            name,
             node: node_label,
             method,
             tag: tag_name,
@@ -541,7 +549,17 @@ async fn access(command: AccessCommand, context: Context) -> Outcome {
                 .transpose()
                 .map_err(|error| Failure::Execution(error.to_string()))?;
 
-            let client_record = client_by_label(&context, &client_label).await?;
+            // A link belongs to a client or to nobody, and one that belongs to
+            // nobody is known by its name. Neither leaves nothing to call it.
+            let client_id = match (&client_label, &name) {
+                (Some(label), None) => Some(client_by_label(&context, label).await?["id"].clone()),
+                (None, Some(_)) => None,
+                _ => {
+                    return Err(Failure::Arguments(
+                        "name a client, or pass --name for a link you hand out".to_owned(),
+                    ));
+                }
+            };
             let node_record = node_by_label(&context, &node_label).await?;
 
             let tag_id = match tag_name {
@@ -553,7 +571,8 @@ async fn access(command: AccessCommand, context: Context) -> Outcome {
                 &context,
                 "/v1/accesses",
                 serde_json::json!({
-                    "client_id": client_record["id"],
+                    "client_id": client_id,
+                    "name": name,
                     "node_id": node_record["id"],
                     "method": method,
                     "tag_id": tag_id,
@@ -595,6 +614,39 @@ async fn access(command: AccessCommand, context: Context) -> Outcome {
                             format!(
                                 "{} {} {}",
                                 text(access, "id"),
+                                text(access, "method"),
+                                text(access, "state")
+                            )
+                        })
+                        .collect(),
+                )),
+            }
+        }
+        AccessCommand::Public => {
+            let accesses = get(&context, "/v1/accesses/public").await?;
+            let rows = accesses.as_array().cloned().unwrap_or_default();
+
+            match context.format {
+                Format::Json => Ok(Rendered::Json(serde_json::json!(
+                    rows.iter()
+                        .map(|access| serde_json::json!({
+                            "id": access["id"],
+                            "name": access["name"],
+                            "method": access["method"],
+                            "state": access["state"],
+                        }))
+                        .collect::<Vec<_>>()
+                ))),
+                Format::Text if rows.is_empty() => {
+                    Ok(Rendered::line(say(locale, "cli-nothing-found", &[])?))
+                }
+                Format::Text => Ok(Rendered::Text(
+                    rows.iter()
+                        .map(|access| {
+                            format!(
+                                "{} {} {} {}",
+                                text(access, "id"),
+                                text(access, "name"),
                                 text(access, "method"),
                                 text(access, "state")
                             )

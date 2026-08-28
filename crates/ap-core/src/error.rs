@@ -83,6 +83,10 @@ pub enum Error {
     #[error("a node serving in the open cannot carry a domain")]
     OpenWithDomain,
 
+    /// A name for a public link that is empty, too long, or would break a line.
+    #[error("a link name is one to sixty-four characters on a single line")]
+    LinkName,
+
     /// A sponsorship tag that is not sixteen bytes of hex.
     #[error("a sponsorship tag is thirty-two hex characters")]
     AdTag,

@@ -3,7 +3,7 @@ use std::fmt;
 use ::time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::Error;
+use crate::{Error, LinkName};
 
 /// Methods a stealth node serves, all behind one port and one domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -64,11 +64,47 @@ pub enum AccessState {
     Revoked,
 }
 
+/// Who a link belongs to.
+///
+/// The two are not the same thing wearing different values. A client's link is
+/// answerable to that client: it counts against their quota, a reseller who
+/// owns them may see it, and withdrawing the client withdraws it. A link the
+/// operator hands out belongs to nobody, counts against nothing but its own
+/// ceiling, and is known by the name they gave it — which is the only way to
+/// tell one from another in a list where none has an owner.
+///
+/// Carried as one field so a link cannot be both or neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Holder {
+    /// One client's own link.
+    Client(Uuid),
+    /// A link the operator issued and hands out, under this name.
+    Public(LinkName),
+}
+
+impl Holder {
+    /// The client this link answers to, when it answers to one.
+    pub fn client_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Client(id) => Some(*id),
+            Self::Public(_) => None,
+        }
+    }
+
+    /// The name a public link is known by.
+    pub fn name(&self) -> Option<&LinkName> {
+        match self {
+            Self::Public(name) => Some(name),
+            Self::Client(_) => None,
+        }
+    }
+}
+
 /// The part of an access that does not depend on the surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessCommon {
     id: Uuid,
-    client_id: Uuid,
+    holder: Holder,
     node_id: Uuid,
     tag_id: Option<Uuid>,
     quota_bytes: Option<i64>,
@@ -80,10 +116,10 @@ pub struct AccessCommon {
 
 impl AccessCommon {
     /// Creates an active access with no limits of its own.
-    pub fn new(client_id: Uuid, node_id: Uuid, created_at: OffsetDateTime) -> Self {
+    pub fn new(holder: Holder, node_id: Uuid, created_at: OffsetDateTime) -> Self {
         Self {
             id: Uuid::now_v7(),
-            client_id,
+            holder,
             node_id,
             tag_id: None,
             quota_bytes: None,
@@ -98,7 +134,7 @@ impl AccessCommon {
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         id: Uuid,
-        client_id: Uuid,
+        holder: Holder,
         node_id: Uuid,
         tag_id: Option<Uuid>,
         quota_bytes: Option<i64>,
@@ -109,7 +145,7 @@ impl AccessCommon {
     ) -> Self {
         Self {
             id,
-            client_id,
+            holder,
             node_id,
             tag_id,
             quota_bytes,
@@ -156,8 +192,18 @@ impl AccessCommon {
     }
 
     /// Client this access belongs to.
-    pub fn client_id(&self) -> Uuid {
-        self.client_id
+    pub fn client_id(&self) -> Option<Uuid> {
+        self.holder.client_id()
+    }
+
+    /// Who this link belongs to.
+    pub fn holder(&self) -> &Holder {
+        &self.holder
+    }
+
+    /// The name a public link is known by, absent on a client's own.
+    pub fn name(&self) -> Option<&LinkName> {
+        self.holder.name()
     }
 
     /// Node this access lives on.
@@ -345,7 +391,11 @@ mod tests {
     use super::*;
 
     fn common() -> AccessCommon {
-        AccessCommon::new(Uuid::now_v7(), Uuid::now_v7(), OffsetDateTime::UNIX_EPOCH)
+        AccessCommon::new(
+            Holder::Client(Uuid::now_v7()),
+            Uuid::now_v7(),
+            OffsetDateTime::UNIX_EPOCH,
+        )
     }
 
     #[test]
@@ -410,5 +460,61 @@ mod tests {
                 actual: "open",
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod holder_tests {
+    use super::*;
+    use crate::LinkName;
+
+    fn public(name: &str) -> AccessCommon {
+        AccessCommon::new(
+            Holder::Public(LinkName::try_from(name).unwrap()),
+            Uuid::now_v7(),
+            OffsetDateTime::UNIX_EPOCH,
+        )
+    }
+
+    fn owned() -> AccessCommon {
+        AccessCommon::new(
+            Holder::Client(Uuid::now_v7()),
+            Uuid::now_v7(),
+            OffsetDateTime::UNIX_EPOCH,
+        )
+    }
+
+    #[test]
+    fn a_link_the_operator_hands_out_answers_to_nobody_and_has_a_name() {
+        let access = public("общая на весну");
+        assert_eq!(access.client_id(), None);
+        assert_eq!(
+            access.name().map(LinkName::as_str),
+            Some("общая на весну")
+        );
+    }
+
+    #[test]
+    fn a_clients_link_answers_to_them_and_has_no_name_of_its_own() {
+        let access = owned();
+        assert!(access.client_id().is_some());
+        assert_eq!(access.name(), None);
+        // The client's own label is what names it; a second name here would be
+        // one more thing to keep in step with nothing to keep it in step with.
+    }
+
+    #[test]
+    fn a_link_cannot_be_both_or_neither() {
+        // Not a test of behaviour but of what the type admits: `Holder` has
+        // two cases and no third, so an access with two owners or none cannot
+        // be built at all. The database says the same thing in a constraint,
+        // for rows that arrive from outside this program.
+        for access in [public("одна"), owned()] {
+            assert_eq!(
+                access.client_id().is_some(),
+                access.name().is_none(),
+                "an access was both a client's and public, or neither"
+            );
+        }
     }
 }

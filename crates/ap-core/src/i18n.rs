@@ -185,6 +185,7 @@ impl Error {
             Self::OpenWithDomain => "error-open-with-domain",
             Self::MaskingNotOffered => "error-masking-not-offered",
             Self::AdTag => "error-ad-tag",
+            Self::LinkName => "error-link-name",
             Self::MaxDevices => "error-max-devices",
             Self::AccessRevoked => "error-access-revoked",
             Self::SurfaceMismatch { .. } => "error-surface-mismatch",

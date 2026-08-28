@@ -11,7 +11,7 @@ use ap_agent::identity::Paths;
 use ap_agent::meter::Meter;
 use ap_agent::posture::{Posture, Silent};
 use ap_agent::{AgentError, cache, identity, link, session};
-use ap_core::{KeyStore, Label, Node, NodeKind};
+use ap_core::{Holder, KeyStore, Label, Node, NodeKind};
 use ap_panel::{AppState, Config as PanelConfig};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -452,7 +452,11 @@ async fn an_access_on(panel: &Panel, node_id: Uuid) -> Uuid {
         .await
         .unwrap();
 
-    let common = AccessCommon::new(client.id(), node_id, OffsetDateTime::now_utc());
+    let common = AccessCommon::new(
+        Holder::Client(client.id()),
+        node_id,
+        OffsetDateTime::now_utc(),
+    );
     let access = AnyAccess::Open(Access::<Open>::new(common, OpenMethod::Mtproto));
     let id = access.common().id();
     ap_store::AccessRepo::insert(

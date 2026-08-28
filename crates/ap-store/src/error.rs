@@ -12,6 +12,10 @@ pub enum StoreError {
     /// A migration would not apply.
     #[error("migration: {0}")]
     Migration(String),
+
+    /// A row the schema should not have allowed.
+    #[error("stored row is not one the schema permits: {0}")]
+    Impossible(String),
 }
 
 impl StoreError {

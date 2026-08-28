@@ -1,6 +1,6 @@
 use ap_core::{
-    Access, AccessCommon, AccessState, AnyAccess, Credential, Encrypted, KeyStore, Open,
-    OpenMethod, Stealth, StealthMethod,
+    Access, AccessCommon, AccessState, AnyAccess, Credential, Encrypted, Holder, KeyStore,
+    LinkName, Open, OpenMethod, Stealth, StealthMethod,
 };
 use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::StoreError;
 
-const COLUMNS: &str = "id, client_id, node_id, surface, method, credential_nonce, \
+const COLUMNS: &str = "id, client_id, name, node_id, surface, method, credential_nonce, \
      credential_ciphertext, tag_id, quota_bytes, expires_at, max_devices, state, created_at";
 
 /// Reads and writes accesses.
@@ -27,13 +27,14 @@ impl AccessRepo {
         let sealed = Encrypted::seal(credential, key)?;
         let digest = key.digest(&credential.digest_input());
         sqlx::query(
-            "insert into access (id, client_id, node_id, surface, method, credential_nonce, \
-             credential_ciphertext, credential_digest, tag_id, quota_bytes, expires_at, \
-             max_devices, state, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
-             $11, $12, $13, $14)",
+            "insert into access (id, client_id, name, node_id, surface, method, \
+             credential_nonce, credential_ciphertext, credential_digest, tag_id, quota_bytes, \
+             expires_at, max_devices, state, created_at) values ($1, $2, $3, $4, $5, $6, $7, \
+             $8, $9, $10, $11, $12, $13, $14, $15)",
         )
         .bind(common.id())
         .bind(common.client_id())
+        .bind(common.name().map(LinkName::as_str))
         .bind(common.node_id())
         .bind(access.surface_tag())
         .bind(method_of(access))
@@ -58,6 +59,16 @@ impl AccessRepo {
             .fetch_optional(pool)
             .await?;
         row.map(read_access).transpose()
+    }
+
+    /// Every link that belongs to no client, by name.
+    pub async fn public(pool: &PgPool) -> Result<Vec<AnyAccess>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "select {COLUMNS} from access where client_id is null order by name"
+        ))
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter().map(read_access).collect()
     }
 
     /// Every access a client holds, oldest first.
@@ -148,9 +159,24 @@ fn method_of(access: &AnyAccess) -> &'static str {
 }
 
 fn read_access(row: sqlx::postgres::PgRow) -> Result<AnyAccess, StoreError> {
+    let holder = match (
+        row.try_get::<Option<Uuid>, _>("client_id")?,
+        row.try_get::<Option<String>, _>("name")?,
+    ) {
+        (Some(client_id), None) => Holder::Client(client_id),
+        (None, Some(name)) => Holder::Public(LinkName::try_from(name.as_str())?),
+        // The schema forbids both and neither. Reaching here means that
+        // constraint is gone, and guessing which half to believe could hand
+        // one client's link to another.
+        _ => {
+            return Err(StoreError::Impossible(
+                "an access that is neither a client's nor public".to_owned(),
+            ));
+        }
+    };
     let common = AccessCommon::from_parts(
         row.try_get("id")?,
-        row.try_get("client_id")?,
+        holder,
         row.try_get("node_id")?,
         row.try_get("tag_id")?,
         row.try_get("quota_bytes")?,

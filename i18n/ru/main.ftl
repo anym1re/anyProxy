@@ -9,6 +9,7 @@ error-stealth-without-domain = маскированной ноде нужен д
 error-open-with-domain = нода без маскировки не может иметь домен
 error-masking-not-offered = маскировка предлагается только для mtproto
 error-ad-tag = спонсорский тег — тридцать два шестнадцатеричных знака
+error-link-name = название ссылки — от одного до шестидесяти четырёх знаков в одну строку
 error-max-devices = ограничение по устройствам: от 1 до 1000
 error-access-revoked = отозванный доступ не возобновляется
 error-surface-mismatch = ожидался доступ типа { $expected }, получен { $actual }

@@ -1,7 +1,7 @@
 use ap_core::{
     Access, AccessCommon, AccessState, AdTag, AdminLogin, AnyAccess, Client, ClientState,
-    Credential, Domain, Label, Node, NodeKind, NodeKindTag, Open, OpenMethod, Served, Stealth,
-    StealthMethod, Tag, TagName, time::format_rfc3339,
+    Credential, Domain, Holder, Label, LinkName, Node, NodeKind, NodeKindTag, Open, OpenMethod,
+    Served, Stealth, StealthMethod, Tag, TagName, time::format_rfc3339,
 };
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::StatusCode;
@@ -34,6 +34,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/clients/{id}/traffic", get(client_traffic))
         .route("/v1/clients/{id}/accesses", get(list_accesses))
         .route("/v1/accesses", post(create_access))
+        .route("/v1/accesses/public", get(list_public_accesses))
         .route("/v1/accesses/{id}", get(read_access))
         .route("/v1/accesses/{id}/state", post(set_access_state))
         .route("/v1/accesses/{id}/link", post(render_link))
@@ -303,6 +304,7 @@ fn access_json(access: &AnyAccess) -> Result<serde_json::Value, ApiError> {
     Ok(serde_json::json!({
         "id": common.id(),
         "client_id": common.client_id(),
+        "name": common.name().map(LinkName::as_str),
         "node_id": common.node_id(),
         "surface": access.surface_tag(),
         "method": method,
@@ -327,7 +329,13 @@ async fn list_accesses(
 
 #[derive(Deserialize)]
 struct NewAccess {
-    client_id: Uuid,
+    /// The client this link is for, on a link that is somebody's.
+    client_id: Option<Uuid>,
+    /// The name for a link the operator hands out themselves.
+    ///
+    /// Exactly one of this and `client_id`: a link belongs to a client or to
+    /// nobody, and one that belongs to nobody is known by what it is called.
+    name: Option<String>,
     node_id: Uuid,
     /// Which method this access arrives by, when the caller says.
     ///
@@ -341,6 +349,19 @@ struct NewAccess {
     max_devices: Option<i32>,
 }
 
+/// Links the operator hands out themselves.
+///
+/// Kept apart from a client's accesses because there is no client to ask for:
+/// these belong to nobody and are told apart by the name they were given.
+async fn list_public_accesses(
+    State(state): State<AppState>,
+    actor: Actor,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let accesses = state.guarded(&actor).public_accesses().await?;
+    let body: Result<Vec<_>, ApiError> = accesses.iter().map(access_json).collect();
+    Ok(Json(serde_json::json!(body?)))
+}
+
 async fn create_access(
     State(state): State<AppState>,
     actor: Actor,
@@ -349,7 +370,13 @@ async fn create_access(
     let guarded = state.guarded(&actor);
     let node = guarded.node(body.node_id).await?;
 
-    let mut common = AccessCommon::new(body.client_id, body.node_id, OffsetDateTime::now_utc());
+    let holder = match (body.client_id, body.name.as_deref()) {
+        (Some(client_id), None) => Holder::Client(client_id),
+        (None, Some(name)) => Holder::Public(LinkName::try_from(name)?),
+        _ => return Err(ApiError::Unprocessable("a_link_has_one_holder")),
+    };
+
+    let mut common = AccessCommon::new(holder, body.node_id, OffsetDateTime::now_utc());
     if let Some(tag) = body.tag_id {
         common = common.with_tag(tag);
     }

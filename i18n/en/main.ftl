@@ -9,6 +9,7 @@ error-stealth-without-domain = a masked node requires a domain
 error-open-with-domain = a node serving in the open cannot carry a domain
 error-masking-not-offered = only mtproto is offered with and without masking
 error-ad-tag = a sponsorship tag is thirty-two hex characters
+error-link-name = a link name is one to sixty-four characters on a single line
 error-max-devices = device limit must be between 1 and 1000
 error-access-revoked = a revoked access is never resumed
 error-surface-mismatch = expected a { $expected } access, found { $actual }

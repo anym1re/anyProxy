@@ -8,8 +8,8 @@
 
 use ap_core::{
     Access, AccessCommon, AccessState, AnyAccess, Client, ClientState, Credential, Domain,
-    Encrypted, KeyStore, Label, Node, NodeKind, NodeState, OpenMethod, Stealth, StealthMethod, Tag,
-    TagName,
+    Encrypted, Holder, KeyStore, Label, Node, NodeKind, NodeState, OpenMethod, Stealth,
+    StealthMethod, Tag, TagName,
 };
 use ap_store::{AccessRepo, AuditRepo, ClientRepo, NodeRepo, StoreError, TagRepo, TrafficRepo};
 use sqlx::{PgPool, Row};
@@ -63,7 +63,11 @@ async fn an_open_node(pool: &PgPool) -> Node {
 }
 
 async fn an_access(pool: &PgPool, client: &Client, node: &Node) -> (AnyAccess, Credential) {
-    let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::UNIX_EPOCH);
+    let common = AccessCommon::new(
+        Holder::Client(client.id()),
+        node.id(),
+        OffsetDateTime::UNIX_EPOCH,
+    );
     let access = AnyAccess::Open(Access::<ap_core::Open>::new(common, OpenMethod::Socks5));
     let credential = Credential::generate_secret();
     AccessRepo::insert(pool, &access, &credential, &key())
@@ -238,7 +242,11 @@ async fn one_credential_is_not_issued_twice_on_a_node() {
     let credential = Credential::generate_secret();
 
     for expected_ok in [true, false] {
-        let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::UNIX_EPOCH);
+        let common = AccessCommon::new(
+            Holder::Client(client.id()),
+            node.id(),
+            OffsetDateTime::UNIX_EPOCH,
+        );
         let access = AnyAccess::Open(Access::<ap_core::Open>::new(common, OpenMethod::Socks5));
         let result = AccessRepo::insert(&pool, &access, &credential, &key()).await;
         assert_eq!(result.is_ok(), expected_ok, "a credential was reused");
@@ -255,7 +263,11 @@ async fn the_same_credential_may_live_on_two_nodes() {
     let credential = Credential::generate_secret();
     for _ in 0..2 {
         let node = an_open_node(&pool).await;
-        let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::UNIX_EPOCH);
+        let common = AccessCommon::new(
+            Holder::Client(client.id()),
+            node.id(),
+            OffsetDateTime::UNIX_EPOCH,
+        );
         let access = AnyAccess::Open(Access::<ap_core::Open>::new(common, OpenMethod::Http));
         AccessRepo::insert(&pool, &access, &credential, &key())
             .await
@@ -327,7 +339,11 @@ async fn an_access_keeps_its_surface_across_a_round_trip() {
     );
     NodeRepo::insert(&pool, &node).await.unwrap();
 
-    let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::UNIX_EPOCH);
+    let common = AccessCommon::new(
+        Holder::Client(client.id()),
+        node.id(),
+        OffsetDateTime::UNIX_EPOCH,
+    );
     let access = AnyAccess::Stealth(Access::<Stealth>::new(common, StealthMethod::Web));
     AccessRepo::insert(&pool, &access, &Credential::generate_secret(), &key())
         .await
@@ -352,8 +368,12 @@ async fn a_tag_withdraws_every_access_under_it() {
     TagRepo::insert(&pool, &tag).await.unwrap();
 
     for _ in 0..3 {
-        let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::UNIX_EPOCH)
-            .with_tag(tag.id());
+        let common = AccessCommon::new(
+            Holder::Client(client.id()),
+            node.id(),
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .with_tag(tag.id());
         let access = AnyAccess::Open(Access::<ap_core::Open>::new(common, OpenMethod::Socks5));
         AccessRepo::insert(&pool, &access, &Credential::generate_secret(), &key())
             .await

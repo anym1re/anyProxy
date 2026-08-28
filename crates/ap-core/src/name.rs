@@ -353,3 +353,82 @@ mod ad_tag_tests {
         }
     }
 }
+
+/// The name an operator gives a link they hand out themselves.
+///
+/// Shown to the operator and nobody else: it says which public link is which
+/// in a list where none of them belongs to a client. Written by a person, so
+/// any script and ordinary punctuation are allowed and only what would break a
+/// line of output is not.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LinkName(String);
+
+/// Longest name a link may carry.
+const LINK_NAME_CEILING: usize = 64;
+
+impl LinkName {
+    /// Borrows the validated value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for LinkName {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Error> {
+        // Trimmed before it is measured: a name that is only spaces is no
+        // name, and trailing space is invisible in every place this is shown.
+        let trimmed = value.trim();
+        let valid = !trimmed.is_empty()
+            && trimmed.chars().count() <= LINK_NAME_CEILING
+            && !trimmed.chars().any(char::is_control);
+        if valid {
+            Ok(Self(trimmed.to_owned()))
+        } else {
+            Err(Error::LinkName)
+        }
+    }
+}
+
+impl fmt::Display for LinkName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod link_name_tests {
+    use super::*;
+
+    #[test]
+    fn a_name_a_person_would_write_is_taken() {
+        for good in ["Канал новостей", "spring promo", "для друзей — 2026"]
+        {
+            assert!(LinkName::try_from(good).is_ok(), "{good:?} refused");
+        }
+    }
+
+    #[test]
+    fn surrounding_space_is_not_part_of_the_name() {
+        assert_eq!(LinkName::try_from("  общая  ").unwrap().as_str(), "общая");
+    }
+
+    #[test]
+    fn nothing_and_only_space_are_refused() {
+        for bad in ["", "   ", "\t"] {
+            assert_eq!(LinkName::try_from(bad), Err(Error::LinkName));
+        }
+    }
+
+    #[test]
+    fn a_name_that_would_break_a_line_is_refused() {
+        assert_eq!(LinkName::try_from("две\nстроки"), Err(Error::LinkName));
+    }
+
+    #[test]
+    fn a_name_longer_than_the_ceiling_is_refused() {
+        let long: String = "и".repeat(LINK_NAME_CEILING + 1);
+        assert_eq!(LinkName::try_from(long.as_str()), Err(Error::LinkName));
+    }
+}

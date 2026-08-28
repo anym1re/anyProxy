@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ap_core::{
-    Access, AccessCommon, AccessState, AnyAccess, Client, Credential, Domain, KeyStore, Label,
-    Node, NodeKind, OpenMethod, StealthMethod,
+    Access, AccessCommon, AccessState, AnyAccess, Client, Credential, Domain, Holder, KeyStore,
+    Label, Node, NodeKind, OpenMethod, StealthMethod,
 };
 use ap_panel::{AppState, Config as PanelConfig};
 use ap_proto::{DeviceCount, Health, Message, Telemetry, TrafficDelta};
@@ -97,7 +97,11 @@ async fn a_client(state: &AppState) -> Client {
 }
 
 async fn an_access(state: &AppState, client: &Client, node: &Node) -> AnyAccess {
-    let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
+    let common = AccessCommon::new(
+        Holder::Client(client.id()),
+        node.id(),
+        OffsetDateTime::now_utc(),
+    );
     let access = AnyAccess::Open(Access::<ap_core::Open>::new(common, OpenMethod::Mtproto));
     ap_store::AccessRepo::insert(
         ap_panel::channel::pool_of(state),
@@ -583,7 +587,11 @@ async fn a_node_with_a_forged_handshake_keeps_443_itself() {
     ap_store::NodeRepo::insert(pool, &node).await.unwrap();
 
     let client = a_client(&state).await;
-    let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
+    let common = AccessCommon::new(
+        Holder::Client(client.id()),
+        node.id(),
+        OffsetDateTime::now_utc(),
+    );
     let access = AnyAccess::Stealth(Access::<ap_core::Stealth>::new(
         common,
         StealthMethod::FakeTls,
@@ -611,7 +619,11 @@ async fn a_node_carrying_clients_inside_a_site_waits_behind_the_door() {
     ap_store::NodeRepo::insert(pool, &node).await.unwrap();
 
     let client = a_client(&state).await;
-    let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
+    let common = AccessCommon::new(
+        Holder::Client(client.id()),
+        node.id(),
+        OffsetDateTime::now_utc(),
+    );
     let access = AnyAccess::Stealth(Access::<ap_core::Stealth>::new(common, StealthMethod::Web));
     ap_store::AccessRepo::insert(pool, &access, &Credential::generate_secret(), &key())
         .await
@@ -641,7 +653,11 @@ async fn a_masked_node_opens_nothing_for_a_method_it_does_not_serve() {
 
     let client = a_client(&state).await;
     for method in [StealthMethod::Web, StealthMethod::FakeTls] {
-        let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
+        let common = AccessCommon::new(
+            Holder::Client(client.id()),
+            node.id(),
+            OffsetDateTime::now_utc(),
+        );
         let access = AnyAccess::Stealth(Access::<ap_core::Stealth>::new(common, method));
         ap_store::AccessRepo::insert(pool, &access, &Credential::generate_secret(), &key())
             .await
@@ -679,7 +695,11 @@ async fn a_node_opens_a_socket_for_what_it_serves_and_no_other() {
         empty.listeners
     );
 
-    let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
+    let common = AccessCommon::new(
+        Holder::Client(client.id()),
+        node.id(),
+        OffsetDateTime::now_utc(),
+    );
     let access = AnyAccess::Open(Access::<ap_core::Open>::new(common, OpenMethod::Mtproto));
     ap_store::AccessRepo::insert(
         ap_panel::channel::pool_of(&state),
