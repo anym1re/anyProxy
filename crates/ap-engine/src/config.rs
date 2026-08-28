@@ -81,31 +81,29 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
     }
     writeln!(out).ok();
 
-    // Which of telemt's client modes are allowed, decided by what the node
-    // actually serves. All are off by default, so a node serving plain MTProto
-    // without this refuses every client it was issued links for — with the
-    // links looking perfectly correct.
+    // Which of telemt's client modes are allowed, decided by the kind of node
+    // this is. All are off by default, so a node serving plain MTProto without
+    // this refuses every client it was issued links for — with the links
+    // looking perfectly correct.
     //
-    // The TLS mode covers both masked methods. A node carrying clients inside
-    // a site needs it as much as one with a forged handshake: the carrier
-    // wraps MTProto either way, and telemt refuses to start at all with no
-    // mode enabled — "No modes enabled", on a node whose configuration is
-    // otherwise complete. Enabling it opens nothing by itself, because what a
-    // node listens on is decided by its listeners, and a node serving a site
-    // has only the one that speaks web.
-    let serves_plain = config
-        .listeners
-        .iter()
-        .any(|listener| listener.method == "mtproto");
-    let serves_faketls = config
-        .listeners
-        .iter()
-        .any(|listener| listener.method == "faketls");
-    let serves_masked = serves_faketls
-        || config
-            .listeners
-            .iter()
-            .any(|listener| listener.method == "web");
+    // Taken from the kind and not from what the node is serving at this
+    // moment. A node whose last access has just been withdrawn is serving
+    // nobody, and deciding by that produced a configuration with no mode at
+    // all — which telemt refuses outright, keeping the configuration it
+    // already had. The withdrawal then never took effect: the engine went on
+    // serving the access that had just been taken away. Seen on a live node.
+    //
+    // Enabling a mode opens nothing by itself. What a node listens on is its
+    // listeners, and a node with nothing to serve is sent none; the users it
+    // will authenticate are its accesses, and a node with none authenticates
+    // nobody.
+    //
+    // The TLS mode covers both masked kinds: a node carrying clients inside a
+    // site needs it as much as one with a forged handshake, because the
+    // carrier wraps MTProto either way.
+    let serves_plain = config.node.kind == "mtproto";
+    let serves_faketls = config.node.kind == "faketls";
+    let serves_masked = serves_faketls || config.node.kind == "web";
     writeln!(out, "[general.modes]").ok();
     writeln!(out, "classic = false").ok();
     writeln!(out, "secure = {serves_plain}").ok();
@@ -480,7 +478,9 @@ mod tests {
         // A plain MTProto link carries a `dd` secret, which telemt calls the
         // secure mode and leaves off unless told. Left off, every client the
         // panel issued a link for is refused while the link looks right.
-        let plain = a_config(vec![a_listener("mtproto", "0.0.0.0:8443")], vec![]);
+        let mut plain = a_config(vec![a_listener("mtproto", "0.0.0.0:8443")], vec![]);
+        plain.node.kind = "mtproto".to_owned();
+        plain.node.domain = None;
         let rendered = render(&plain, &settings()).unwrap();
         assert!(rendered.contains("secure = true"), "{rendered}");
         assert!(rendered.contains("tls = false"));
@@ -836,6 +836,34 @@ mod masquerade_tests {
             let rendered = render(&config, &plain_settings()).unwrap();
             assert!(!rendered.contains("ad_tag"), "{bad:?} reached the engine");
             assert!(rendered.contains("use_middle_proxy = false"), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_node_with_nothing_left_to_serve_still_produces_a_usable_configuration() {
+        // The case that mattered: the last access on a node is withdrawn, so
+        // there is nothing to serve and no listener to open. Deciding the
+        // modes by that left every one of them off, which telemt refuses — it
+        // keeps the configuration it already has, and goes on serving the very
+        // access that was just taken away.
+        for kind in ["faketls", "web", "mtproto"] {
+            let config = Config {
+                listeners: Vec::new(),
+                accesses: Vec::new(),
+                ..a_masked_config(kind, "cover.example.com")
+            };
+            let rendered = render(&config, &plain_settings()).unwrap();
+            let modes = rendered
+                .split("[general.modes]")
+                .nth(1)
+                .unwrap_or_default()
+                .split("[general.telemetry]")
+                .next()
+                .unwrap_or_default();
+            assert!(
+                modes.contains("= true"),
+                "{kind} with nothing to serve was left with no mode: {modes}"
+            );
         }
     }
 
