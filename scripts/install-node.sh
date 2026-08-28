@@ -63,14 +63,31 @@ panel_host="${panel%:*}"
 #
 # Refused here rather than left to the operator to remember, because the moment
 # it is noticed is usually after clients are already connecting.
+# Each source is read into a variable first and matched with `case`. Piping
+# into `grep -q` reads better and is wrong here: `grep -q` leaves on its first
+# match, the writer upstream is killed by SIGPIPE, and `set -o pipefail` turns
+# that into a failed pipeline — so the test is false exactly when it has found
+# something. Found on a panel host this check walked straight past.
+panel_units="$(systemctl list-unit-files anyproxy-panel.service 2>/dev/null || true)"
+panel_running="$(ps -eo args= 2>/dev/null || true)"
+panel_ports="$(ss -ltn 2>/dev/null || true)"
+
 panel_here=""
-if systemctl list-unit-files anyproxy-panel.service >/dev/null 2>&1 &&
-   systemctl list-unit-files anyproxy-panel.service 2>/dev/null | grep -q anyproxy-panel; then
-    panel_here="a systemd unit named anyproxy-panel"
-elif [ -x "${prefix}/anyproxy-panel" ]; then
+case "${panel_units}" in
+    *anyproxy-panel*) panel_here="a systemd unit named anyproxy-panel" ;;
+esac
+if [ -z "${panel_here}" ] && [ -x "${prefix}/anyproxy-panel" ]; then
     panel_here="the panel binary at ${prefix}/anyproxy-panel"
-elif ss -ltn 2>/dev/null | grep -qE '127\.0\.0\.1:8080'; then
-    panel_here="something already listening on the panel's REST port"
+fi
+if [ -z "${panel_here}" ]; then
+    case "${panel_running}" in
+        *anyproxy-panel*) panel_here="the panel running on this machine" ;;
+    esac
+fi
+if [ -z "${panel_here}" ]; then
+    case "${panel_ports}" in
+        *127.0.0.1:8080*) panel_here="something already listening on the panel's REST port" ;;
+    esac
 fi
 
 if [ -n "${panel_here}" ]; then
