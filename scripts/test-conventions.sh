@@ -19,7 +19,8 @@ else
 fi
 
 bad_output=$(bash "$checker" "${here}/fixtures/bad" 2>&1)
-for id in user-facing-literal secret-exposed timestamp-string-op sql-concatenation; do
+for id in user-facing-literal secret-exposed timestamp-string-op sql-concatenation \
+          handler-without-actor; do
     if printf '%s\n' "$bad_output" | grep -q "^${id}"; then
         echo "  ok    ${id} fires"
     else

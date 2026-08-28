@@ -62,11 +62,40 @@ sql_concatenation() {
         "${root}/crates"
 }
 
+# Every route the panel serves reaches a handler that asks who is calling.
+#
+# The panel has no middleware demanding a session: each handler takes an Actor,
+# and an Actor cannot be built without one. That is a convention, and a handler
+# written without it would be reachable by anyone who can open the socket.
+#
+# Three routes are open on purpose: two say whether the process is alive, and
+# the third is how a session begins. They are named here so that adding a
+# fourth is a decision somebody makes rather than an omission nobody sees.
+handler_without_actor() {
+    local path="${root}/crates/ap-panel/src/routes.rs"
+    [ -f "$path" ] || return 0
+
+    # Open on purpose: two say whether the process is alive, and the third is
+    # how a session begins. Adding a fourth should be somebody's decision
+    # rather than an omission nobody sees.
+    local open_on_purpose="health|ready|sign_in"
+    local handler
+
+    for handler in $(grep -oE "(get|post|delete|put|patch)\([a-z_]+\)" "$path"         | sed -E "s/^[a-z]+\(//; s/\)$//" | sort -u); do
+        printf "%s" "$handler" | grep -qE "^(${open_on_purpose})$" && continue
+        # The signature runs from the name to the line that closes it.
+        if ! sed -n "/^async fn ${handler}(/,/^)/p" "$path" | grep -q "Actor"; then
+            echo "${handler}: reachable without a session"
+        fi
+    done
+}
+
 collect user-facing-literal user_facing_literal "${root}/crates/ap-cli"
 collect user-facing-literal user_facing_literal "${root}/crates/ap-panel"
 collect secret-exposed secret_exposed
 collect timestamp-string-op timestamp_string_op
 collect sql-concatenation sql_concatenation
+collect handler-without-actor handler_without_actor
 
 if [ "$found" -ne 0 ]; then
     echo "convention check failed" >&2
