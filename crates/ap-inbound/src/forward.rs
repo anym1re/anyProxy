@@ -116,7 +116,7 @@ where
                         upstream.write_all(body).await?;
                         body.len() as i64
                     }
-                    None => pass(client, &mut upstream, asking.body).await?,
+                    None => pass(client, &mut upstream, asking.body).await?.0,
                 };
 
             match tokio::time::timeout(ANSWER_TIMEOUT, upstream.head(ANSWER_CEILING)).await {
@@ -151,13 +151,15 @@ where
         registry.used(access, answer.len() as i64, 0);
 
         let text = String::from_utf8_lossy(&answer).into_owned();
-        let framing = Body::of_answer(&text);
-        let back = pass(&mut upstream, client, framing).await?;
+        let framing = Body::of_answer(&text, asking.head_only);
+        let (back, whole) = pass(&mut upstream, client, framing).await?;
         registry.used(access, back, 0);
 
         // Whoever says the connection ends, ends it. What is left over is
-        // worth keeping only when the exchange finished on its own terms.
-        if framing == Body::UntilClosed || says_close(&text) {
+        // worth keeping only when the exchange finished on its own terms: a
+        // body that stopped short leaves a connection that looks open and is
+        // not, and handing that to the next client costs them a request.
+        if framing == Body::UntilClosed || says_close(&text) || !whole {
             return Ok(());
         }
         held = Some(upstream);
@@ -175,22 +177,30 @@ fn says_close(head: &str) -> bool {
 }
 
 /// Moves a body from one side to the other, however its length is stated.
-async fn pass<R, W>(from: &mut R, to: &mut W, body: Body) -> Result<i64, InboundError>
+///
+/// Returns what was moved, and whether it ended the way the head said it
+/// would. A body that stopped short is passed on as far as it got, because
+/// what arrived is what the client is owed, but the connection it came on is
+/// finished.
+async fn pass<R, W>(from: &mut R, to: &mut W, body: Body) -> Result<(i64, bool), InboundError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     match body {
-        Body::Counted(0) => Ok(0),
-        Body::Counted(length) => counted(from, to, length).await,
-        Body::Chunked => chunked(from, to).await,
+        Body::Counted(0) => Ok((0, true)),
+        Body::Counted(length) => {
+            let moved = counted(from, to, length).await?;
+            Ok((moved, moved as u64 == length))
+        }
+        Body::Chunked => Ok((chunked(from, to).await?, true)),
         Body::UntilClosed => {
             let mut buffer = vec![0u8; 16 * 1024];
             let mut moved = 0i64;
             loop {
                 let read = from.read(&mut buffer).await?;
                 if read == 0 {
-                    return Ok(moved);
+                    return Ok((moved, true));
                 }
                 to.write_all(&buffer[..read]).await?;
                 moved += read as i64;
@@ -336,12 +346,75 @@ mod tests {
             Body::Counted(0)
         );
         assert_eq!(
-            Body::of_answer("HTTP/1.1 200 OK\r\nServer: x\r\n\r\n"),
+            Body::of_answer("HTTP/1.1 200 OK\r\nServer: x\r\n\r\n", false),
             Body::UntilClosed
         );
         assert_eq!(
-            Body::of_answer("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"),
+            Body::of_answer("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", false),
             Body::Counted(0)
         );
+    }
+
+    #[test]
+    fn an_answer_that_can_carry_nothing_is_not_waited_on() {
+        // Waiting for a body on one of these means waiting for the server to
+        // close, which it has no reason to do.
+        for head in [
+            "HTTP/1.1 204 No Content\r\nServer: x\r\n\r\n",
+            "HTTP/1.1 304 Not Modified\r\nETag: \"x\"\r\n\r\n",
+            "HTTP/1.1 100 Continue\r\n\r\n",
+        ] {
+            assert_eq!(Body::of_answer(head, false), Body::Counted(0), "{head}");
+        }
+    }
+
+    #[test]
+    fn the_answer_to_a_head_alone_carries_nothing() {
+        // It states the length a whole request would have given and sends none
+        // of it.
+        assert_eq!(
+            Body::of_answer("HTTP/1.1 200 OK\r\nContent-Length: 2027\r\n\r\n", true),
+            Body::Counted(0)
+        );
+    }
+
+    #[test]
+    fn a_length_is_recognised_however_it_is_spelled() {
+        // Header names are not case sensitive, and a server that writes it in
+        // lower case is not saying something different.
+        assert_eq!(
+            Body::of_answer("HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n", false),
+            Body::Counted(0),
+            "a lower-case length was taken for no length at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_that_stops_short_is_reported_as_such() {
+        // The connection it came on is finished, whatever it looks like.
+        let (mut source, mut writing) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            let _ = writing.write_all(b"only four").await;
+        });
+        let mut landed = Vec::new();
+        let (moved, whole) = pass(&mut source, &mut landed, Body::Counted(100))
+            .await
+            .unwrap();
+        assert_eq!(moved, 9);
+        assert!(!whole, "a body that stopped short was called complete");
+    }
+
+    #[tokio::test]
+    async fn a_body_of_the_stated_length_is_reported_whole() {
+        let (mut source, mut writing) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            let _ = writing.write_all(b"0123456789").await;
+        });
+        let mut landed = Vec::new();
+        let (moved, whole) = pass(&mut source, &mut landed, Body::Counted(10))
+            .await
+            .unwrap();
+        assert_eq!(moved, 10);
+        assert!(whole);
     }
 }

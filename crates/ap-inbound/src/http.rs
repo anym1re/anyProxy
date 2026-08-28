@@ -34,6 +34,12 @@ pub struct Forward {
     pub head: Vec<u8>,
     /// How much body follows the head.
     pub body: Body,
+    /// Whether the client asked for the head alone.
+    ///
+    /// Carried because the answer to such a request states the length a whole
+    /// one would have had and sends none of it. A proxy that waited for that
+    /// body would wait until the server closed.
+    pub head_only: bool,
 }
 
 /// How much of a message follows its head, and how to know when it has ended.
@@ -71,10 +77,21 @@ impl Body {
         Self::Counted(0)
     }
 
-    /// The same, for a response, where silence means "until closed".
-    pub fn of_answer(head: &str) -> Self {
+    /// The same, for a response.
+    ///
+    /// Some answers carry nothing whatever the head says: one that reports no
+    /// content, one that reports nothing changed, and any answer to a request
+    /// for the head alone. Waiting for a body on those means waiting for the
+    /// server to close, which it has no reason to do.
+    ///
+    /// Otherwise silence means the body runs to the close: a response with
+    /// neither a length nor chunks ends when the connection does.
+    pub fn of_answer(head: &str, asked_for_head_only: bool) -> Self {
+        if asked_for_head_only || carries_nothing(head) {
+            return Self::Counted(0);
+        }
         match Self::of(head) {
-            Self::Counted(0) if !head.contains("Content-Length") => Self::UntilClosed,
+            Self::Counted(0) if !says_a_length(head) => Self::UntilClosed,
             other => other,
         }
     }
@@ -179,7 +196,25 @@ where
         credentials,
         head: passed,
         body: Body::of(&text),
+        head_only: verb.eq_ignore_ascii_case("HEAD"),
     }))
+}
+
+/// Whether a status leaves no room for a body, whatever else the head says.
+fn carries_nothing(head: &str) -> bool {
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok());
+    matches!(status, Some(204 | 304)) || matches!(status, Some(code) if (100..200).contains(&code))
+}
+
+/// Whether a head states a length at all, however it spells the name.
+fn says_a_length(head: &str) -> bool {
+    head.split("\r\n").skip(1).any(|line| {
+        line.split_once(':')
+            .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+    })
 }
 
 /// What follows `http://`, and nothing else.
