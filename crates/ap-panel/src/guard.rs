@@ -1,6 +1,6 @@
 use ap_core::{
-    AccessState, AdminUser, AnyAccess, Client, ClientState, Credential, KeyStore, Label, Node,
-    NodeState, Role, Tag, TagName,
+    AccessState, AdminUser, AnyAccess, Client, ClientState, Credential, Domain, KeyStore, Label,
+    Node, NodeState, Role, Tag, TagName,
 };
 use ap_store::{AccessRepo, AuditRepo, ClientRepo, NodeRepo, TagRepo, TrafficRepo, TrafficTotals};
 use sqlx::PgPool;
@@ -271,6 +271,28 @@ impl<'a> Guarded<'a> {
         let withdrawn = AccessRepo::revoke_by_node(self.pool, id).await?;
         NodeRepo::set_state(self.pool, id, NodeState::Burned).await?;
         Ok(withdrawn)
+    }
+
+    /// Changes the names a node answers to.
+    ///
+    /// The kind stays what it was: an open node has no name to give, and a
+    /// stealth node cannot be left without one. Both are refused here rather
+    /// than written and found out later.
+    pub async fn rename_node(
+        &self,
+        id: Uuid,
+        domain: Option<Domain>,
+        alibi: Option<Domain>,
+    ) -> Result<(), ApiError> {
+        if !self.actor.role().manages_nodes() {
+            return Err(ApiError::NotFound);
+        }
+        let node = self.node(id).await?;
+        // Built and thrown away: what it is for is the refusal it gives when
+        // the pair does not go with the kind.
+        ap_core::NodeKind::from_parts(node.kind().tag(), domain.clone(), alibi.clone())?;
+        NodeRepo::set_names(self.pool, id, domain.as_ref(), alibi.as_ref()).await?;
+        Ok(())
     }
 
     /// The audit log.

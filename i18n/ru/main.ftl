@@ -43,6 +43,7 @@ cli-node-not-found = ноды { $label } нет
 cli-tag-not-found = тега { $label } нет
 cli-access-not-found = доступа с таким идентификатором нет
 cli-node-created = нода { $label } зарегистрирована
+cli-node-renamed = нода { $node } переименована; выданные ссылки называют прежнее имя
 cli-tag-created = тег { $name } создан
 cli-access-created = доступ создан на ноде { $node }
 cli-access-updated = доступ изменён

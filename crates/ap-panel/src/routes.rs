@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/tags", get(list_tags).post(create_tag))
         .route("/v1/nodes", get(list_nodes).post(create_node))
         .route("/v1/nodes/{id}/burn", post(burn_node))
+        .route("/v1/nodes/{id}/names", post(rename_node))
         .route("/v1/nodes/{id}/enrollment", post(issue_enrollment))
         .route("/v1/audit", get(read_audit))
         .with_state(state)
@@ -649,6 +650,38 @@ async fn burn_node(
     guarded.burn_node(id).await?;
     guarded
         .record("node.burned", Some(&id.to_string()), serde_json::json!({}))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct NewNames {
+    domain: Option<String>,
+    alibi: Option<String>,
+}
+
+/// Changes the names a node answers to.
+///
+/// Every link already issued for this node names the old one, so this is a
+/// change an operator makes knowing that clients have to be given new links.
+/// It is written to the audit log for that reason.
+async fn rename_node(
+    State(state): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+    Json(body): Json<NewNames>,
+) -> Result<StatusCode, ApiError> {
+    let domain = body.domain.as_deref().map(Domain::try_from).transpose()?;
+    let alibi = body.alibi.as_deref().map(Domain::try_from).transpose()?;
+
+    let guarded = state.guarded(&actor);
+    guarded.rename_node(id, domain, alibi).await?;
+    guarded
+        .record(
+            "node.renamed",
+            Some(&id.to_string()),
+            serde_json::json!({ "domain": body.domain, "alibi": body.alibi }),
+        )
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

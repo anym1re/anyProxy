@@ -42,6 +42,7 @@ cli-node-not-found = no node named { $label }
 cli-tag-not-found = no tag named { $label }
 cli-access-not-found = no access with that identifier
 cli-node-created = node { $label } registered
+cli-node-renamed = node { $node } renamed; links issued for it name the old one
 cli-tag-created = tag { $name } created
 cli-access-created = access created on node { $node }
 cli-access-updated = access updated

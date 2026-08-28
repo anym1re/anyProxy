@@ -73,6 +73,30 @@ impl NodeRepo {
         Ok(result.rows_affected() == 1)
     }
 
+    /// Changes the names a node answers to.
+    ///
+    /// The kind is not changed and cannot be: an open node has no name to
+    /// give and a stealth node cannot be left without one, which is what the
+    /// caller checks before arriving here.
+    ///
+    /// Renaming a node makes every link already issued for it wrong, because a
+    /// link tells the client which name to ask for. That is the operator's
+    /// call to make, and the audit log is where it is written down.
+    pub async fn set_names(
+        pool: &PgPool,
+        id: Uuid,
+        domain: Option<&Domain>,
+        alibi: Option<&Domain>,
+    ) -> Result<bool, StoreError> {
+        let result = sqlx::query("update node set domain = $2, alibi = $3 where id = $1")
+            .bind(id)
+            .bind(domain.map(Domain::as_str))
+            .bind(alibi.map(Domain::as_str))
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Moves a node to a new state. A burned node is never moved out of it.
     pub async fn set_state(pool: &PgPool, id: Uuid, state: NodeState) -> Result<bool, StoreError> {
         let result = sqlx::query("update node set state = $2 where id = $1 and state <> 'burned'")

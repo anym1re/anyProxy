@@ -154,6 +154,20 @@ pub enum NodeCommand {
     },
     /// Lists every node.
     List,
+    /// Changes the names a node answers to.
+    ///
+    /// Every link already issued for the node names the old one, so clients
+    /// have to be given new ones afterwards.
+    Rename {
+        /// The node, by the name an operator knows it by.
+        node: String,
+        /// Hostname a stealth node answers on.
+        #[arg(long)]
+        domain: Option<String>,
+        /// Hostname the forged handshake claims to be.
+        #[arg(long)]
+        alibi: Option<String>,
+    },
 }
 
 /// Runs one command.
@@ -742,6 +756,25 @@ async fn node(command: NodeCommand, context: Context) -> Outcome {
                     &[("command", Argument::Text(&command))],
                 )?,
             ]))
+        }
+        NodeCommand::Rename {
+            node,
+            domain,
+            alibi,
+        } => {
+            let record = node_by_label(&context, &node).await?;
+            post(
+                &context,
+                &format!("/v1/nodes/{}/names", text(&record, "id")),
+                serde_json::json!({ "domain": domain, "alibi": alibi }),
+            )
+            .await?;
+
+            Ok(Rendered::line(say(
+                locale,
+                "cli-node-renamed",
+                &[("node", Argument::Text(&node))],
+            )?))
         }
         NodeCommand::List => {
             let nodes = get(&context, "/v1/nodes").await?;
