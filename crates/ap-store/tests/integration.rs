@@ -167,17 +167,45 @@ async fn a_node_serving_in_the_open_with_a_domain_is_refused_by_the_database() {
 }
 
 #[tokio::test]
-async fn a_domain_belongs_to_one_node_only() {
+async fn a_name_a_node_owns_belongs_to_one_node_only() {
     let pool = db!();
     let domain = Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap();
     for expected_ok in [true, false] {
         let node = Node::new(
             Label::try_from(unique("n").as_str()).unwrap(),
-            NodeKind::FakeTls { domain: domain.clone() },
+            NodeKind::Web {
+                domain: domain.clone(),
+            },
             OffsetDateTime::UNIX_EPOCH,
         );
         let result = NodeRepo::insert(&pool, &node).await;
-        assert_eq!(result.is_ok(), expected_ok, "second node took the domain");
+        assert_eq!(
+            result.is_ok(),
+            expected_ok,
+            "a second node took a name the first one owns"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_borrowed_name_may_be_worn_by_more_than_one_node() {
+    // A forged handshake claims a site belonging to somebody else, and several
+    // nodes may claim the same popular one — imitating one site from a few
+    // addresses is ordinary. Uniqueness here would forbid it, which is why the
+    // index covers only the names a node holds a certificate for.
+    let pool = db!();
+    let domain = Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap();
+    for _ in 0..2 {
+        let node = Node::new(
+            Label::try_from(unique("n").as_str()).unwrap(),
+            NodeKind::FakeTls {
+                domain: domain.clone(),
+            },
+            OffsetDateTime::UNIX_EPOCH,
+        );
+        NodeRepo::insert(&pool, &node)
+            .await
+            .expect("a node was refused a name another node had only borrowed");
     }
 }
 
