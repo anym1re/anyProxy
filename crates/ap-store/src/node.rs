@@ -102,9 +102,14 @@ impl NodeRepo {
     /// already reach, so the node has to be serving before there is a tag to
     /// record.
     ///
-    /// Changing it changes how the node reaches Telegram — with a tag through
-    /// the middle proxies, without one directly — so the agent is given a new
-    /// configuration and the engine restarts on it.
+    /// Changing it changes how the node reaches Telegram: with a tag through
+    /// the middle proxies, without one directly.
+    ///
+    /// It reaches the node when the node next opens a session, and not before.
+    /// The panel sends a configuration in answer to a greeting and at no other
+    /// time, so an agent holding a live channel goes on serving what it was
+    /// given. That is true of every change to what a node serves, withdrawing
+    /// an access included.
     pub async fn set_ad_tag(
         pool: &PgPool,
         id: Uuid,
