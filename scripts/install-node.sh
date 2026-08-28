@@ -23,7 +23,6 @@ reach=""
 domain=""
 email=""
 agreed=""
-handshake=""
 through="${ANYPROXY_THROUGH:-127.0.0.1:9050}"
 
 while [ $# -gt 0 ]; do
@@ -34,6 +33,9 @@ while [ $# -gt 0 ]; do
         --version)     version="$2";     shift 2 ;;
         --reach)       reach="$2";       shift 2 ;;
         --through)     through="$2";     shift 2 ;;
+        --domain)      domain="$2";      shift 2 ;;
+        --email)       email="$2";       shift 2 ;;
+        --agree-tos)   agreed=yes;       shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -174,7 +176,6 @@ if [ -n "${domain}" ]; then
     front=("${here}/install-front.sh" --domain "${domain}")
     [ -n "${agreed}" ] && front+=(--agree-tos)
     [ -n "${email}" ] && front+=(--email "${email}")
-    [ -n "${handshake}" ] && front+=(--handshake)
     "${front[@]}"
 fi
 

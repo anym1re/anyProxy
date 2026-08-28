@@ -55,7 +55,7 @@ async fn a_client(pool: &PgPool) -> Client {
 async fn an_open_node(pool: &PgPool) -> Node {
     let node = Node::new(
         Label::try_from(unique("n").as_str()).unwrap(),
-        NodeKind::Open,
+        NodeKind::Mtproto,
         OffsetDateTime::UNIX_EPOCH,
     );
     NodeRepo::insert(pool, &node).await.unwrap();
@@ -133,11 +133,11 @@ async fn a_client_survives_a_round_trip() {
 }
 
 #[tokio::test]
-async fn a_stealth_node_without_a_domain_is_refused_by_the_database() {
+async fn a_masked_node_without_a_domain_is_refused_by_the_database() {
     let pool = db!();
     let result = sqlx::query(
         "insert into node (id, label, kind, domain, state, created_at) \
-         values ($1, $2, 'stealth', null, 'pending', now())",
+         values ($1, $2, 'faketls', null, 'pending', now())",
     )
     .bind(Uuid::now_v7())
     .bind(unique("n"))
@@ -145,16 +145,16 @@ async fn a_stealth_node_without_a_domain_is_refused_by_the_database() {
     .await;
     assert!(
         result.is_err(),
-        "the database accepted a stealth node with no domain"
+        "the database accepted a masked node with no domain"
     );
 }
 
 #[tokio::test]
-async fn an_open_node_with_a_domain_is_refused_by_the_database() {
+async fn a_node_serving_in_the_open_with_a_domain_is_refused_by_the_database() {
     let pool = db!();
     let result = sqlx::query(
         "insert into node (id, label, kind, domain, state, created_at) \
-         values ($1, $2, 'open', 'cover.example.com', 'pending', now())",
+         values ($1, $2, 'socks5', 'cover.example.com', 'pending', now())",
     )
     .bind(Uuid::now_v7())
     .bind(unique("n"))
@@ -162,7 +162,7 @@ async fn an_open_node_with_a_domain_is_refused_by_the_database() {
     .await;
     assert!(
         result.is_err(),
-        "the database accepted an open node with a domain"
+        "the database accepted a node serving in the open with a domain"
     );
 }
 
@@ -173,10 +173,7 @@ async fn a_domain_belongs_to_one_node_only() {
     for expected_ok in [true, false] {
         let node = Node::new(
             Label::try_from(unique("n").as_str()).unwrap(),
-            NodeKind::Stealth {
-                domain: domain.clone(),
-                alibi: None,
-            },
+            NodeKind::FakeTls { domain: domain.clone() },
             OffsetDateTime::UNIX_EPOCH,
         );
         let result = NodeRepo::insert(&pool, &node).await;
@@ -297,9 +294,8 @@ async fn an_access_keeps_its_surface_across_a_round_trip() {
     let domain = Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap();
     let node = Node::new(
         Label::try_from(unique("n").as_str()).unwrap(),
-        NodeKind::Stealth {
+        NodeKind::FakeTls {
             domain,
-            alibi: None,
         },
         OffsetDateTime::UNIX_EPOCH,
     );

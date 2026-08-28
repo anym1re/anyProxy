@@ -1,20 +1,15 @@
 use crate::{Domain, Error, OpenMethod, Secret, StealthMethod};
 
-/// Link for a method a stealth node serves.
+/// Link for a method a masked node serves.
 ///
-/// FakeTLS puts a name in the secret so the client presents it as the one it
-/// is asking for; WEB names the host directly, because the transport is real
-/// HTTPS to it.
-///
-/// The two names can differ, and on a node serving both they must. The site
-/// answers to the node's own name and holds a certificate for it, while the
-/// forged handshake claims whatever the node borrows. A link that told a
-/// client to ask for the site's name would be answered by the site.
+/// Both name the node's one name. FakeTLS puts it in the secret so the client
+/// presents it as the name it is asking for, which for this kind is a name
+/// borrowed from somebody else; WEB names the host directly, because the
+/// transport is real HTTPS to a site of ours that answers to it.
 pub fn stealth_link(
     method: StealthMethod,
     host: &str,
     domain: &Domain,
-    claimed: &Domain,
     secret: &Secret,
 ) -> Result<String, Error> {
     if host.is_empty() {
@@ -24,7 +19,7 @@ pub fn stealth_link(
         StealthMethod::FakeTls => format!(
             "https://t.me/proxy?server={host}&port=443&secret=ee{}{}",
             secret.expose_hex(),
-            hex::encode(claimed.as_str())
+            hex::encode(domain.as_str())
         ),
         StealthMethod::Web => format!(
             "https://t.me/webproxy?server={}&secret={}",
@@ -72,7 +67,6 @@ mod tests {
                 StealthMethod::FakeTls,
                 "203.0.113.7",
                 &domain(),
-                &domain(),
                 &secret()
             )
             .unwrap(),
@@ -86,7 +80,6 @@ mod tests {
             stealth_link(
                 StealthMethod::Web,
                 "203.0.113.7",
-                &domain(),
                 &domain(),
                 &secret()
             )
@@ -106,7 +99,7 @@ mod tests {
     #[test]
     fn an_empty_host_is_refused() {
         assert_eq!(
-            stealth_link(StealthMethod::FakeTls, "", &domain(), &domain(), &secret()),
+            stealth_link(StealthMethod::FakeTls, "", &domain(), &secret()),
             Err(Error::LinkHost)
         );
         assert_eq!(mtproto_link("", 8443, &secret()), Err(Error::LinkHost));

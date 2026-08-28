@@ -1,44 +1,32 @@
 #!/usr/bin/env bash
-# Puts the front door on 443 for a node that serves a site of its own.
+# Puts the front door on 443 for a node that carries clients inside a site.
 #
 #     scripts/install-front.sh --domain <name> --agree-tos [--email <address>]
-#                              [--handshake]
 #
-# A node carrying clients inside web traffic is reached over real TLS, which
-# something has to end. That something is here: it holds the certificate for
-# the node's own name and hands the plain request to the engine.
+# Such a node is reached over real TLS to a name it owns, and something has to
+# end that TLS. That something is here: it holds the certificate, serves the
+# site, and hands the plain request to the engine.
 #
-# One port carries both carriers. The door sends on by the name the client
-# asked for — the node's own name to the site, anything else to the forged
-# handshake — so a node can serve both instead of one displacing the other.
-#
-# Nothing here is needed by a node that serves only the forged handshake: that
-# node keeps 443 to itself and there is no door in front of it.
+# Nothing here belongs on a node of any other kind. One method to a host, so a
+# node with a forged handshake ends its own TLS and keeps 443 to itself, and a
+# node serving SOCKS5, HTTP or plain MTProto has no name and no certificate.
 
 set -euo pipefail
 
-# Where the engine listens once the panel has told it to. These match the
-# panel's own numbers, in docs/spec/NETWORK.md §3; a door pointing elsewhere
+# Where the engine listens once the panel has told it to. This matches the
+# panel's own number, in docs/spec/NETWORK.md §3; a door pointing elsewhere
 # would answer every client with nothing.
 readonly behind_site=8444
-readonly behind_handshake=8445
-
-# Where the TLS ends before the plain request goes on. Not 8443, which is where
-# a panel listens for its nodes: the two collide wherever both run, and a test
-# machine running both is exactly where that is found out.
-readonly terminator=8446
 
 domain=""
 email=""
 agreed=""
-handshake=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --domain)    domain="$2"; shift 2 ;;
         --email)     email="$2";  shift 2 ;;
         --agree-tos) agreed=yes;  shift ;;
-        --handshake) handshake=yes; shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -75,22 +63,18 @@ if ! ip -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | grep -qx "$
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get install -y -qq nginx libnginx-mod-stream certbot >/dev/null
+apt-get install -y -qq nginx certbot >/dev/null
 
 # Anything this script put here before is taken down first. It is written again
-# below, and leaving the old one up would hold a port the new one wants — which
-# is how a second run of an installer fails where the first succeeded.
+# below, and leaving the old one up would hold the port the new one wants —
+# which is how a second run of an installer fails where the first succeeded.
+#
+# The stream block belongs to a door that told two carriers apart by the name
+# a client asked for. One method to a host leaves nothing to tell apart, so a
+# block left behind by an older install is removed rather than worked around.
 rm -f /etc/nginx/sites-enabled/anyproxy-site
 sed -i '/# anyproxy front door/,/^}$/d' /etc/nginx/nginx.conf
-
-# nginx takes one stream block and no more. If somebody else's is already
-# there, stop: adding a second breaks the web server that machine is running,
-# and a working machine broken by an installer is worse than one not installed.
-if grep -qE '^\s*stream\s*\{' /etc/nginx/nginx.conf; then
-    echo "this machine already has a stream block in /etc/nginx/nginx.conf" >&2
-    echo "the door needs one of its own; merge them by hand and run this again" >&2
-    exit 1
-fi
+rm -f /etc/nginx/modules-enabled/60-anyproxy-front.conf
 
 # Port 80 answers the challenge and nothing else. A node is not a web server.
 install -d -o root -g root -m 0755 /var/www/anyproxy
@@ -127,53 +111,21 @@ systemctl reload nginx
 HOOK
 chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/anyproxy-front
 
-# Where a name we do not serve is sent.
-#
-# To the forged handshake when the node serves one, because that is how its
-# clients arrive: they ask for the name it borrows. Otherwise to the site,
-# which answers as a web server does when the name does not match — with a
-# certificate and a page. Refusing instead would make the node the one address
-# on the internet that hangs up on a plain TLS greeting.
-if [ -n "${handshake}" ]; then
-    otherwise="127.0.0.1:${behind_handshake}"
-else
-    otherwise="127.0.0.1:${terminator}"
-fi
-
-# The door itself: one port, two carriers, told apart by the name asked for.
-cat > /etc/nginx/modules-enabled/60-anyproxy-front.conf <<CONF
-# Left empty on purpose: the stream block lives in nginx.conf, which is the
-# only place nginx will read one from.
-CONF
-if ! grep -q "anyproxy front door" /etc/nginx/nginx.conf; then
-    cat >> /etc/nginx/nginx.conf <<CONF
-
-# anyproxy front door
-stream {
-    map \$ssl_preread_server_name \$anyproxy_carrier {
-        ${domain}   127.0.0.1:${terminator};
-        default     ${otherwise};
-    }
-
-    server {
-        listen 443;
-        ssl_preread on;
-        proxy_pass \$anyproxy_carrier;
-        proxy_timeout 300s;
-        access_log off;
-    }
-}
-CONF
-fi
-
 if ! grep -q "anyproxy_upgrade" /etc/nginx/nginx.conf; then
     sed -i '/^http {/a\    map $http_upgrade $anyproxy_upgrade { default upgrade; "" close; }' \
         /etc/nginx/nginx.conf
 fi
 
+# The door: one name, one certificate, one thing behind it.
+#
+# It answers a request for any other name the same way, because it is the only
+# server here and nginx serves the first one for a name it does not know. That
+# is what every web server on the internet does, and refusing instead would
+# make this node the one address that hangs up on an ordinary greeting.
 cat > /etc/nginx/sites-available/anyproxy-site <<CONF
 server {
-    listen 127.0.0.1:${terminator} ssl;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
     server_name ${domain};
 
     ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;

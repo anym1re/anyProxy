@@ -141,16 +141,14 @@ pub enum NodeCommand {
     Add {
         /// Name the operator knows this node by.
         label: String,
-        /// Either stealth or open.
+        /// The one method this node serves: faketls, web, mtproto, socks5
+        /// or http.
         #[arg(long)]
         kind: String,
-        /// Hostname a stealth node answers on.
+        /// Hostname a masked node answers on. Borrowed by faketls, its own
+        /// by web.
         #[arg(long)]
         domain: Option<String>,
-        /// Hostname the forged handshake claims to be, for a node that also
-        /// serves a site of its own.
-        #[arg(long)]
-        alibi: Option<String>,
     },
     /// Lists every node.
     List,
@@ -161,12 +159,9 @@ pub enum NodeCommand {
     Rename {
         /// The node, by the name an operator knows it by.
         node: String,
-        /// Hostname a stealth node answers on.
+        /// Hostname a masked node answers on.
         #[arg(long)]
         domain: Option<String>,
-        /// Hostname the forged handshake claims to be.
-        #[arg(long)]
-        alibi: Option<String>,
     },
 }
 
@@ -694,7 +689,6 @@ async fn node(command: NodeCommand, context: Context) -> Outcome {
             label,
             kind,
             domain,
-            alibi,
         } => {
             let created = post(
                 &context,
@@ -703,7 +697,6 @@ async fn node(command: NodeCommand, context: Context) -> Outcome {
                     "label": label,
                     "kind": kind,
                     "domain": domain,
-                    "alibi": alibi,
                 }),
             )
             .await?;
@@ -757,16 +750,12 @@ async fn node(command: NodeCommand, context: Context) -> Outcome {
                 )?,
             ]))
         }
-        NodeCommand::Rename {
-            node,
-            domain,
-            alibi,
-        } => {
+        NodeCommand::Rename { node, domain } => {
             let record = node_by_label(&context, &node).await?;
             post(
                 &context,
                 &format!("/v1/nodes/{}/names", text(&record, "id")),
-                serde_json::json!({ "domain": domain, "alibi": alibi }),
+                serde_json::json!({ "domain": domain }),
             )
             .await?;
 

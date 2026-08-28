@@ -101,14 +101,11 @@ pub struct Enrolled {
 /// What a node exposes, as the panel describes it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeShape {
-    /// Either stealth or open.
+    /// Which one of the five methods this node serves.
     pub kind: String,
-    /// Hostname a stealth node answers on.
+    /// The name a masked node answers to, absent on one that serves in the
+    /// open. Borrowed by a forged handshake, its own on a node with a site.
     pub domain: Option<String>,
-    /// Hostname the forged handshake claims to be, when it is not the node's
-    /// own. Absent on a node that borrows its only name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alibi: Option<String>,
 }
 
 /// One socket the node opens.

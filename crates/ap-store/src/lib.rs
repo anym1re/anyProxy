@@ -70,6 +70,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0007_node_alibi",
         include_str!("../../../migrations/0007_node_alibi.sql"),
     ),
+    (
+        "0008_node_kinds",
+        include_str!("../../../migrations/0008_node_kinds.sql"),
+    ),
+    (
+        "0009_one_method_per_host",
+        include_str!("../../../migrations/0009_one_method_per_host.sql"),
+    ),
 ];
 
 /// The migrations this build carries, in the order they apply.

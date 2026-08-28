@@ -213,7 +213,7 @@ async fn a_reseller_is_told_there_are_no_nodes() {
         "POST",
         "/v1/nodes",
         Some(&boss),
-        Some(serde_json::json!({ "label": unique("n"), "kind": "open" })),
+        Some(serde_json::json!({ "label": unique("n"), "kind": "socks5" })),
     )
     .await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
@@ -227,7 +227,7 @@ async fn a_reseller_is_told_there_are_no_nodes() {
         "POST",
         "/v1/nodes",
         Some(&reseller),
-        Some(serde_json::json!({ "label": unique("n"), "kind": "open" })),
+        Some(serde_json::json!({ "label": unique("n"), "kind": "socks5" })),
     )
     .await;
     assert_eq!(refused.status, StatusCode::NOT_FOUND);
@@ -280,7 +280,7 @@ async fn a_method_the_node_does_not_serve_is_refused() {
         "/v1/nodes",
         Some(&boss),
         Some(serde_json::json!({
-            "label": unique("n"), "kind": "stealth",
+            "label": unique("n"), "kind": "faketls",
             "domain": format!("{}.example.com", unique("d"))
         })),
     )
@@ -480,7 +480,7 @@ async fn two_accesses_of_one_client_do_not_share_a_name() {
         "POST",
         "/v1/nodes",
         Some(&boss),
-        Some(serde_json::json!({ "label": unique("n"), "kind": "open" })),
+        Some(serde_json::json!({ "label": unique("n"), "kind": "socks5" })),
     )
     .await;
     let node_id = node.json()["id"].as_str().unwrap().to_owned();
@@ -495,9 +495,10 @@ async fn two_accesses_of_one_client_do_not_share_a_name() {
     .await;
     let client_id = client.json()["id"].as_str().unwrap().to_owned();
 
-    // One client, two accesses. This is the case that was wrong.
+    // One client, two accesses on one node. This is the case that was wrong.
     let mut names = Vec::new();
-    for method in ["socks5", "http"] {
+    for _ in 0..2 {
+        let method = "socks5";
         let created = call(
             &panel.router,
             "POST",

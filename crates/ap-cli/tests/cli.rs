@@ -301,7 +301,7 @@ fn json_output_carries_no_secret() {
     assert_eq!(code(&panel.run(&["client", "add", &label])), 0);
     let node = unique("node");
     assert_eq!(
-        code(&panel.run(&["node", "add", &node, "--kind", "open"])),
+        code(&panel.run(&["node", "add", &node, "--kind", "mtproto"])),
         0
     );
     assert_eq!(
@@ -336,7 +336,7 @@ fn a_method_the_node_does_not_serve_is_refused() {
     let domain = format!("{}.example.com", unique("d"));
     assert_eq!(
         code(&panel.run(&[
-            "node", "add", &node, "--kind", "stealth", "--domain", &domain
+            "node", "add", &node, "--kind", "faketls", "--domain", &domain
         ])),
         0
     );
@@ -362,7 +362,7 @@ fn a_link_is_not_printed_without_acknowledgement() {
     assert_eq!(code(&panel.run(&["client", "add", &label])), 0);
     let node = unique("node");
     assert_eq!(
-        code(&panel.run(&["node", "add", &node, "--kind", "open"])),
+        code(&panel.run(&["node", "add", &node, "--kind", "mtproto"])),
         0
     );
     assert_eq!(
@@ -436,7 +436,7 @@ fn adding_a_node_shows_its_enrolment_code_once() {
     let panel = panel!();
     let node = unique("edge");
 
-    let added = panel.run(&["node", "add", &node, "--kind", "open"]);
+    let added = panel.run(&["node", "add", &node, "--kind", "mtproto"]);
     assert_eq!(
         code(&added),
         0,

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::StoreError;
 
-const COLUMNS: &str = "id, label, kind, domain, alibi, address, agent_version, last_seen_at, \
+const COLUMNS: &str = "id, label, kind, domain, address, agent_version, last_seen_at, \
                        state, created_at";
 
 /// Reads and writes nodes.
@@ -16,15 +16,14 @@ impl NodeRepo {
     /// Registers a node.
     pub async fn insert(pool: &PgPool, node: &Node) -> Result<(), StoreError> {
         sqlx::query(
-            "insert into node (id, label, kind, domain, alibi, address, agent_version, \
+            "insert into node (id, label, kind, domain, address, agent_version, \
              last_seen_at, state, created_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(node.id())
         .bind(node.label().as_str())
         .bind(node.kind().tag().as_stored())
         .bind(node.kind().domain().map(Domain::as_str))
-        .bind(node.kind().alibi().map(Domain::as_str))
         .bind(node.address().map(|address| address.to_string()))
         .bind(node.agent_version())
         .bind(node.last_seen_at())
@@ -73,25 +72,23 @@ impl NodeRepo {
         Ok(result.rows_affected() == 1)
     }
 
-    /// Changes the names a node answers to.
+    /// Changes the name a node answers to.
     ///
-    /// The kind is not changed and cannot be: an open node has no name to
-    /// give and a stealth node cannot be left without one, which is what the
-    /// caller checks before arriving here.
+    /// The kind is not changed and cannot be: a node serving a recognisable
+    /// method has no name to give and one that hides cannot be left without
+    /// one, which is what the caller checks before arriving here.
     ///
     /// Renaming a node makes every link already issued for it wrong, because a
     /// link tells the client which name to ask for. That is the operator's
     /// call to make, and the audit log is where it is written down.
-    pub async fn set_names(
+    pub async fn set_name(
         pool: &PgPool,
         id: Uuid,
         domain: Option<&Domain>,
-        alibi: Option<&Domain>,
     ) -> Result<bool, StoreError> {
-        let result = sqlx::query("update node set domain = $2, alibi = $3 where id = $1")
+        let result = sqlx::query("update node set domain = $2 where id = $1")
             .bind(id)
             .bind(domain.map(Domain::as_str))
-            .bind(alibi.map(Domain::as_str))
             .execute(pool)
             .await?;
         Ok(result.rows_affected() == 1)
@@ -115,11 +112,7 @@ fn read_node(row: sqlx::postgres::PgRow) -> Result<Node, StoreError> {
         .try_get::<Option<String>, _>("domain")?
         .map(|text| Domain::try_from(text.as_str()))
         .transpose()?;
-    let alibi = row
-        .try_get::<Option<String>, _>("alibi")?
-        .map(|text| Domain::try_from(text.as_str()))
-        .transpose()?;
-    let kind = NodeKind::from_parts(tag, domain, alibi)?;
+    let kind = NodeKind::from_parts(tag, domain)?;
     let address = row
         .try_get::<Option<String>, _>("address")?
         .and_then(|text| text.parse::<IpAddr>().ok());

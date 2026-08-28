@@ -141,13 +141,17 @@ pub(crate) async fn admin(panel: &Panel, role: Role) -> (String, String) {
     (login, token)
 }
 
+/// A client, a node that serves the given method, and an access to it.
+///
+/// The node's kind is the method: one method to a host, so a node that serves
+/// this access serves nothing else.
 pub(crate) async fn an_access(panel: &Panel, token: &str, method: &str) -> (String, String) {
     let node = call(
         &panel.router,
         "POST",
         "/v1/nodes",
         Some(token),
-        Some(serde_json::json!({ "label": unique("n"), "kind": "open" })),
+        Some(serde_json::json!({ "label": unique("n"), "kind": method })),
     )
     .await;
     assert_eq!(node.status, StatusCode::CREATED, "{}", node.body);

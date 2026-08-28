@@ -69,22 +69,23 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
     writeln!(out, "ad_tag = \"{}\"", ad_tag(config)).ok();
     writeln!(out).ok();
 
-    // Which of telemt's client modes are allowed, decided by what the node
-    // actually serves. Both are off by default except the TLS one, so a node
-    // serving plain MTProto without this refuses every client it was issued
-    // links for — with the links looking perfectly correct.
+    // Which of telemt's MTProto client modes are allowed, decided by what the
+    // node actually serves. All are off by default, so a node serving plain
+    // MTProto without this refuses every client it was issued links for — with
+    // the links looking perfectly correct. WEB is a transport of its own and
+    // needs none of these: it is configured entirely by the [web] tables.
     let serves_plain = config
         .listeners
         .iter()
         .any(|listener| listener.method == "mtproto");
-    let serves_masked = config
+    let serves_faketls = config
         .listeners
         .iter()
-        .any(|listener| listener.method == "faketls" || listener.method == "web");
+        .any(|listener| listener.method == "faketls");
     writeln!(out, "[general.modes]").ok();
     writeln!(out, "classic = false").ok();
     writeln!(out, "secure = {serves_plain}").ok();
-    writeln!(out, "tls = {serves_masked}").ok();
+    writeln!(out, "tls = {serves_faketls}").ok();
     writeln!(out).ok();
 
     writeln!(out, "[general.telemetry]").ok();
@@ -130,11 +131,10 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
     // to say one name while the node imitates another is a node that fails
     // the first thing anyone would check.
     //
-    // The node's own name, unless it has been given an alibi to borrow. A node
-    // that also serves a site needs both: the site answers to its own name and
-    // holds a certificate for it, and the forged handshake goes on borrowing
-    // somebody else's, which is what lets the front door tell them apart.
-    if let Some(domain) = masquerade(config).filter(|_| serves_masked) {
+    // This is FakeTLS and nothing else. A WEB node ends real TLS for a name it
+    // owns and imitates no one, so it gets no [censorship] block even though it
+    // too answers to a name.
+    if let Some(domain) = masquerade(config).filter(|_| serves_faketls) {
         writeln!(out, "[censorship]").ok();
         writeln!(out, "tls_domain = \"{domain}\"").ok();
         writeln!(out, "mask = true").ok();
@@ -281,20 +281,15 @@ pub fn access_of(user: &str) -> Option<uuid::Uuid> {
     uuid::Uuid::parse_str(user).ok()
 }
 
-/// The name a stealth node answers to, when it is one.
+/// The name a masked node answers to, when it is one.
 ///
-/// An open node has none: it serves plain MTProto, SOCKS5 and HTTP, none of
-/// which pretends to be a website.
+/// A node serving in the open has none: plain MTProto, SOCKS5 and HTTP make no
+/// claim to be a website. The name is borrowed on a node with a forged
+/// handshake and its own on a node with a site, which is the node's business
+/// rather than this function's: either way it is the one name the node has.
 fn masquerade(config: &Config) -> Option<&str> {
-    (config.node.kind == "stealth")
-        .then_some(
-            config
-                .node
-                .alibi
-                .as_deref()
-                .filter(|alibi| !alibi.is_empty())
-                .or(config.node.domain.as_deref()),
-        )
+    (config.node.kind == "faketls")
+        .then_some(config.node.domain.as_deref())
         .flatten()
         .filter(|domain| !domain.is_empty() && !domain.contains(['/', ' ']))
 }
@@ -383,9 +378,8 @@ mod tests {
             revision: Uuid::now_v7(),
             issued_at: "2026-08-26T10:00:00Z".to_owned(),
             node: NodeShape {
-                kind: "stealth".to_owned(),
+                kind: "faketls".to_owned(),
                 domain: Some("cover.example.com".to_owned()),
-                alibi: None,
             },
             listeners,
             accesses,
@@ -476,9 +470,9 @@ mod tests {
     }
 
     #[test]
-    fn a_stealth_node_imitates_the_name_its_clients_are_told_to_present() {
+    fn a_masked_node_imitates_the_name_its_clients_are_told_to_present() {
         let mut config = a_config(vec![a_listener("faketls", "0.0.0.0:443")], vec![]);
-        config.node.kind = "stealth".to_owned();
+        config.node.kind = "faketls".to_owned();
         config.node.domain = Some("cover.example.com".to_owned());
         let rendered = render(&config, &settings()).unwrap();
 
@@ -494,9 +488,9 @@ mod tests {
     }
 
     #[test]
-    fn an_open_node_pretends_to_be_nothing() {
+    fn a_node_serving_in_the_open_pretends_to_be_nothing() {
         let mut config = a_config(vec![a_listener("mtproto", "0.0.0.0:8443")], vec![]);
-        config.node.kind = "open".to_owned();
+        config.node.kind = "mtproto".to_owned();
         config.node.domain = None;
         let rendered = render(&config, &settings()).unwrap();
         assert!(!rendered.contains("[censorship]"), "{rendered}");
@@ -506,7 +500,7 @@ mod tests {
     fn a_domain_that_is_not_one_is_not_written_out() {
         for bad in ["", "not a domain", "example.com/path"] {
             let mut config = a_config(vec![a_listener("faketls", "0.0.0.0:443")], vec![]);
-            config.node.kind = "stealth".to_owned();
+            config.node.kind = "faketls".to_owned();
             config.node.domain = Some(bad.to_owned());
             let rendered = render(&config, &settings()).unwrap();
             assert!(
@@ -698,19 +692,18 @@ mod tests {
 }
 
 #[cfg(test)]
-mod alibi_tests {
+mod masquerade_tests {
     use super::*;
-    use ap_proto::{Listener, NodeShape, Policy};
+    use ap_proto::{Listener, NodeShape, Policy, WireAccess, WireCredential};
     use uuid::Uuid;
 
-    fn a_stealth_config(domain: &str, alibi: Option<&str>) -> Config {
+    fn a_masked_config(kind: &str, domain: &str) -> Config {
         Config {
             revision: Uuid::now_v7(),
             issued_at: "2026-08-27T10:00:00Z".to_owned(),
             node: NodeShape {
-                kind: "stealth".to_owned(),
+                kind: kind.to_owned(),
                 domain: Some(domain.to_owned()),
-                alibi: alibi.map(str::to_owned),
             },
             listeners: vec![Listener {
                 method: "faketls".to_owned(),
@@ -738,31 +731,61 @@ mod alibi_tests {
     }
 
     #[test]
-    fn a_node_without_an_alibi_claims_its_own_name() {
-        let rendered = render(&a_stealth_config("ya.ru", None), &plain_settings()).unwrap();
+    fn a_masked_node_imitates_the_one_name_it_has() {
+        let rendered = render(&a_masked_config("faketls", "ya.ru"), &plain_settings()).unwrap();
         assert!(rendered.contains("tls_domain = \"ya.ru\""));
     }
 
     #[test]
-    fn an_alibi_is_what_the_forged_handshake_claims_to_be() {
-        // A node that also serves a site answers to its own name there, and
-        // must claim a different one here, or the front door cannot tell a
-        // client of the site from a client of the handshake.
-        let rendered = render(
-            &a_stealth_config("203-0-113-110.sslip.io", Some("ya.ru")),
-            &plain_settings(),
-        )
-        .unwrap();
-        assert!(rendered.contains("tls_domain = \"ya.ru\""));
-        assert!(
-            !rendered.contains("tls_domain = \"203-0-113-110.sslip.io\""),
-            "the handshake claims the same name as the site: {rendered}"
-        );
+    fn a_node_serving_in_the_open_imitates_nothing() {
+        // Not merely absent from the link: rendering a name here would have
+        // the engine offer a forged handshake on a node whose whole point is
+        // that it does not pretend to be a website.
+        let mut config = a_masked_config("socks5", "");
+        config.node.domain = None;
+        config.listeners = vec![Listener {
+            method: "mtproto".to_owned(),
+            bind: "0.0.0.0:8443".to_owned(),
+        }];
+        let rendered = render(&config, &plain_settings()).unwrap();
+        assert!(!rendered.contains("tls_domain"), "{rendered}");
     }
 
     #[test]
-    fn an_empty_alibi_is_no_alibi() {
-        let rendered = render(&a_stealth_config("ya.ru", Some("")), &plain_settings()).unwrap();
-        assert!(rendered.contains("tls_domain = \"ya.ru\""));
+    fn a_name_that_is_not_one_is_refused() {
+        // A name with a slash or a space in it is not a hostname, and telemt
+        // would take the whole of it as one. Tested on the forged handshake,
+        // which is the kind that writes a name here at all.
+        for junk in ["ya.ru/path", "ya ru", ""] {
+            let rendered = render(&a_masked_config("faketls", junk), &plain_settings());
+            let rendered = rendered.unwrap_or_default();
+            assert!(!rendered.contains("tls_domain"), "{junk} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_node_carrying_a_site_writes_no_forged_handshake() {
+        // A WEB node answers to a name and ends real TLS for it, but imitates
+        // no one: no [censorship], and the mtproxy TLS mode stays off.
+        let config = Config {
+            listeners: vec![Listener {
+                method: "web".to_owned(),
+                bind: "127.0.0.1:8444".to_owned(),
+            }],
+            accesses: vec![WireAccess {
+                id: Uuid::now_v7(),
+                method: "web".to_owned(),
+                credential: WireCredential::Secret {
+                    hex: "00".repeat(16),
+                },
+                max_devices: None,
+                state: "active".to_owned(),
+            }],
+            ..a_masked_config("web", "site.example.com")
+        };
+        let rendered = render(&config, &plain_settings()).unwrap();
+        assert!(!rendered.contains("[censorship]"), "{rendered}");
+        assert!(!rendered.contains("tls_domain"), "{rendered}");
+        assert!(rendered.contains("tls = false"), "{rendered}");
     }
 }

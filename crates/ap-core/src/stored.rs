@@ -46,8 +46,11 @@ spelling!(
 spelling!(
     NodeKindTag,
     Error::StoredValue,
-    (Self::Stealth, "stealth"),
-    (Self::Open, "open"),
+    (Self::FakeTls, "faketls"),
+    (Self::Web, "web"),
+    (Self::Mtproto, "mtproto"),
+    (Self::Socks5, "socks5"),
+    (Self::Http, "http"),
 );
 
 spelling!(
@@ -97,8 +100,8 @@ mod tests {
         assert_eq!(ClientState::from_stored("active"), Ok(ClientState::Active));
         assert_eq!(NodeState::from_stored("burned"), Ok(NodeState::Burned));
         assert_eq!(
-            NodeKindTag::from_stored("stealth"),
-            Ok(NodeKindTag::Stealth)
+            NodeKindTag::from_stored("faketls"),
+            Ok(NodeKindTag::FakeTls)
         );
         assert_eq!(
             AccessState::from_stored("revoked"),
@@ -126,6 +129,6 @@ mod tests {
     #[test]
     fn the_spelling_matches_the_schema_constraint() {
         assert_eq!(StealthMethod::FakeTls.as_stored(), "faketls");
-        assert_eq!(NodeKindTag::Open.as_stored(), "open");
+        assert_eq!(NodeKindTag::Socks5.as_stored(), "socks5");
     }
 }

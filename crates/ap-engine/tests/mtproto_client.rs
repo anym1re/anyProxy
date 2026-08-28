@@ -154,9 +154,8 @@ fn start() -> Option<Node> {
         revision: Uuid::now_v7(),
         issued_at: "2026-08-27T00:00:00Z".to_owned(),
         node: NodeShape {
-            kind: "open".to_owned(),
+            kind: "mtproto".to_owned(),
             domain: None,
-            alibi: None,
         },
         listeners: vec![Listener {
             method: "mtproto".to_owned(),

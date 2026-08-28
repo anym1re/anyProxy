@@ -1,6 +1,7 @@
 use ap_core::{
     Access, AccessCommon, AccessState, AdminLogin, AnyAccess, Client, ClientState, Credential,
-    Domain, Label, Node, NodeKind, NodeKindTag, Open, OpenMethod, Stealth, StealthMethod, Tag,
+    Domain, Label, Node, NodeKind, NodeKindTag, Open, OpenMethod, Served, Stealth,
+    StealthMethod, Tag,
     TagName, time::format_rfc3339,
 };
 use axum::extract::{FromRequestParts, Path, Query, State};
@@ -357,17 +358,26 @@ async fn create_access(
         common = common.with_max_devices(devices)?;
     }
 
-    let access = match node.kind().tag() {
-        NodeKindTag::Stealth => AnyAccess::Stealth(Access::<Stealth>::new(
-            common,
-            StealthMethod::from_stored(&body.method)
-                .map_err(|_| ApiError::Unprocessable("method_not_served"))?,
-        )),
-        NodeKindTag::Open => AnyAccess::Open(Access::<Open>::new(
-            common,
-            OpenMethod::from_stored(&body.method)
-                .map_err(|_| ApiError::Unprocessable("method_not_served"))?,
-        )),
+    // A node serves the one method its kind names and nothing else. An access
+    // for another method could never be served, so it is refused rather than
+    // stored and wondered about.
+    let access = match node.kind().tag().served() {
+        Served::Masked(only) => {
+            let asked = StealthMethod::from_stored(&body.method)
+                .map_err(|_| ApiError::Unprocessable("method_not_served"))?;
+            if asked != only {
+                return Err(ApiError::Unprocessable("method_not_served"));
+            }
+            AnyAccess::Stealth(Access::<Stealth>::new(common, asked))
+        }
+        Served::Open(only) => {
+            let asked = OpenMethod::from_stored(&body.method)
+                .map_err(|_| ApiError::Unprocessable("method_not_served"))?;
+            if asked != only {
+                return Err(ApiError::Unprocessable("method_not_served"));
+            }
+            AnyAccess::Open(Access::<Open>::new(common, asked))
+        }
     };
 
     let credential = match &access {
@@ -465,16 +475,11 @@ async fn render_link(
                 .kind()
                 .domain()
                 .ok_or(ApiError::Internal("node_without_domain"))?;
-            let claimed = node
-                .kind()
-                .claimed()
-                .ok_or(ApiError::Internal("node_without_domain"))?;
             serde_json::json!({
                 "link": ap_core::stealth_link(
                     *access.method(),
                     &body.host,
                     domain,
-                    claimed,
                     secret,
                 )?,
                 "method": access.method().as_stored(),
@@ -578,10 +583,8 @@ async fn list_nodes(
 struct NewNode {
     label: String,
     kind: String,
+    /// The name a masked node answers to. A node serving in the open has none.
     domain: Option<String>,
-    /// What the forged handshake claims to be, when it is not the node's own
-    /// name. Only a node that also serves a site of its own needs one.
-    alibi: Option<String>,
 }
 
 async fn create_node(
@@ -592,8 +595,7 @@ async fn create_node(
     let label = Label::try_from(body.label.as_str())?;
     let tag = NodeKindTag::from_stored(&body.kind)?;
     let domain = body.domain.as_deref().map(Domain::try_from).transpose()?;
-    let alibi = body.alibi.as_deref().map(Domain::try_from).transpose()?;
-    let kind = NodeKind::from_parts(tag, domain, alibi)?;
+    let kind = NodeKind::from_parts(tag, domain)?;
     let node = Node::new(label.clone(), kind, OffsetDateTime::now_utc());
 
     let guarded = state.guarded(&actor);
@@ -657,7 +659,6 @@ async fn burn_node(
 #[derive(serde::Deserialize)]
 struct NewNames {
     domain: Option<String>,
-    alibi: Option<String>,
 }
 
 /// Changes the names a node answers to.
@@ -672,15 +673,14 @@ async fn rename_node(
     Json(body): Json<NewNames>,
 ) -> Result<StatusCode, ApiError> {
     let domain = body.domain.as_deref().map(Domain::try_from).transpose()?;
-    let alibi = body.alibi.as_deref().map(Domain::try_from).transpose()?;
 
     let guarded = state.guarded(&actor);
-    guarded.rename_node(id, domain, alibi).await?;
+    guarded.rename_node(id, domain).await?;
     guarded
         .record(
             "node.renamed",
             Some(&id.to_string()),
-            serde_json::json!({ "domain": body.domain, "alibi": body.alibi }),
+            serde_json::json!({ "domain": body.domain }),
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)

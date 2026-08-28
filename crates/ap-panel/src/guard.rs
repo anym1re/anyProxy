@@ -273,25 +273,20 @@ impl<'a> Guarded<'a> {
         Ok(withdrawn)
     }
 
-    /// Changes the names a node answers to.
+    /// Changes the name a node answers to.
     ///
-    /// The kind stays what it was: an open node has no name to give, and a
-    /// stealth node cannot be left without one. Both are refused here rather
-    /// than written and found out later.
-    pub async fn rename_node(
-        &self,
-        id: Uuid,
-        domain: Option<Domain>,
-        alibi: Option<Domain>,
-    ) -> Result<(), ApiError> {
+    /// The kind stays what it was: a node serving a recognisable method has no
+    /// name to give, and one that hides cannot be left without one. Both are
+    /// refused here rather than written and found out later.
+    pub async fn rename_node(&self, id: Uuid, domain: Option<Domain>) -> Result<(), ApiError> {
         if !self.actor.role().manages_nodes() {
             return Err(ApiError::NotFound);
         }
         let node = self.node(id).await?;
         // Built and thrown away: what it is for is the refusal it gives when
-        // the pair does not go with the kind.
-        ap_core::NodeKind::from_parts(node.kind().tag(), domain.clone(), alibi.clone())?;
-        NodeRepo::set_names(self.pool, id, domain.as_ref(), alibi.as_ref()).await?;
+        // the name does not go with the kind.
+        ap_core::NodeKind::from_parts(node.kind().tag(), domain.clone())?;
+        NodeRepo::set_name(self.pool, id, domain.as_ref()).await?;
         Ok(())
     }
 

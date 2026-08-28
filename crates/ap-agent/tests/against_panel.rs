@@ -98,7 +98,7 @@ macro_rules! panel {
 async fn a_node(panel: &Panel) -> Uuid {
     let node = Node::new(
         Label::try_from(unique("n").as_str()).unwrap(),
-        NodeKind::Open,
+        NodeKind::Mtproto,
         OffsetDateTime::now_utc(),
     );
     let id = node.id();

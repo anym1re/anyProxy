@@ -3,91 +3,117 @@ use std::net::IpAddr;
 use ::time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Domain, Error, Label};
+use crate::{Domain, Error, Label, OpenMethod, StealthMethod};
 
 /// What a node exposes to the network.
 ///
-/// A stealth node carries its domain in the variant, so a node that hides
-/// behind a cover site without having one cannot be built.
+/// One node, one method. Every method is recognisable from outside by someone
+/// who looks the right way: an open proxy answers as one on any port, and a
+/// forged handshake speaks a name its address does not own. Putting two on one
+/// address gives whoever is looking two things to correlate and one address to
+/// flag, and separating them by port does not break that link — which is what
+/// decision 0004 says and what this makes true of every method rather than
+/// only of the masked ones.
+///
+/// A node that carries a name carries it in the variant, so one that needs a
+/// name cannot be built without it. The name means different things by kind
+/// and that is the whole of the difference: a node with a forged handshake
+/// borrows somebody else's name, and a node with a site of its own answers to
+/// a name it holds a certificate for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
-    /// Port 443 only: FakeTLS, WEB and the cover site behind one domain.
-    Stealth {
-        /// Hostname the cover site and the clients share.
+    /// MTProto behind a forged TLS handshake, on 443.
+    FakeTls {
+        /// The name the handshake claims, which belongs to somebody else.
         domain: Domain,
-        /// Hostname the forged handshake claims to be, when it is not the
-        /// node's own.
-        ///
-        /// A node serving only the forged handshake has one name and borrows
-        /// it: `domain` is somebody else's site and there is no alibi beside
-        /// it. A node that also serves a site of its own has two, because the
-        /// site answers to a name it holds a certificate for while the
-        /// handshake goes on borrowing. The front door tells the two apart by
-        /// which one a client asks for, so they must differ.
-        alibi: Option<Domain>,
     },
-    /// Unmasked methods, each on its own port.
-    Open,
+    /// MTProto carried inside genuine HTTPS to a site of ours, on 443.
+    Web {
+        /// The node's own name, the one its certificate is issued to.
+        domain: Domain,
+    },
+    /// Plain MTProto, on its own port and recognisable as what it is.
+    Mtproto,
+    /// SOCKS5, on its own port.
+    Socks5,
+    /// HTTP CONNECT and forwarding, on its own port.
+    Http,
 }
 
 /// The variant of [`NodeKind`] without its payload, for storage and matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeKindTag {
-    /// See [`NodeKind::Stealth`].
-    Stealth,
-    /// See [`NodeKind::Open`].
-    Open,
+    /// See [`NodeKind::FakeTls`].
+    FakeTls,
+    /// See [`NodeKind::Web`].
+    Web,
+    /// See [`NodeKind::Mtproto`].
+    Mtproto,
+    /// See [`NodeKind::Socks5`].
+    Socks5,
+    /// See [`NodeKind::Http`].
+    Http,
+}
+
+/// The single method a node of a given kind serves, on whichever of the two
+/// surfaces carries it. The masked surface hides behind a name and the open
+/// one does not, which decides the credential and the link but not the rule
+/// that there is one method to a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Served {
+    /// Behind a name: a forged handshake or a site of our own.
+    Masked(StealthMethod),
+    /// In the open: MTProto, SOCKS5 or HTTP as themselves.
+    Open(OpenMethod),
+}
+
+impl NodeKindTag {
+    /// The one method this kind serves.
+    pub fn served(self) -> Served {
+        match self {
+            Self::FakeTls => Served::Masked(StealthMethod::FakeTls),
+            Self::Web => Served::Masked(StealthMethod::Web),
+            Self::Mtproto => Served::Open(OpenMethod::Mtproto),
+            Self::Socks5 => Served::Open(OpenMethod::Socks5),
+            Self::Http => Served::Open(OpenMethod::Http),
+        }
+    }
 }
 
 impl NodeKind {
     /// Returns the variant without its payload.
     pub fn tag(&self) -> NodeKindTag {
         match self {
-            Self::Stealth { .. } => NodeKindTag::Stealth,
-            Self::Open => NodeKindTag::Open,
+            Self::FakeTls { .. } => NodeKindTag::FakeTls,
+            Self::Web { .. } => NodeKindTag::Web,
+            Self::Mtproto => NodeKindTag::Mtproto,
+            Self::Socks5 => NodeKindTag::Socks5,
+            Self::Http => NodeKindTag::Http,
         }
     }
 
-    /// Borrows the domain of a stealth node.
+    /// The name this node answers to, when it answers to one.
+    ///
+    /// Borrowed by a node with a forged handshake, its own by a node with a
+    /// site. The kind says which.
     pub fn domain(&self) -> Option<&Domain> {
         match self {
-            Self::Stealth { domain, .. } => Some(domain),
-            Self::Open => None,
+            Self::FakeTls { domain } | Self::Web { domain } => Some(domain),
+            _ => None,
         }
     }
 
-    /// What the forged handshake claims to be.
-    ///
-    /// The alibi when there is one, the node's own name otherwise.
-    pub fn claimed(&self) -> Option<&Domain> {
-        match self {
-            Self::Stealth { domain, alibi } => Some(alibi.as_ref().unwrap_or(domain)),
-            Self::Open => None,
-        }
-    }
-
-    /// The alibi as stored, which is absent when the node has none.
-    pub fn alibi(&self) -> Option<&Domain> {
-        match self {
-            Self::Stealth { alibi, .. } => alibi.as_ref(),
-            Self::Open => None,
-        }
-    }
-
-    /// Rebuilds the kind from a stored tag and domain, rejecting the two
-    /// combinations the type itself cannot express.
-    pub fn from_parts(
-        tag: NodeKindTag,
-        domain: Option<Domain>,
-        alibi: Option<Domain>,
-    ) -> Result<Self, Error> {
+    /// Rebuilds the kind from a stored tag and name, rejecting the pairs the
+    /// type itself cannot express.
+    pub fn from_parts(tag: NodeKindTag, domain: Option<Domain>) -> Result<Self, Error> {
         match (tag, domain) {
-            (NodeKindTag::Stealth, Some(domain)) => Ok(Self::Stealth { domain, alibi }),
-            (NodeKindTag::Stealth, None) => Err(Error::StealthWithoutDomain),
-            (NodeKindTag::Open, None) if alibi.is_none() => Ok(Self::Open),
-            // An open node has nothing to pretend to be: it does not pretend.
-            (NodeKindTag::Open, None) => Err(Error::OpenWithDomain),
-            (NodeKindTag::Open, Some(_)) => Err(Error::OpenWithDomain),
+            (NodeKindTag::FakeTls, Some(domain)) => Ok(Self::FakeTls { domain }),
+            (NodeKindTag::Web, Some(domain)) => Ok(Self::Web { domain }),
+            (NodeKindTag::FakeTls | NodeKindTag::Web, None) => Err(Error::StealthWithoutDomain),
+            (_, Some(_)) => Err(Error::OpenWithDomain),
+            (NodeKindTag::Mtproto, None) => Ok(Self::Mtproto),
+            (NodeKindTag::Socks5, None) => Ok(Self::Socks5),
+            (NodeKindTag::Http, None) => Ok(Self::Http),
         }
     }
 }
@@ -231,34 +257,48 @@ mod tests {
     }
 
     #[test]
-    fn a_stealth_node_always_carries_a_domain() {
-        let kind = NodeKind::Stealth {
-            domain: domain(),
-            alibi: None,
-        };
-        assert_eq!(kind.tag(), NodeKindTag::Stealth);
-        assert_eq!(kind.domain(), Some(&domain()));
+    fn a_node_that_answers_to_a_name_always_carries_one() {
+        for (kind, tag) in [
+            (NodeKind::FakeTls { domain: domain() }, NodeKindTag::FakeTls),
+            (NodeKind::Web { domain: domain() }, NodeKindTag::Web),
+        ] {
+            assert_eq!(kind.tag(), tag);
+            assert_eq!(kind.domain(), Some(&domain()));
+        }
     }
 
     #[test]
-    fn an_open_node_never_carries_a_domain() {
-        let kind = NodeKind::Open;
-        assert_eq!(kind.tag(), NodeKindTag::Open);
+    fn every_kind_names_the_one_method_it_serves() {
+        for (tag, method) in [
+            (NodeKindTag::FakeTls, "faketls"),
+            (NodeKindTag::Web, "web"),
+            (NodeKindTag::Mtproto, "mtproto"),
+            (NodeKindTag::Socks5, "socks5"),
+            (NodeKindTag::Http, "http"),
+        ] {
+            assert_eq!(tag.as_stored(), method);
+        }
+    }
+
+    #[test]
+    fn a_node_that_answers_to_nobody_carries_no_name() {
+        let kind = NodeKind::Socks5;
+        assert_eq!(kind.tag(), NodeKindTag::Socks5);
         assert_eq!(kind.domain(), None);
     }
 
     #[test]
-    fn stealth_without_a_domain_is_rejected_at_the_boundary() {
+    fn a_name_a_kind_needs_is_required_at_the_boundary() {
         assert_eq!(
-            NodeKind::from_parts(NodeKindTag::Stealth, None, None),
+            NodeKind::from_parts(NodeKindTag::FakeTls, None),
             Err(Error::StealthWithoutDomain)
         );
     }
 
     #[test]
-    fn open_with_a_domain_is_rejected_at_the_boundary() {
+    fn a_name_a_kind_has_no_use_for_is_refused() {
         assert_eq!(
-            NodeKind::from_parts(NodeKindTag::Open, Some(domain()), None),
+            NodeKind::from_parts(NodeKindTag::Socks5, Some(domain())),
             Err(Error::OpenWithDomain)
         );
     }
@@ -266,21 +306,18 @@ mod tests {
     #[test]
     fn valid_pairs_are_rebuilt() {
         assert_eq!(
-            NodeKind::from_parts(NodeKindTag::Stealth, Some(domain()), None),
-            Ok(NodeKind::Stealth {
-                domain: domain(),
-                alibi: None
-            })
+            NodeKind::from_parts(NodeKindTag::Web, Some(domain())),
+            Ok(NodeKind::Web { domain: domain() })
         );
         assert_eq!(
-            NodeKind::from_parts(NodeKindTag::Open, None, None),
-            Ok(NodeKind::Open)
+            NodeKind::from_parts(NodeKindTag::Socks5, None),
+            Ok(NodeKind::Socks5)
         );
     }
 
     #[test]
     fn a_new_node_waits_for_its_agent() {
-        let node = Node::new(label(), NodeKind::Open, OffsetDateTime::UNIX_EPOCH);
+        let node = Node::new(label(), NodeKind::Socks5, OffsetDateTime::UNIX_EPOCH);
         assert_eq!(node.state(), NodeState::Pending);
         assert_eq!(node.last_seen_at(), None);
         assert_eq!(node.address(), None);
@@ -288,7 +325,7 @@ mod tests {
 
     #[test]
     fn a_burned_node_stays_burned() {
-        let mut node = Node::new(label(), NodeKind::Open, OffsetDateTime::UNIX_EPOCH);
+        let mut node = Node::new(label(), NodeKind::Socks5, OffsetDateTime::UNIX_EPOCH);
         node.set_state(NodeState::Burned);
         node.set_state(NodeState::Active);
         assert_eq!(node.state(), NodeState::Burned);

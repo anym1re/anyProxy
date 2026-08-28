@@ -110,9 +110,8 @@ mod tests {
                 revision: Uuid::now_v7(),
                 issued_at: "2026-08-26T00:00:00Z".to_owned(),
                 node: NodeShape {
-                    kind: "stealth".to_owned(),
+                    kind: "faketls".to_owned(),
                     domain: Some("cover.example.com".to_owned()),
-                    alibi: None,
                 },
                 listeners: vec![Listener {
                     method: "faketls".to_owned(),

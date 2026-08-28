@@ -76,7 +76,7 @@ fn key() -> KeyStore {
 async fn open_node(state: &AppState) -> Node {
     let node = Node::new(
         Label::try_from(unique("n").as_str()).unwrap(),
-        NodeKind::Open,
+        NodeKind::Mtproto,
         OffsetDateTime::now_utc(),
     );
     ap_store::NodeRepo::insert(ap_panel::channel::pool_of(state), &node)
@@ -197,9 +197,8 @@ async fn a_configuration_carries_only_this_node() {
     let mine = open_node(&state).await;
     let theirs = Node::new(
         Label::try_from(unique("n").as_str()).unwrap(),
-        NodeKind::Stealth {
+        NodeKind::FakeTls {
             domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
-            alibi: None,
         },
         OffsetDateTime::now_utc(),
     );
@@ -562,18 +561,34 @@ async fn burning_a_node_withdraws_its_accesses_and_refuses_its_certificate() {
     assert_eq!(read.common().state(), AccessState::Revoked);
 }
 
-#[tokio::test]
-async fn a_stealth_node_is_told_to_listen_on_443_alone() {
-    let state = state!();
-    let node = Node::new(
+fn a_masked_node(kind: NodeKind) -> Node {
+    Node::new(
         Label::try_from(unique("n").as_str()).unwrap(),
-        NodeKind::Stealth {
-            domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
-            alibi: None,
-        },
+        kind,
         OffsetDateTime::now_utc(),
-    );
-    ap_store::NodeRepo::insert(ap_panel::channel::pool_of(&state), &node)
+    )
+}
+
+fn a_name() -> Domain {
+    Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap()
+}
+
+#[tokio::test]
+async fn a_node_with_a_forged_handshake_keeps_443_itself() {
+    // Nothing ends TLS in front of it: the handshake it forges is the TLS, so
+    // the engine takes the port rather than sitting behind a door.
+    let state = state!();
+    let node = a_masked_node(NodeKind::FakeTls { domain: a_name() });
+    let pool = ap_panel::channel::pool_of(&state);
+    ap_store::NodeRepo::insert(pool, &node).await.unwrap();
+
+    let client = a_client(&state).await;
+    let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
+    let access = AnyAccess::Stealth(Access::<ap_core::Stealth>::new(
+        common,
+        StealthMethod::FakeTls,
+    ));
+    ap_store::AccessRepo::insert(pool, &access, &Credential::generate_secret(), &key())
         .await
         .unwrap();
 
@@ -581,25 +596,17 @@ async fn a_stealth_node_is_told_to_listen_on_443_alone() {
         .await
         .unwrap();
     assert_eq!(config.listeners.len(), 1);
-    assert_eq!(config.listeners[0].bind, "0.0.0.0:443");
     assert_eq!(config.listeners[0].method, "faketls");
-    let _ = StealthMethod::FakeTls;
+    assert_eq!(config.listeners[0].bind, "0.0.0.0:443");
 }
 
 #[tokio::test]
-async fn a_stealth_node_whose_clients_arrive_inside_a_site_serves_the_site() {
-    // One socket on 443 carries one thing. A node holding an access that
-    // arrives inside a real site serves that; the forged handshake and the
-    // site cannot both have the port.
+async fn a_node_carrying_clients_inside_a_site_waits_behind_the_door() {
+    // The site is served over real TLS with a certificate in the node's own
+    // name, and something has to end that. The engine takes what the door
+    // hands it, on the loopback and on the port the door sends to.
     let state = state!();
-    let node = Node::new(
-        Label::try_from(unique("n").as_str()).unwrap(),
-        NodeKind::Stealth {
-            domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
-            alibi: None,
-        },
-        OffsetDateTime::now_utc(),
-    );
+    let node = a_masked_node(NodeKind::Web { domain: a_name() });
     let pool = ap_panel::channel::pool_of(&state);
     ap_store::NodeRepo::insert(pool, &node).await.unwrap();
 
@@ -622,54 +629,13 @@ async fn a_stealth_node_whose_clients_arrive_inside_a_site_serves_the_site() {
 }
 
 #[tokio::test]
-async fn a_node_serving_both_carriers_without_an_alibi_is_refused() {
-    // The two are told apart by the name a client asks for. Without an alibi
-    // they are the same name, and every client of the forged handshake would
-    // be answered by the site instead — quietly, and only from the client's
-    // side.
+async fn a_masked_node_opens_nothing_for_a_method_it_does_not_serve() {
+    // One method to a node. An access naming the other masked method cannot
+    // be issued through the panel, but one issued before the node was what it
+    // is now can still be sitting in the database — and it must not open a
+    // second socket, which is the arrangement the rule exists to forbid.
     let state = state!();
-    let node = Node::new(
-        Label::try_from(unique("n").as_str()).unwrap(),
-        NodeKind::Stealth {
-            domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
-            alibi: None,
-        },
-        OffsetDateTime::now_utc(),
-    );
-    let pool = ap_panel::channel::pool_of(&state);
-    ap_store::NodeRepo::insert(pool, &node).await.unwrap();
-
-    let client = a_client(&state).await;
-    for method in [StealthMethod::Web, StealthMethod::FakeTls] {
-        let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
-        let access = AnyAccess::Stealth(Access::<ap_core::Stealth>::new(common, method));
-        ap_store::AccessRepo::insert(pool, &access, &Credential::generate_secret(), &key())
-            .await
-            .unwrap();
-    }
-
-    assert!(
-        ap_panel::channel::configuration_for(&state, node.id())
-            .await
-            .is_err(),
-        "a node whose two carriers share one name was configured anyway"
-    );
-}
-
-#[tokio::test]
-async fn a_stealth_node_serving_both_carriers_puts_both_behind_the_door() {
-    // The site is served over real TLS, which the front door ends. It sends on
-    // by the name the client asked for, so the forged handshake can live on the
-    // same node — behind the door rather than on the port.
-    let state = state!();
-    let node = Node::new(
-        Label::try_from(unique("n").as_str()).unwrap(),
-        NodeKind::Stealth {
-            domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
-            alibi: Some(Domain::try_from("ya.ru").unwrap()),
-        },
-        OffsetDateTime::now_utc(),
-    );
+    let node = a_masked_node(NodeKind::FakeTls { domain: a_name() });
     let pool = ap_panel::channel::pool_of(&state);
     ap_store::NodeRepo::insert(pool, &node).await.unwrap();
 
@@ -685,16 +651,15 @@ async fn a_stealth_node_serving_both_carriers_puts_both_behind_the_door() {
     let config = ap_panel::channel::configuration_for(&state, node.id())
         .await
         .unwrap();
-    let mut bound: Vec<(&str, &str)> = config
+    let bound: Vec<&str> = config
         .listeners
         .iter()
-        .map(|listener| (listener.method.as_str(), listener.bind.as_str()))
+        .map(|listener| listener.method.as_str())
         .collect();
-    bound.sort_unstable();
     assert_eq!(
         bound,
-        vec![("faketls", "127.0.0.1:8445"), ("web", "127.0.0.1:8444")],
-        "one of the two took the port the front door needs"
+        vec!["faketls"],
+        "a node opened a socket for a method its kind does not name"
     );
 }
 
