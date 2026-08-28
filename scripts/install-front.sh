@@ -169,4 +169,42 @@ nginx -t >/dev/null
 systemctl reload nginx
 systemctl enable --now certbot.timer >/dev/null 2>&1 || true
 
+# Whether 443 is actually being served, asked of the port rather than of
+# systemd.
+#
+# `nginx -t` checks the file and `systemctl reload` returns success as soon as
+# nginx accepts the signal. Neither notices that a worker could not bind: nginx
+# logs `bind() ... failed (98)`, keeps the workers it already had, and exits
+# zero. A door that never opened then reports itself up, and the node looks
+# installed while every client reaches nothing.
+#
+# Seen exactly that way: the engine of the method this node served before had
+# not finished letting go of 443 when the reload ran.
+door_is_up() {
+    local listening
+    listening="$(ss -ltn 'sport = :443' 2>/dev/null || true)"
+    case "${listening}" in
+        *LISTEN*) return 0 ;;
+    esac
+    return 1
+}
+
+waited=0
+while ! door_is_up; do
+    waited=$((waited + 1))
+    if [ "${waited}" -ge 10 ]; then
+        echo "nginx was reloaded, but nothing is listening on 443" >&2
+        echo "what holds the port now:" >&2
+        ss -ltnp 'sport = :443' 2>/dev/null >&2 || true
+        echo "what nginx said:" >&2
+        tail -3 /var/log/nginx/error.log 2>/dev/null >&2 || true
+        echo >&2
+        echo "a node serves one method: stop the engine of the previous one" >&2
+        echo "and run this again." >&2
+        exit 1
+    fi
+    sleep 1
+    systemctl reload nginx 2>/dev/null || true
+done
+
 echo "the front door is up for ${domain}"
