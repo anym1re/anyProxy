@@ -488,10 +488,7 @@ mod holder_tests {
     fn a_link_the_operator_hands_out_answers_to_nobody_and_has_a_name() {
         let access = public("общая на весну");
         assert_eq!(access.client_id(), None);
-        assert_eq!(
-            access.name().map(LinkName::as_str),
-            Some("общая на весну")
-        );
+        assert_eq!(access.name().map(LinkName::as_str), Some("общая на весну"));
     }
 
     #[test]

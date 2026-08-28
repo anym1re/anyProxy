@@ -86,6 +86,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0011_public_links",
         include_str!("../../../migrations/0011_public_links.sql"),
     ),
+    (
+        "0012_node_served_digest",
+        include_str!("../../../migrations/0012_node_served_digest.sql"),
+    ),
 ];
 
 /// The migrations this build carries, in the order they apply.

@@ -256,6 +256,89 @@ async fn a_withdrawn_access_is_absent_rather_than_marked() {
 }
 
 #[tokio::test]
+async fn a_node_serving_what_it_should_is_left_alone_on_a_heartbeat() {
+    // A configuration on every heartbeat would restart the engine twice a
+    // minute for nothing, and an engine restart drops the sessions it holds.
+    let state = state!();
+    let node = open_node(&state).await;
+    let client = a_client(&state).await;
+    an_access(&state, &client, &node).await;
+
+    ap_panel::channel::issue_configuration(&state, node.id())
+        .await
+        .unwrap();
+
+    let again = ap_panel::channel::configuration_if_changed(&state, node.id())
+        .await
+        .unwrap();
+    assert!(
+        again.is_none(),
+        "a node was sent a configuration it already had"
+    );
+}
+
+#[tokio::test]
+async fn withdrawing_an_access_reaches_a_node_without_it_reconnecting() {
+    // The fault this closes: the panel answered a greeting and nothing else,
+    // so an agent holding a live channel went on serving a withdrawn access
+    // until the connection happened to break. Stopping quickly is the one
+    // thing this system must be able to do.
+    let state = state!();
+    let node = open_node(&state).await;
+    let client = a_client(&state).await;
+    let access = an_access(&state, &client, &node).await;
+
+    let issued = ap_panel::channel::issue_configuration(&state, node.id())
+        .await
+        .unwrap();
+    assert_eq!(issued.accesses.len(), 1);
+
+    ap_store::AccessRepo::set_state(
+        ap_panel::channel::pool_of(&state),
+        access.common().id(),
+        AccessState::Revoked,
+    )
+    .await
+    .unwrap();
+
+    let sent = ap_panel::channel::configuration_if_changed(&state, node.id())
+        .await
+        .unwrap()
+        .expect("a withdrawal did not reach the node");
+    assert!(
+        sent.accesses.is_empty(),
+        "the withdrawn access was still carried"
+    );
+
+    // And once said, not said again: the node now serves what it should.
+    assert!(
+        ap_panel::channel::configuration_if_changed(&state, node.id())
+            .await
+            .unwrap()
+            .is_none(),
+        "the same change was sent twice"
+    );
+}
+
+#[tokio::test]
+async fn issuing_an_access_reaches_a_node_without_it_reconnecting() {
+    let state = state!();
+    let node = open_node(&state).await;
+    let client = a_client(&state).await;
+
+    ap_panel::channel::issue_configuration(&state, node.id())
+        .await
+        .unwrap();
+    an_access(&state, &client, &node).await;
+
+    let sent = ap_panel::channel::configuration_if_changed(&state, node.id())
+        .await
+        .unwrap()
+        .expect("a new access did not reach the node");
+    assert_eq!(sent.accesses.len(), 1);
+}
+
+#[tokio::test]
 async fn each_configuration_carries_a_later_revision() {
     let state = state!();
     let node = open_node(&state).await;

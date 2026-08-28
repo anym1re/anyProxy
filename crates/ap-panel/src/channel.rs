@@ -209,7 +209,7 @@ async fn handle(
                 heartbeat_secs: HEARTBEAT_SECS,
                 cache_ttl_secs: CACHE_TTL_SECS,
             });
-            let config = build_config(state, node_id).await?;
+            let config = issue_config(state, node_id).await?;
             Ok(vec![welcome, Message::Config(config)])
         }
 
@@ -220,9 +220,18 @@ async fn handle(
 
         (Message::Telemetry(telemetry), Some(node_id)) => {
             apply_telemetry(state, node_id, &telemetry).await?;
-            Ok(vec![Message::Ack(Ack {
+            let mut answer = vec![Message::Ack(Ack {
                 revision: telemetry.revision,
-            })])
+            })];
+            // The acknowledgement goes first and the configuration after it.
+            // The agent reads exactly one message when it delivers telemetry
+            // and treats anything but an acknowledgement as a delivery that
+            // did not land; a configuration sent ahead of it would be read
+            // there and thrown away.
+            if let Some(config) = config_if_it_changed(state, node_id).await? {
+                answer.push(Message::Config(config));
+            }
+            Ok(answer)
         }
 
         (Message::Result(_), Some(_)) => Ok(Vec::new()),
@@ -273,6 +282,46 @@ async fn enrol(
         ca: authority.certificate_pem().to_owned(),
         not_after: String::new(),
     })
+}
+
+/// Builds a configuration and remembers the fingerprint of what it carries.
+///
+/// The fingerprint is what later tells whether a node is serving what it
+/// should. Written together with the sending so the two cannot drift.
+async fn issue_config(state: &AppState, node_id: Uuid) -> Result<Config, ApiError> {
+    let config = build_config(state, node_id).await?;
+    let digest = ap_store::NodeRepo::serving_digest(state.pool(), node_id)
+        .await
+        .map_err(ApiError::from)?;
+    ap_store::NodeRepo::set_served_digest(state.pool(), node_id, &digest)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(config)
+}
+
+/// A fresh configuration, when what the node should serve has changed.
+///
+/// Asked on every heartbeat, because the panel has no other moment to say so:
+/// it answers a greeting and nothing else, and an agent holds one channel for
+/// as long as it stays up. Without this a withdrawn access went on being
+/// served until the connection happened to break, and burning a node revoked
+/// its accesses in the database while the node carried on serving them.
+///
+/// Compared by fingerprint rather than by rebuilding and diffing the
+/// configuration: rebuilding opens every credential, and this runs twice a
+/// minute for every node.
+async fn config_if_it_changed(state: &AppState, node_id: Uuid) -> Result<Option<Config>, ApiError> {
+    let pool = state.pool();
+    let wanted = ap_store::NodeRepo::serving_digest(pool, node_id)
+        .await
+        .map_err(ApiError::from)?;
+    let served = ap_store::NodeRepo::served_digest(pool, node_id)
+        .await
+        .map_err(ApiError::from)?;
+    if served.as_deref() == Some(wanted.as_slice()) {
+        return Ok(None);
+    }
+    issue_config(state, node_id).await.map(Some)
 }
 
 async fn build_config(state: &AppState, node_id: Uuid) -> Result<Config, ApiError> {
@@ -533,6 +582,20 @@ pub fn is_serving(health: &Health) -> bool {
 /// Builds the configuration a node would receive, without a channel.
 pub async fn configuration_for(state: &AppState, node_id: Uuid) -> Result<Config, ApiError> {
     build_config(state, node_id).await
+}
+
+/// Issues a configuration and records what it carries, as a greeting would.
+pub async fn issue_configuration(state: &AppState, node_id: Uuid) -> Result<Config, ApiError> {
+    issue_config(state, node_id).await
+}
+
+/// What a heartbeat would carry back: a configuration if what the node should
+/// serve has changed since it was last told, and nothing if it has not.
+pub async fn configuration_if_changed(
+    state: &AppState,
+    node_id: Uuid,
+) -> Result<Option<Config>, ApiError> {
+    config_if_it_changed(state, node_id).await
 }
 
 /// Applies a telemetry frame as the channel would, without a channel.

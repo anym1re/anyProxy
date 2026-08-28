@@ -105,11 +105,9 @@ impl NodeRepo {
     /// Changing it changes how the node reaches Telegram: with a tag through
     /// the middle proxies, without one directly.
     ///
-    /// It reaches the node when the node next opens a session, and not before.
-    /// The panel sends a configuration in answer to a greeting and at no other
-    /// time, so an agent holding a live channel goes on serving what it was
-    /// given. That is true of every change to what a node serves, withdrawing
-    /// an access included.
+    /// It reaches the node on its next heartbeat, which the panel answers with
+    /// a fresh configuration whenever what the node should serve has stopped
+    /// matching what it was last told.
     pub async fn set_ad_tag(
         pool: &PgPool,
         id: Uuid,
@@ -121,6 +119,68 @@ impl NodeRepo {
             .execute(pool)
             .await?;
         Ok(result.rows_affected() == 1)
+    }
+
+    /// A fingerprint of what this node should be serving now.
+    ///
+    /// Taken from the rows rather than from the rendered configuration, which
+    /// opens every credential: this runs on every heartbeat, and opening a
+    /// node's credentials twice a minute to learn that nothing changed is work
+    /// done for nothing. The credential itself is stood in for by its digest,
+    /// which is safe because a credential is never reissued — a different
+    /// credential is a different access.
+    ///
+    /// It must cover everything the configuration carries. A field the
+    /// rendering reads and this does not is a change that never reaches the
+    /// node, which is the whole fault this exists to close.
+    ///
+    /// Withdrawn accesses are left out, the same way the configuration leaves
+    /// them out, so withdrawing one changes the fingerprint.
+    pub async fn serving_digest(pool: &PgPool, id: Uuid) -> Result<Vec<u8>, StoreError> {
+        let digest: Option<Vec<u8>> = sqlx::query_scalar(
+            "select sha256(convert_to(
+                 n.kind || '|' || coalesce(n.domain, '') || '|' || coalesce(n.ad_tag, '')
+                 || '|' || coalesce((
+                     select string_agg(
+                         a.id::text || ':' || a.method || ':' || a.state || ':'
+                         || encode(a.credential_digest, 'hex') || ':'
+                         || coalesce(a.max_devices::text, ''),
+                         '|' order by a.id)
+                     from access a
+                     where a.node_id = n.id and a.state <> 'revoked'), ''),
+                 'UTF8'))
+             from node n where n.id = $1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+        digest.ok_or(StoreError::Impossible(format!("no node {id}")))
+    }
+
+    /// What this node was last sent, as a fingerprint.
+    pub async fn served_digest(pool: &PgPool, id: Uuid) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(
+            sqlx::query_scalar("select served_digest from node where id = $1")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
+                .flatten(),
+        )
+    }
+
+    /// Records the fingerprint of the configuration just sent to a node.
+    pub async fn set_served_digest(
+        pool: &PgPool,
+        id: Uuid,
+        digest: &[u8],
+    ) -> Result<(), StoreError> {
+        sqlx::query("update node set served_digest = $2 where id = $1")
+            .bind(id)
+            .bind(digest)
+            .execute(pool)
+            .await?;
+        Ok(())
     }
 
     /// Moves a node to a new state. A burned node is never moved out of it.
