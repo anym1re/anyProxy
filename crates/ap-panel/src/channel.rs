@@ -301,6 +301,20 @@ async fn build_config(state: &AppState, node_id: Uuid) -> Result<Config, ApiErro
         accesses.push(wire_access(&access, &credential));
     }
 
+    // A node serving both carriers is told apart at its own front door by the
+    // name a client asks for, so the two names have to differ. Without an
+    // alibi they are the same name, and every client of the forged handshake
+    // would be answered by the site — quietly, and only from the client's
+    // side. Refused here rather than rendered into a configuration that looks
+    // correct.
+    if node.kind().tag() == NodeKindTag::Stealth
+        && node.kind().alibi().is_none()
+        && serves(&accesses, "web")
+        && serves(&accesses, "faketls")
+    {
+        return Err(ApiError::Unprocessable("node_serves_both_without_an_alibi"));
+    }
+
     let revision = Uuid::now_v7();
     ap_store::EnrollmentRepo::set_revision(pool, node_id, revision)
         .await
@@ -355,6 +369,13 @@ fn listeners_for(kind: NodeKindTag, accesses: &[WireAccess]) -> Vec<Listener> {
         }
     }
     listeners
+}
+
+/// Whether any access on this node arrives by the given method.
+fn serves(accesses: &[WireAccess], method: &str) -> bool {
+    accesses
+        .iter()
+        .any(|access| access.method == method && access.state == "active")
 }
 
 /// What a stealth node listens on.

@@ -622,6 +622,41 @@ async fn a_stealth_node_whose_clients_arrive_inside_a_site_serves_the_site() {
 }
 
 #[tokio::test]
+async fn a_node_serving_both_carriers_without_an_alibi_is_refused() {
+    // The two are told apart by the name a client asks for. Without an alibi
+    // they are the same name, and every client of the forged handshake would
+    // be answered by the site instead — quietly, and only from the client's
+    // side.
+    let state = state!();
+    let node = Node::new(
+        Label::try_from(unique("n").as_str()).unwrap(),
+        NodeKind::Stealth {
+            domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
+            alibi: None,
+        },
+        OffsetDateTime::now_utc(),
+    );
+    let pool = ap_panel::channel::pool_of(&state);
+    ap_store::NodeRepo::insert(pool, &node).await.unwrap();
+
+    let client = a_client(&state).await;
+    for method in [StealthMethod::Web, StealthMethod::FakeTls] {
+        let common = AccessCommon::new(client.id(), node.id(), OffsetDateTime::now_utc());
+        let access = AnyAccess::Stealth(Access::<ap_core::Stealth>::new(common, method));
+        ap_store::AccessRepo::insert(pool, &access, &Credential::generate_secret(), &key())
+            .await
+            .unwrap();
+    }
+
+    assert!(
+        ap_panel::channel::configuration_for(&state, node.id())
+            .await
+            .is_err(),
+        "a node whose two carriers share one name was configured anyway"
+    );
+}
+
+#[tokio::test]
 async fn a_stealth_node_serving_both_carriers_puts_both_behind_the_door() {
     // The site is served over real TLS, which the front door ends. It sends on
     // by the name the client asked for, so the forged handshake can live on the
@@ -631,7 +666,7 @@ async fn a_stealth_node_serving_both_carriers_puts_both_behind_the_door() {
         Label::try_from(unique("n").as_str()).unwrap(),
         NodeKind::Stealth {
             domain: Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap(),
-            alibi: None,
+            alibi: Some(Domain::try_from("ya.ru").unwrap()),
         },
         OffsetDateTime::now_utc(),
     );
