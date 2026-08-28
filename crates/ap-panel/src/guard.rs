@@ -1,6 +1,6 @@
 use ap_core::{
-    AccessState, AdminUser, AnyAccess, Client, ClientState, Credential, Domain, KeyStore, Label,
-    Node, NodeState, Role, Tag, TagName,
+    AccessState, AdTag, AdminUser, AnyAccess, Client, ClientState, Credential, Domain, KeyStore,
+    Label, Node, NodeState, Role, Tag, TagName,
 };
 use ap_store::{AccessRepo, AuditRepo, ClientRepo, NodeRepo, TagRepo, TrafficRepo, TrafficTotals};
 use sqlx::PgPool;
@@ -287,6 +287,20 @@ impl<'a> Guarded<'a> {
         // the name does not go with the kind.
         ap_core::NodeKind::from_parts(node.kind().tag(), domain.clone())?;
         NodeRepo::set_name(self.pool, id, domain.as_ref()).await?;
+        Ok(())
+    }
+
+    /// Sets or clears the sponsorship tag a node carries.
+    ///
+    /// Separate from registering the node because the tag arrives later:
+    /// @MTProxybot issues one for a proxy it can already reach, so the node is
+    /// serving before there is a tag to record.
+    pub async fn sponsor_node(&self, id: Uuid, ad_tag: Option<AdTag>) -> Result<(), ApiError> {
+        if !self.actor.role().manages_nodes() {
+            return Err(ApiError::NotFound);
+        }
+        self.node(id).await?;
+        NodeRepo::set_ad_tag(self.pool, id, ad_tag.as_ref()).await?;
         Ok(())
     }
 

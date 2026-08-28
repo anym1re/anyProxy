@@ -19,12 +19,6 @@ pub struct Settings {
     pub api_token: String,
     /// Where telemt keeps its own state.
     pub data_path: String,
-    /// Whether to route through Telegram's middle proxies.
-    ///
-    /// A sponsored channel needs them. A node that cannot reach them falls
-    /// back to routing to the data centres directly, and a test host has no
-    /// business waiting on them at all.
-    pub middle_proxy: bool,
     /// Where a connection that fails to authenticate is sent instead.
     ///
     /// A probe that does not know a secret must see a real site with real TLS,
@@ -65,8 +59,26 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
     writeln!(out, "[general]").ok();
     writeln!(out, "data_path = \"{}\"", settings.data_path).ok();
     writeln!(out, "config_strict = true").ok();
-    writeln!(out, "use_middle_proxy = {}", settings.middle_proxy).ok();
-    writeln!(out, "ad_tag = \"{}\"", ad_tag(config)).ok();
+    // Telegram's middle proxies, and the tag that is the only reason to use
+    // them.
+    //
+    // A sponsored channel is credited by the tag, and the tag is only counted
+    // when the traffic goes through the middle proxies. So the two travel
+    // together: a node with a tag pays the extra hop and gets the sponsorship,
+    // and a node without one reaches the data centres directly and pays
+    // nothing for a sponsorship it does not have.
+    //
+    // Every node used to be configured with a tag of thirty-two zeros and the
+    // middle proxies switched on, which bought nothing at that price.
+    match ad_tag(config) {
+        Some(tag) => {
+            writeln!(out, "use_middle_proxy = true").ok();
+            writeln!(out, "ad_tag = \"{tag}\"").ok();
+        }
+        None => {
+            writeln!(out, "use_middle_proxy = false").ok();
+        }
+    }
     writeln!(out).ok();
 
     // Which of telemt's client modes are allowed, decided by what the node
@@ -306,10 +318,18 @@ fn masquerade(config: &Config) -> Option<&str> {
         .filter(|domain| !domain.is_empty() && !domain.contains(['/', ' ']))
 }
 
-/// The sponsored-channel tag, or none at all.
-fn ad_tag(config: &Config) -> String {
-    let _ = config;
-    "0".repeat(32)
+/// The sponsored-channel tag this node carries, when it carries one.
+///
+/// Checked here as well as at the panel's boundary: this is the last place the
+/// value passes before it reaches the engine, and a tag that is not thirty-two
+/// hex characters is not one telemt will accept.
+fn ad_tag(config: &Config) -> Option<&str> {
+    config
+        .node
+        .ad_tag
+        .as_deref()
+        .filter(|tag| tag.len() == 32 && tag.chars().all(|c| c.is_ascii_hexdigit()))
+        .filter(|tag| tag.chars().any(|c| c != '0'))
 }
 
 /// Which telemt transport serves one of our methods.
@@ -357,7 +377,6 @@ mod tests {
             metrics_port: 9090,
             api_token: "Bearer opaque".to_owned(),
             data_path: "/var/lib/anyproxy/engine".to_owned(),
-            middle_proxy: true,
             mask_host: "www.cloudflare.com".to_owned(),
             cover_site: "http://127.0.0.1:8081".to_owned(),
             public_addr: "203.0.113.7:443".to_owned(),
@@ -392,6 +411,7 @@ mod tests {
             node: NodeShape {
                 kind: "faketls".to_owned(),
                 domain: Some("cover.example.com".to_owned()),
+                ad_tag: None,
             },
             listeners,
             accesses,
@@ -441,7 +461,7 @@ mod tests {
             .split("[general]")
             .nth(1)
             .expect("a general section");
-        for key in ["data_path", "config_strict", "use_middle_proxy", "ad_tag"] {
+        for key in ["data_path", "config_strict", "use_middle_proxy"] {
             assert!(general.contains(key), "{key} is not under [general]");
         }
     }
@@ -716,6 +736,7 @@ mod masquerade_tests {
             node: NodeShape {
                 kind: kind.to_owned(),
                 domain: Some(domain.to_owned()),
+                ad_tag: None,
             },
             listeners: vec![Listener {
                 method: "faketls".to_owned(),
@@ -735,7 +756,6 @@ mod masquerade_tests {
             metrics_port: 9090,
             api_token: "Bearer x".to_owned(),
             data_path: "/tmp/engine".to_owned(),
-            middle_proxy: false,
             mask_host: "www.cloudflare.com".to_owned(),
             cover_site: "http://127.0.0.1:8081".to_owned(),
             public_addr: "203.0.113.7:443".to_owned(),
@@ -772,6 +792,50 @@ mod masquerade_tests {
             let rendered = render(&a_masked_config("faketls", junk), &plain_settings());
             let rendered = rendered.unwrap_or_default();
             assert!(!rendered.contains("tls_domain"), "{junk} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_node_without_sponsorship_goes_direct_and_names_no_tag() {
+        // The middle proxies exist here only to make a sponsored channel
+        // count. Without a tag they are an extra hop bought for nothing, which
+        // is what every node used to pay with a tag of thirty-two zeros.
+        let rendered = render(&a_masked_config("faketls", "ya.ru"), &plain_settings()).unwrap();
+        assert!(rendered.contains("use_middle_proxy = false"), "{rendered}");
+        assert!(!rendered.contains("ad_tag"), "{rendered}");
+    }
+
+    #[test]
+    fn a_node_with_sponsorship_takes_the_hop_that_makes_it_count() {
+        let mut config = a_masked_config("faketls", "ya.ru");
+        config.node.ad_tag = Some("3c09c680b76ee91a4c25ad51f742ba1e".to_owned());
+        let rendered = render(&config, &plain_settings()).unwrap();
+        assert!(rendered.contains("use_middle_proxy = true"), "{rendered}");
+        assert!(
+            rendered.contains("ad_tag = \"3c09c680b76ee91a4c25ad51f742ba1e\""),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_tag_of_all_zeros_is_no_sponsorship() {
+        // What the field held before it meant anything. Taken as absent rather
+        // than written out, so an upgrade does not leave nodes paying the hop.
+        let mut config = a_masked_config("faketls", "ya.ru");
+        config.node.ad_tag = Some("0".repeat(32));
+        let rendered = render(&config, &plain_settings()).unwrap();
+        assert!(rendered.contains("use_middle_proxy = false"), "{rendered}");
+        assert!(!rendered.contains("ad_tag"), "{rendered}");
+    }
+
+    #[test]
+    fn a_tag_that_is_not_thirty_two_hex_characters_never_reaches_the_engine() {
+        for bad in ["3c09c6", "не тег", "3c09c680b76ee91a4c25ad51f742ba1z"] {
+            let mut config = a_masked_config("faketls", "ya.ru");
+            config.node.ad_tag = Some(bad.to_owned());
+            let rendered = render(&config, &plain_settings()).unwrap();
+            assert!(!rendered.contains("ad_tag"), "{bad:?} reached the engine");
+            assert!(rendered.contains("use_middle_proxy = false"), "{bad:?}");
         }
     }
 

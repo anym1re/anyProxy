@@ -1,4 +1,4 @@
-use ap_core::{Domain, Label, Node, NodeKind, NodeKindTag, NodeState};
+use ap_core::{AdTag, Domain, Label, Node, NodeKind, NodeKindTag, NodeState};
 use sqlx::{PgPool, Row};
 use std::net::IpAddr;
 use time::OffsetDateTime;
@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::StoreError;
 
 const COLUMNS: &str = "id, label, kind, domain, address, agent_version, last_seen_at, \
-                       state, created_at";
+                       state, created_at, ad_tag";
 
 /// Reads and writes nodes.
 pub struct NodeRepo;
@@ -17,8 +17,8 @@ impl NodeRepo {
     pub async fn insert(pool: &PgPool, node: &Node) -> Result<(), StoreError> {
         sqlx::query(
             "insert into node (id, label, kind, domain, address, agent_version, \
-             last_seen_at, state, created_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             last_seen_at, state, created_at, ad_tag) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(node.id())
         .bind(node.label().as_str())
@@ -29,6 +29,7 @@ impl NodeRepo {
         .bind(node.last_seen_at())
         .bind(node.state().as_stored())
         .bind(node.created_at())
+        .bind(node.ad_tag().map(AdTag::as_str))
         .execute(pool)
         .await?;
         Ok(())
@@ -94,6 +95,29 @@ impl NodeRepo {
         Ok(result.rows_affected() == 1)
     }
 
+    /// Sets or clears the sponsorship tag a node carries.
+    ///
+    /// Set after the fact rather than at registration, because that is the
+    /// order the tag is obtained in: @MTProxybot issues one for a proxy it can
+    /// already reach, so the node has to be serving before there is a tag to
+    /// record.
+    ///
+    /// Changing it changes how the node reaches Telegram — with a tag through
+    /// the middle proxies, without one directly — so the agent is given a new
+    /// configuration and the engine restarts on it.
+    pub async fn set_ad_tag(
+        pool: &PgPool,
+        id: Uuid,
+        ad_tag: Option<&AdTag>,
+    ) -> Result<bool, StoreError> {
+        let result = sqlx::query("update node set ad_tag = $2 where id = $1")
+            .bind(id)
+            .bind(ad_tag.map(AdTag::as_str))
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Moves a node to a new state. A burned node is never moved out of it.
     pub async fn set_state(pool: &PgPool, id: Uuid, state: NodeState) -> Result<bool, StoreError> {
         let result = sqlx::query("update node set state = $2 where id = $1 and state <> 'burned'")
@@ -113,6 +137,10 @@ fn read_node(row: sqlx::postgres::PgRow) -> Result<Node, StoreError> {
         .map(|text| Domain::try_from(text.as_str()))
         .transpose()?;
     let kind = NodeKind::from_parts(tag, domain)?;
+    let ad_tag = row
+        .try_get::<Option<String>, _>("ad_tag")?
+        .map(|text| AdTag::try_from(text.as_str()))
+        .transpose()?;
     let address = row
         .try_get::<Option<String>, _>("address")?
         .and_then(|text| text.parse::<IpAddr>().ok());
@@ -125,5 +153,6 @@ fn read_node(row: sqlx::postgres::PgRow) -> Result<Node, StoreError> {
         row.try_get::<Option<OffsetDateTime>, _>("last_seen_at")?,
         NodeState::from_stored(&row.try_get::<String, _>("state")?)?,
         row.try_get("created_at")?,
+        ad_tag,
     ))
 }

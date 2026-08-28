@@ -119,6 +119,7 @@ mod tests {
             node: NodeShape {
                 kind: "faketls".to_owned(),
                 domain: Some("cover.example.com".to_owned()),
+                ad_tag: None,
             },
             listeners: Vec::new(),
             accesses: Vec::new(),

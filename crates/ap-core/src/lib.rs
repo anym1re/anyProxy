@@ -26,6 +26,6 @@ pub use limits::{
     QuotaLimits, Reason, Servable, Usage, effective_expiry, effective_quota, is_servable,
 };
 pub use link::{has_link, mtproto_link, stealth_link};
-pub use name::{AdminLogin, Color, Domain, Label, Note, TagName};
+pub use name::{AdTag, AdminLogin, Color, Domain, Label, Note, TagName};
 pub use node::{Node, NodeKind, NodeKindTag, NodeState, Served};
 pub use tag::Tag;

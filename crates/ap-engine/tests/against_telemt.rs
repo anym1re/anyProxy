@@ -83,6 +83,7 @@ fn a_config(port: u16, accesses: Vec<WireAccess>) -> Config {
         node: NodeShape {
             kind: "faketls".to_owned(),
             domain: Some("cover.example.com".to_owned()),
+            ad_tag: None,
         },
         listeners: vec![Listener {
             method: "faketls".to_owned(),
@@ -110,7 +111,6 @@ async fn start(accesses: Vec<WireAccess>) -> Option<Engine> {
         data_path: dir.join("state").display().to_string(),
         // This host cannot reach Telegram's middle proxies, and waiting on
         // them would make every test here a test of the network.
-        middle_proxy: false,
         mask_host: "www.cloudflare.com".to_owned(),
         cover_site: "http://127.0.0.1:8081".to_owned(),
         public_addr: "203.0.113.7:443".to_owned(),

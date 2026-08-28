@@ -106,6 +106,12 @@ pub struct NodeShape {
     /// The name a masked node answers to, absent on one that serves in the
     /// open. Borrowed by a forged handshake, its own on a node with a site.
     pub domain: Option<String>,
+    /// The sponsorship tag Telegram issued for this node, when it has one.
+    ///
+    /// Absent on a node that carries no sponsored channel, which is what
+    /// decides whether the node goes through Telegram's middle proxies at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ad_tag: Option<String>,
 }
 
 /// One socket the node opens.

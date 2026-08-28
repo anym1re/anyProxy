@@ -278,3 +278,78 @@ mod tests {
         );
     }
 }
+
+/// The tag Telegram issues to a proxy that carries a sponsored channel.
+///
+/// Sixteen bytes as thirty-two lowercase hex characters, handed out by
+/// @MTProxybot once a proxy is registered with it. It is not a secret: it says
+/// which proxy the traffic came through, so the sponsored channel is credited
+/// to the right one, and it travels with every connection.
+///
+/// A node has one or none. Carrying one costs an extra hop, because a
+/// sponsored channel is only counted when the traffic goes through Telegram's
+/// middle proxies; a node without one goes to the data centres directly.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AdTag(String);
+
+impl AdTag {
+    /// Borrows the validated value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for AdTag {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Error> {
+        // Upper case is accepted and folded down: the bot shows the tag in a
+        // message a person copies by hand, and a tag that differs only in case
+        // is the same tag.
+        let folded = value.to_ascii_lowercase();
+        let valid = folded.len() == 32 && folded.chars().all(|c| c.is_ascii_hexdigit());
+        if valid {
+            Ok(Self(folded))
+        } else {
+            Err(Error::AdTag)
+        }
+    }
+}
+
+impl fmt::Display for AdTag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod ad_tag_tests {
+    use super::*;
+
+    #[test]
+    fn a_tag_is_sixteen_bytes_in_hex() {
+        let tag = AdTag::try_from("3c09c680b76ee91a4c25ad51f742ba1e").unwrap();
+        assert_eq!(tag.as_str(), "3c09c680b76ee91a4c25ad51f742ba1e");
+    }
+
+    #[test]
+    fn a_tag_copied_in_upper_case_is_the_same_tag() {
+        assert_eq!(
+            AdTag::try_from("3C09C680B76EE91A4C25AD51F742BA1E"),
+            AdTag::try_from("3c09c680b76ee91a4c25ad51f742ba1e")
+        );
+    }
+
+    #[test]
+    fn anything_that_is_not_sixteen_bytes_of_hex_is_refused() {
+        for bad in [
+            "",
+            "3c09c680b76ee91a4c25ad51f742ba",
+            "3c09c680b76ee91a4c25ad51f742ba1e00",
+            "3c09c680b76ee91a4c25ad51f742ba1z",
+            "не тег",
+        ] {
+            assert_eq!(AdTag::try_from(bad), Err(Error::AdTag), "{bad:?} accepted");
+        }
+    }
+}

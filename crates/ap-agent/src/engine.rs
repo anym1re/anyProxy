@@ -53,7 +53,6 @@ pub fn settings(paths: &Paths) -> Result<Settings, AgentError> {
         metrics_port: METRICS_PORT,
         api_token: token,
         data_path: paths.dir.join("engine").display().to_string(),
-        middle_proxy: true,
         cover_site: format!("http://127.0.0.1:{COVER_PORT}"),
         // Filled in when a configuration arrives and the node has a name to
         // resolve. Until then there is nothing to reach it by.

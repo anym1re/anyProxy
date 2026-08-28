@@ -156,6 +156,23 @@ pub enum NodeCommand {
     },
     /// Lists every node.
     List,
+    /// Sets or clears the sponsorship a node carries.
+    ///
+    /// The tag comes from @MTProxybot, which issues one for a proxy it can
+    /// already reach — so this is done after the node is serving, not when it
+    /// is registered. A node with a tag routes through Telegram's middle
+    /// proxies, which is what makes the sponsored channel count and costs an
+    /// extra hop; a node without one goes direct.
+    Sponsor {
+        /// The node, by the name an operator knows it by.
+        node: String,
+        /// The tag, thirty-two hex characters.
+        #[arg(long, conflicts_with = "clear")]
+        tag: Option<String>,
+        /// Carry no sponsorship, and stop paying for the extra hop.
+        #[arg(long, conflicts_with = "tag")]
+        clear: bool,
+    },
     /// Changes the names a node answers to.
     ///
     /// Every link already issued for the node names the old one, so clients
@@ -755,6 +772,24 @@ async fn node(command: NodeCommand, context: Context) -> Outcome {
                     &[("command", Argument::Text(&command))],
                 )?,
             ]))
+        }
+        NodeCommand::Sponsor { node, tag, clear } => {
+            if tag.is_none() && !clear {
+                return Err(Failure::Arguments("say --tag <hex> or --clear".to_owned()));
+            }
+            let record = node_by_label(&context, &node).await?;
+            post(
+                &context,
+                &format!("/v1/nodes/{}/sponsorship", text(&record, "id")),
+                serde_json::json!({ "ad_tag": tag }),
+            )
+            .await?;
+
+            Ok(Rendered::line(say(
+                locale,
+                "cli-node-sponsored",
+                &[("node", Argument::Text(&node))],
+            )?))
         }
         NodeCommand::Rename { node, domain } => {
             let record = node_by_label(&context, &node).await?;

@@ -83,6 +83,10 @@ pub enum Error {
     #[error("a node serving in the open cannot carry a domain")]
     OpenWithDomain,
 
+    /// A sponsorship tag that is not sixteen bytes of hex.
+    #[error("a sponsorship tag is thirty-two hex characters")]
+    AdTag,
+
     /// Masking asked for on a transport that is not offered with it.
     ///
     /// An operator picks among four transports, and only MTProto is offered

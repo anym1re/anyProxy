@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use ::time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Domain, Error, Label, OpenMethod, StealthMethod};
+use crate::{AdTag, Domain, Error, Label, OpenMethod, StealthMethod};
 
 /// What a node exposes to the network.
 ///
@@ -179,6 +179,7 @@ pub struct Node {
     last_seen_at: Option<OffsetDateTime>,
     state: NodeState,
     created_at: OffsetDateTime,
+    ad_tag: Option<AdTag>,
 }
 
 impl Node {
@@ -193,6 +194,7 @@ impl Node {
             last_seen_at: None,
             state: NodeState::Pending,
             created_at,
+            ad_tag: None,
         }
     }
 
@@ -207,6 +209,7 @@ impl Node {
         last_seen_at: Option<OffsetDateTime>,
         state: NodeState,
         created_at: OffsetDateTime,
+        ad_tag: Option<AdTag>,
     ) -> Self {
         Self {
             id,
@@ -217,7 +220,17 @@ impl Node {
             last_seen_at,
             state,
             created_at,
+            ad_tag,
         }
+    }
+
+    /// The sponsorship tag this node carries, when it carries one.
+    ///
+    /// Absent on a node that is not sponsored, which is the ordinary case and
+    /// the cheaper one: the tag is only counted when traffic goes through
+    /// Telegram's middle proxies, so a node without one goes direct.
+    pub fn ad_tag(&self) -> Option<&AdTag> {
+        self.ad_tag.as_ref()
     }
 
     /// Identifier assigned at registration.

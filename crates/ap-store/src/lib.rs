@@ -78,6 +78,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0009_one_method_per_host",
         include_str!("../../../migrations/0009_one_method_per_host.sql"),
     ),
+    (
+        "0010_node_ad_tag",
+        include_str!("../../../migrations/0010_node_ad_tag.sql"),
+    ),
 ];
 
 /// The migrations this build carries, in the order they apply.

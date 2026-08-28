@@ -144,7 +144,6 @@ fn start() -> Option<Node> {
         // Direct to the data centres. What is being checked is that the node
         // authenticates a client and counts what it sent, not that this host
         // has a route to Telegram's middle proxies.
-        middle_proxy: false,
         mask_host: "www.cloudflare.com".to_owned(),
         cover_site: "http://127.0.0.1:8081".to_owned(),
         public_addr: "203.0.113.7:443".to_owned(),
@@ -156,6 +155,7 @@ fn start() -> Option<Node> {
         node: NodeShape {
             kind: "mtproto".to_owned(),
             domain: None,
+            ad_tag: None,
         },
         listeners: vec![Listener {
             method: "mtproto".to_owned(),

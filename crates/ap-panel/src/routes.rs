@@ -1,7 +1,7 @@
 use ap_core::{
-    Access, AccessCommon, AccessState, AdminLogin, AnyAccess, Client, ClientState, Credential,
-    Domain, Label, Node, NodeKind, NodeKindTag, Open, OpenMethod, Served, Stealth, StealthMethod,
-    Tag, TagName, time::format_rfc3339,
+    Access, AccessCommon, AccessState, AdTag, AdminLogin, AnyAccess, Client, ClientState,
+    Credential, Domain, Label, Node, NodeKind, NodeKindTag, Open, OpenMethod, Served, Stealth,
+    StealthMethod, Tag, TagName, time::format_rfc3339,
 };
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::StatusCode;
@@ -41,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/nodes", get(list_nodes).post(create_node))
         .route("/v1/nodes/{id}/burn", post(burn_node))
         .route("/v1/nodes/{id}/names", post(rename_node))
+        .route("/v1/nodes/{id}/sponsorship", post(sponsor_node))
         .route("/v1/nodes/{id}/enrollment", post(issue_enrollment))
         .route("/v1/audit", get(read_audit))
         .with_state(state)
@@ -569,6 +570,7 @@ fn node_json(node: &Node) -> Result<serde_json::Value, ApiError> {
         "label": node.label().as_str(),
         "kind": node.kind().tag().chosen().0,
         "masked": node.kind().tag().chosen().1,
+        "ad_tag": node.ad_tag().map(AdTag::as_str),
         "domain": node.kind().domain().map(Domain::as_str),
         "state": node.state().as_stored(),
         "created_at": format_rfc3339(node.created_at())?,
@@ -667,6 +669,37 @@ async fn burn_node(
     guarded.burn_node(id).await?;
     guarded
         .record("node.burned", Some(&id.to_string()), serde_json::json!({}))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct Sponsorship {
+    /// The tag from @MTProxybot, or null to carry none.
+    ad_tag: Option<String>,
+}
+
+/// Sets or clears the sponsorship a node carries.
+///
+/// A node with a tag routes through Telegram's middle proxies, which is the
+/// only way the sponsored channel is counted, and pays an extra hop for it. A
+/// node without one goes to the data centres directly.
+async fn sponsor_node(
+    State(state): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Sponsorship>,
+) -> Result<StatusCode, ApiError> {
+    let ad_tag = body.ad_tag.as_deref().map(AdTag::try_from).transpose()?;
+
+    let guarded = state.guarded(&actor);
+    guarded.sponsor_node(id, ad_tag).await?;
+    guarded
+        .record(
+            "node.sponsorship.set",
+            Some(&id.to_string()),
+            serde_json::json!({ "sponsored": body.ad_tag.is_some() }),
+        )
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
