@@ -69,11 +69,18 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
     writeln!(out, "ad_tag = \"{}\"", ad_tag(config)).ok();
     writeln!(out).ok();
 
-    // Which of telemt's MTProto client modes are allowed, decided by what the
-    // node actually serves. All are off by default, so a node serving plain
-    // MTProto without this refuses every client it was issued links for — with
-    // the links looking perfectly correct. WEB is a transport of its own and
-    // needs none of these: it is configured entirely by the [web] tables.
+    // Which of telemt's client modes are allowed, decided by what the node
+    // actually serves. All are off by default, so a node serving plain MTProto
+    // without this refuses every client it was issued links for — with the
+    // links looking perfectly correct.
+    //
+    // The TLS mode covers both masked methods. A node carrying clients inside
+    // a site needs it as much as one with a forged handshake: the carrier
+    // wraps MTProto either way, and telemt refuses to start at all with no
+    // mode enabled — "No modes enabled", on a node whose configuration is
+    // otherwise complete. Enabling it opens nothing by itself, because what a
+    // node listens on is decided by its listeners, and a node serving a site
+    // has only the one that speaks web.
     let serves_plain = config
         .listeners
         .iter()
@@ -82,10 +89,15 @@ pub fn render(config: &Config, settings: &Settings) -> Result<String, EngineErro
         .listeners
         .iter()
         .any(|listener| listener.method == "faketls");
+    let serves_masked = serves_faketls
+        || config
+            .listeners
+            .iter()
+            .any(|listener| listener.method == "web");
     writeln!(out, "[general.modes]").ok();
     writeln!(out, "classic = false").ok();
     writeln!(out, "secure = {serves_plain}").ok();
-    writeln!(out, "tls = {serves_faketls}").ok();
+    writeln!(out, "tls = {serves_masked}").ok();
     writeln!(out).ok();
 
     writeln!(out, "[general.telemetry]").ok();
@@ -764,9 +776,47 @@ mod masquerade_tests {
     }
 
     #[test]
+    fn a_node_carrying_a_site_still_enables_a_mode() {
+        // telemt refuses to start with every mode off — "No modes enabled" —
+        // and a node serving only a site has no MTProto listener to turn one
+        // on for. Found on a live node whose engine would not come up at all
+        // while its configuration looked complete.
+        let config = Config {
+            listeners: vec![Listener {
+                method: "web".to_owned(),
+                bind: "127.0.0.1:8444".to_owned(),
+            }],
+            accesses: vec![WireAccess {
+                id: Uuid::now_v7(),
+                method: "web".to_owned(),
+                credential: WireCredential::Secret {
+                    hex: "00".repeat(16),
+                },
+                max_devices: None,
+                state: "active".to_owned(),
+            }],
+            ..a_masked_config("web", "site.example.com")
+        };
+        let rendered = render(&config, &plain_settings()).unwrap();
+        let modes = rendered
+            .split("[general.modes]")
+            .nth(1)
+            .unwrap_or_default()
+            .split("[general.telemetry]")
+            .next()
+            .unwrap_or_default();
+        assert!(
+            modes.contains("= true"),
+            "a node serving a site was left with no mode at all: {modes}"
+        );
+    }
+
+    #[test]
     fn a_node_carrying_a_site_writes_no_forged_handshake() {
         // A WEB node answers to a name and ends real TLS for it, but imitates
-        // no one: no [censorship], and the mtproxy TLS mode stays off.
+        // no one: no [censorship] block naming a site to pretend to be. The
+        // TLS client mode stays on — the carrier needs it — and opens nothing,
+        // because this node listens only on the socket that speaks web.
         let config = Config {
             listeners: vec![Listener {
                 method: "web".to_owned(),
@@ -786,6 +836,5 @@ mod masquerade_tests {
         let rendered = render(&config, &plain_settings()).unwrap();
         assert!(!rendered.contains("[censorship]"), "{rendered}");
         assert!(!rendered.contains("tls_domain"), "{rendered}");
-        assert!(rendered.contains("tls = false"), "{rendered}");
     }
 }
