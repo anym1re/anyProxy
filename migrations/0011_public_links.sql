@@ -16,8 +16,12 @@ alter table access add column if not exists name text;
 alter table access add constraint access_belongs_to_one_or_is_named
     check ((client_id is null) <> (name is null));
 
+-- The shape the type accepts: one to sixty-four characters and nothing that
+-- would break a line. `[[:cntrl:]]` is every control character, which is what
+-- the type refuses; naming only newline and tab here would let the schema hold
+-- a name the program cannot rebuild.
 alter table access add constraint access_name_form
-    check (name is null or (length(name) between 1 and 64 and name !~ '[\n\r\t]'));
+    check (name is null or (length(name) between 1 and 64 and name !~ '[[:cntrl:]]'));
 
 -- A name says which link is which, so two of them saying the same thing says
 -- nothing. Only among the public ones: a client's link has no name at all.
