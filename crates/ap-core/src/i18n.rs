@@ -183,6 +183,7 @@ impl Error {
             Self::Timestamp => "error-timestamp",
             Self::StealthWithoutDomain => "error-stealth-without-domain",
             Self::OpenWithDomain => "error-open-with-domain",
+            Self::MaskingNotOffered => "error-masking-not-offered",
             Self::MaxDevices => "error-max-devices",
             Self::AccessRevoked => "error-access-revoked",
             Self::SurfaceMismatch { .. } => "error-surface-mismatch",

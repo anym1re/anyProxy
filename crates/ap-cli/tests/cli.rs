@@ -336,7 +336,7 @@ fn a_method_the_node_does_not_serve_is_refused() {
     let domain = format!("{}.example.com", unique("d"));
     assert_eq!(
         code(&panel.run(&[
-            "node", "add", &node, "--kind", "faketls", "--domain", &domain
+            "node", "add", &node, "--kind", "mtproto", "--masked", "--domain", &domain
         ])),
         0
     );

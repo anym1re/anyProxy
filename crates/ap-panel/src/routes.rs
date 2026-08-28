@@ -329,7 +329,12 @@ async fn list_accesses(
 struct NewAccess {
     client_id: Uuid,
     node_id: Uuid,
-    method: String,
+    /// Which method this access arrives by, when the caller says.
+    ///
+    /// Optional because the node decides it: one method to a host, so the
+    /// node's kind names the only method an access on it could use. Given, it
+    /// must agree; omitted, it is taken from the node.
+    method: Option<String>,
     tag_id: Option<Uuid>,
     quota_bytes: Option<i64>,
     expires_at: Option<String>,
@@ -358,25 +363,30 @@ async fn create_access(
         common = common.with_max_devices(devices)?;
     }
 
-    // A node serves the one method its kind names and nothing else. An access
-    // for another method could never be served, so it is refused rather than
-    // stored and wondered about.
+    // A node serves the one method its kind names and nothing else, so the
+    // node decides. A caller that named a method is held to it — an access for
+    // another method could never be served, and refusing is better than
+    // storing one and wondering later — but naming it is not required.
     let access = match node.kind().tag().served() {
         Served::Masked(only) => {
-            let asked = StealthMethod::from_stored(&body.method)
-                .map_err(|_| ApiError::Unprocessable("method_not_served"))?;
-            if asked != only {
-                return Err(ApiError::Unprocessable("method_not_served"));
+            if let Some(asked) = &body.method {
+                let asked = StealthMethod::from_stored(asked)
+                    .map_err(|_| ApiError::Unprocessable("method_not_served"))?;
+                if asked != only {
+                    return Err(ApiError::Unprocessable("method_not_served"));
+                }
             }
-            AnyAccess::Stealth(Access::<Stealth>::new(common, asked))
+            AnyAccess::Stealth(Access::<Stealth>::new(common, only))
         }
         Served::Open(only) => {
-            let asked = OpenMethod::from_stored(&body.method)
-                .map_err(|_| ApiError::Unprocessable("method_not_served"))?;
-            if asked != only {
-                return Err(ApiError::Unprocessable("method_not_served"));
+            if let Some(asked) = &body.method {
+                let asked = OpenMethod::from_stored(asked)
+                    .map_err(|_| ApiError::Unprocessable("method_not_served"))?;
+                if asked != only {
+                    return Err(ApiError::Unprocessable("method_not_served"));
+                }
             }
-            AnyAccess::Open(Access::<Open>::new(common, asked))
+            AnyAccess::Open(Access::<Open>::new(common, only))
         }
     };
 
@@ -558,7 +568,8 @@ fn node_json(node: &Node) -> Result<serde_json::Value, ApiError> {
     Ok(serde_json::json!({
         "id": node.id(),
         "label": node.label().as_str(),
-        "kind": node.kind().tag().as_stored(),
+        "kind": node.kind().tag().chosen().0,
+        "masked": node.kind().tag().chosen().1,
         "domain": node.kind().domain().map(Domain::as_str),
         "state": node.state().as_stored(),
         "created_at": format_rfc3339(node.created_at())?,
@@ -582,7 +593,12 @@ async fn list_nodes(
 #[derive(Deserialize)]
 struct NewNode {
     label: String,
+    /// The transport: mtproto, web, socks5 or http.
     kind: String,
+    /// Whether MTProto hides behind a forged handshake. Offered for no other
+    /// transport, and refused rather than ignored where it is not.
+    #[serde(default)]
+    masked: bool,
     /// The name a masked node answers to. A node serving in the open has none.
     domain: Option<String>,
 }
@@ -593,7 +609,7 @@ async fn create_node(
     Json(body): Json<NewNode>,
 ) -> Result<Response, ApiError> {
     let label = Label::try_from(body.label.as_str())?;
-    let tag = NodeKindTag::from_stored(&body.kind)?;
+    let tag = NodeKindTag::from_chosen(&body.kind, body.masked)?;
     let domain = body.domain.as_deref().map(Domain::try_from).transpose()?;
     let kind = NodeKind::from_parts(tag, domain)?;
     let node = Node::new(label.clone(), kind, OffsetDateTime::now_utc());

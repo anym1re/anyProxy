@@ -78,6 +78,43 @@ impl NodeKindTag {
             Self::Http => Served::Open(OpenMethod::Http),
         }
     }
+
+    /// How an operator chooses this kind: a transport, and whether it hides.
+    ///
+    /// There are five kinds and four transports, and the difference is one
+    /// question. MTProto is offered both ways: behind a forged handshake it
+    /// takes 443 and borrows a name, without one it is itself on a port of its
+    /// own. The two are different on the wire — different port, different link,
+    /// differently visible — so they stay different kinds, and one method to a
+    /// host depends on their staying so. An operator does not need that split
+    /// to pick a node, and is asked for a transport and a yes or no instead.
+    pub fn chosen(self) -> (&'static str, bool) {
+        match self {
+            Self::FakeTls => ("mtproto", true),
+            Self::Mtproto => ("mtproto", false),
+            Self::Web => ("web", false),
+            Self::Socks5 => ("socks5", false),
+            Self::Http => ("http", false),
+        }
+    }
+
+    /// The kind an operator's choice names.
+    ///
+    /// Masking is refused for everything but MTProto rather than ignored: WEB
+    /// is carried inside a site that is really there and hides by construction,
+    /// and SOCKS5 and HTTP do not hide at all. Accepting the word and doing
+    /// nothing with it would promise cover that is not there.
+    pub fn from_chosen(transport: &str, masked: bool) -> Result<Self, Error> {
+        match (transport, masked) {
+            ("mtproto", true) => Ok(Self::FakeTls),
+            ("mtproto", false) => Ok(Self::Mtproto),
+            ("web", false) => Ok(Self::Web),
+            ("socks5", false) => Ok(Self::Socks5),
+            ("http", false) => Ok(Self::Http),
+            ("web" | "socks5" | "http", true) => Err(Error::MaskingNotOffered),
+            _ => Err(Error::StoredValue),
+        }
+    }
 }
 
 impl NodeKind {
@@ -329,5 +366,75 @@ mod tests {
         node.set_state(NodeState::Burned);
         node.set_state(NodeState::Active);
         assert_eq!(node.state(), NodeState::Burned);
+    }
+}
+
+#[cfg(test)]
+mod chosen_tests {
+    use super::*;
+
+    #[test]
+    fn every_kind_survives_being_offered_and_chosen_again() {
+        for tag in [
+            NodeKindTag::FakeTls,
+            NodeKindTag::Web,
+            NodeKindTag::Mtproto,
+            NodeKindTag::Socks5,
+            NodeKindTag::Http,
+        ] {
+            let (transport, masked) = tag.chosen();
+            assert_eq!(NodeKindTag::from_chosen(transport, masked), Ok(tag));
+        }
+    }
+
+    #[test]
+    fn the_four_transports_are_what_an_operator_picks_from() {
+        // Five kinds, four transports: mtproto is the one offered both ways.
+        let mut offered: Vec<&str> = [
+            NodeKindTag::FakeTls,
+            NodeKindTag::Web,
+            NodeKindTag::Mtproto,
+            NodeKindTag::Socks5,
+            NodeKindTag::Http,
+        ]
+        .into_iter()
+        .map(|tag| tag.chosen().0)
+        .collect();
+        offered.sort_unstable();
+        offered.dedup();
+        assert_eq!(offered, vec!["http", "mtproto", "socks5", "web"]);
+    }
+
+    #[test]
+    fn masking_the_forged_handshake_is_what_tells_the_two_mtproto_kinds_apart() {
+        assert_eq!(
+            NodeKindTag::from_chosen("mtproto", true),
+            Ok(NodeKindTag::FakeTls)
+        );
+        assert_eq!(
+            NodeKindTag::from_chosen("mtproto", false),
+            Ok(NodeKindTag::Mtproto)
+        );
+    }
+
+    #[test]
+    fn masking_is_refused_where_it_is_not_offered() {
+        // Not ignored: accepting the word would promise cover that is not there.
+        for transport in ["web", "socks5", "http"] {
+            assert_eq!(
+                NodeKindTag::from_chosen(transport, true),
+                Err(Error::MaskingNotOffered),
+                "{transport} accepted masking"
+            );
+        }
+    }
+
+    #[test]
+    fn the_kinds_are_not_transports_an_operator_can_name() {
+        // `faketls` is how the kind is stored, not how it is chosen.
+        assert_eq!(
+            NodeKindTag::from_chosen("faketls", false),
+            Err(Error::StoredValue)
+        );
     }
 }

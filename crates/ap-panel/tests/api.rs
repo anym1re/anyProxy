@@ -280,7 +280,7 @@ async fn a_method_the_node_does_not_serve_is_refused() {
         "/v1/nodes",
         Some(&boss),
         Some(serde_json::json!({
-            "label": unique("n"), "kind": "faketls",
+            "label": unique("n"), "kind": "mtproto", "masked": true,
             "domain": format!("{}.example.com", unique("d"))
         })),
     )

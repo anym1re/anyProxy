@@ -78,9 +78,10 @@ pub enum AccessCommand {
         /// Node the access lives on.
         #[arg(long)]
         node: String,
-        /// One of faketls, web, mtproto, socks5, http.
+        /// Method this access arrives by. Taken from the node when omitted:
+        /// a node serves one method and its transport names it.
         #[arg(long)]
-        method: String,
+        method: Option<String>,
         /// Group the access is selected and withdrawn by.
         #[arg(long)]
         tag: Option<String>,
@@ -141,12 +142,15 @@ pub enum NodeCommand {
     Add {
         /// Name the operator knows this node by.
         label: String,
-        /// The one method this node serves: faketls, web, mtproto, socks5
-        /// or http.
+        /// The transport this node serves: mtproto, web, socks5 or http.
         #[arg(long)]
         kind: String,
-        /// Hostname a masked node answers on. Borrowed by faketls, its own
-        /// by web.
+        /// Hide MTProto behind a forged TLS handshake, on 443. Offered for no
+        /// other transport.
+        #[arg(long)]
+        masked: bool,
+        /// Hostname a masked node answers on. Borrowed by a forged handshake,
+        /// its own by web.
         #[arg(long)]
         domain: Option<String>,
     },
@@ -688,6 +692,7 @@ async fn node(command: NodeCommand, context: Context) -> Outcome {
         NodeCommand::Add {
             label,
             kind,
+            masked,
             domain,
         } => {
             let created = post(
@@ -696,6 +701,7 @@ async fn node(command: NodeCommand, context: Context) -> Outcome {
                 serde_json::json!({
                     "label": label,
                     "kind": kind,
+                    "masked": masked,
                     "domain": domain,
                 }),
             )

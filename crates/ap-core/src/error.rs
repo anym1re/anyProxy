@@ -75,13 +75,21 @@ pub enum Error {
     #[error("timestamp must be RFC 3339, for example 2026-12-31T23:59:59Z")]
     Timestamp,
 
-    /// A stealth node without the domain its cover site needs.
-    #[error("a stealth node requires a domain")]
+    /// A masked node without the domain it answers to.
+    #[error("a masked node requires a domain")]
     StealthWithoutDomain,
 
-    /// An open node carrying a domain, which it never serves.
-    #[error("an open node cannot carry a domain")]
+    /// A node serving in the open carrying a domain, which it never serves.
+    #[error("a node serving in the open cannot carry a domain")]
     OpenWithDomain,
+
+    /// Masking asked for on a transport that is not offered with it.
+    ///
+    /// An operator picks among four transports, and only MTProto is offered
+    /// both ways. WEB is carried inside a real site and hides by construction;
+    /// SOCKS5 and HTTP do not hide at all.
+    #[error("only mtproto is offered with and without masking")]
+    MaskingNotOffered,
 
     /// A device limit outside the range an access accepts.
     #[error("device limit must be between 1 and 1000")]
