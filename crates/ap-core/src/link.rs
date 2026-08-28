@@ -63,13 +63,7 @@ mod tests {
     #[test]
     fn fake_tls_carries_the_cover_domain_in_the_secret() {
         assert_eq!(
-            stealth_link(
-                StealthMethod::FakeTls,
-                "203.0.113.7",
-                &domain(),
-                &secret()
-            )
-            .unwrap(),
+            stealth_link(StealthMethod::FakeTls, "203.0.113.7", &domain(), &secret()).unwrap(),
             "https://t.me/proxy?server=203.0.113.7&port=443&secret=ee000102030405060708090a0b0c0d0e0f636f7665722e6578616d706c652e636f6d"
         );
     }
@@ -77,13 +71,7 @@ mod tests {
     #[test]
     fn web_names_the_domain_directly() {
         assert_eq!(
-            stealth_link(
-                StealthMethod::Web,
-                "203.0.113.7",
-                &domain(),
-                &secret()
-            )
-            .unwrap(),
+            stealth_link(StealthMethod::Web, "203.0.113.7", &domain(), &secret()).unwrap(),
             "https://t.me/webproxy?server=cover.example.com&secret=000102030405060708090a0b0c0d0e0f"
         );
     }

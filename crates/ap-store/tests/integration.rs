@@ -322,9 +322,7 @@ async fn an_access_keeps_its_surface_across_a_round_trip() {
     let domain = Domain::try_from(format!("{}.example.com", unique("d")).as_str()).unwrap();
     let node = Node::new(
         Label::try_from(unique("n").as_str()).unwrap(),
-        NodeKind::FakeTls {
-            domain,
-        },
+        NodeKind::FakeTls { domain },
         OffsetDateTime::UNIX_EPOCH,
     );
     NodeRepo::insert(&pool, &node).await.unwrap();
