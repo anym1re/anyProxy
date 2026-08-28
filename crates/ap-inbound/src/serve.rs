@@ -221,12 +221,31 @@ where
         registry.used(access, moved, 0)
     });
 
-    // Either side ending ends the other: a half-open connection to a proxy is
-    // a slot nobody is using.
-    tokio::select! {
-        outcome = upward => outcome,
-        outcome = downward => outcome,
+    // A direction that ends cleanly does not end the other one. Saying
+    // everything and then closing the sending half is how an ordinary client
+    // says it is done, and the answer comes after that: tearing the
+    // connection down on the first EOF cuts off the reply the client is
+    // waiting for, which it sees as a response that stopped part way through.
+    //
+    // A direction that ends in an error does end the other. There is no
+    // reply to wait for once a side is gone, and the connection would
+    // otherwise be held by nobody.
+    tokio::pin!(upward, downward);
+    let mut carrying_up = true;
+    let mut carrying_down = true;
+    while carrying_up || carrying_down {
+        tokio::select! {
+            outcome = &mut upward, if carrying_up => {
+                carrying_up = false;
+                outcome?;
+            }
+            outcome = &mut downward, if carrying_down => {
+                carrying_down = false;
+                outcome?;
+            }
+        }
     }
+    Ok(())
 }
 
 /// Copies one direction, telling the caller about each piece as it passes.
@@ -478,5 +497,53 @@ mod tests {
             }
         }
         panic!("nothing was counted while the connection was still open");
+    }
+}
+
+#[cfg(test)]
+mod half_close {
+    use super::*;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    /// A client that has finished speaking still gets the whole answer.
+    ///
+    /// Sending everything and then closing the sending half is how an
+    /// ordinary HTTP client says it is done: the answer comes afterwards.
+    /// Ending the other direction when this one finishes throws that answer
+    /// away, and the client sees a connection that closed part way through a
+    /// response it had every reason to expect.
+    #[tokio::test]
+    async fn the_answer_survives_a_client_that_has_stopped_talking() {
+        let (mut client, mut client_side) = tokio::io::duplex(64);
+        let (mut upstream_side, mut upstream) = tokio::io::duplex(64);
+
+        let relaying = tokio::spawn(async move {
+            let registry = Registry::new(&[], [0u8; 32]);
+            relay(
+                &mut client_side,
+                &mut upstream_side,
+                Uuid::now_v7(),
+                &registry,
+            )
+            .await
+        });
+
+        // The client says its piece and closes its sending half.
+        client.write_all(b"ask").await.unwrap();
+        client.shutdown().await.unwrap();
+
+        // The far side reads the question and answers it.
+        let mut asked = [0u8; 3];
+        upstream.read_exact(&mut asked).await.unwrap();
+        upstream.write_all(b"answered").await.unwrap();
+        drop(upstream);
+
+        let mut heard = Vec::new();
+        client.read_to_end(&mut heard).await.unwrap();
+        assert_eq!(
+            heard, b"answered",
+            "the answer was cut off when the client stopped talking"
+        );
+        let _ = relaying.await;
     }
 }
