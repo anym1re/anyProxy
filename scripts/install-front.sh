@@ -98,6 +98,10 @@ cat > /etc/nginx/sites-available/anyproxy-challenge <<'CONF'
 server {
     listen 80 default_server;
     root /var/www/anyproxy;
+
+    # Nothing about who asked is written down. See the site block below.
+    access_log off;
+
     location /.well-known/acme-challenge/ { }
     location / { return 404; }
 }
@@ -156,6 +160,7 @@ stream {
         ssl_preread on;
         proxy_pass \$anyproxy_carrier;
         proxy_timeout 300s;
+        access_log off;
     }
 }
 CONF
@@ -179,6 +184,19 @@ server {
     # node against, and no version at all is rarer than the commonest server
     # on the internet.
     server_tokens off;
+
+    # Nothing about who asked for what is written down.
+    #
+    # A default access log records the request line, the time and the browser
+    # of every client, which on a node is a record of who was using it and
+    # when — the one record this design exists to not keep. The request line
+    # also carries what the client can do, and the authorization header
+    # carries a bearer credential.
+    #
+    # The error log is turned down for the same reason: at its usual level it
+    # records the address of anyone whose request went wrong.
+    access_log off;
+    error_log /var/log/nginx/error.log crit;
 
     location / {
         proxy_pass http://127.0.0.1:${behind_site};
