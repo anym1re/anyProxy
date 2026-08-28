@@ -49,6 +49,44 @@ done
 
 panel_host="${panel%:*}"
 
+# ── the panel's machine is not a node ────────────────────────────────────
+
+# A node carries client traffic; the panel holds every client, every access and
+# every secret. Putting one on the other's machine means the address clients
+# connect to is the address the whole system is kept on: whoever finds the node
+# — and a node is meant to be found, that is what a link is — has found the
+# panel. It also loses the separation the design rests on, where taking a node
+# yields one node.
+#
+# Two of them would collide outright: the panel listens for its agents on 8443,
+# which is also where a node serving plain MTProto binds.
+#
+# Refused here rather than left to the operator to remember, because the moment
+# it is noticed is usually after clients are already connecting.
+panel_here=""
+if systemctl list-unit-files anyproxy-panel.service >/dev/null 2>&1 &&
+   systemctl list-unit-files anyproxy-panel.service 2>/dev/null | grep -q anyproxy-panel; then
+    panel_here="a systemd unit named anyproxy-panel"
+elif [ -x "${prefix}/anyproxy-panel" ]; then
+    panel_here="the panel binary at ${prefix}/anyproxy-panel"
+elif ss -ltn 2>/dev/null | grep -qE '127\.0\.0\.1:8080'; then
+    panel_here="something already listening on the panel's REST port"
+fi
+
+if [ -n "${panel_here}" ]; then
+    cat >&2 <<WHY
+This machine runs the panel: ${panel_here}.
+
+A node does not go on the panel's machine. The panel holds every client, every
+access and every secret; a node is an address clients are given and are meant to
+find. Putting them together means finding the node is finding the panel, and a
+node serving plain MTProto would collide with the panel on 8443 besides.
+
+Install this node on a machine of its own.
+WHY
+    exit 1
+fi
+
 # ── how this node reaches its panel ──────────────────────────────────────
 
 if [ -z "${reach}" ]; then
