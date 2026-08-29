@@ -267,19 +267,29 @@ async fn once(
                     report(&state.posture);
                 }
                 measure(control, metrics_port, meter, inbound, now).await;
-                if let Some(delivery) =
-                    meter.delivery(state_of_health(control, &state.posture).await, now)
-                {
-                    // A node that reports nothing and one that reports zeroes
-                    // look the same from the panel, and the difference is
-                    // where a fault lives. Counting is per access, so it is
-                    // said only at the level that allows that.
-                    say::Voice::following(&state.posture).counted(&format!(
-                        "reporting {} traffic and {} device counts",
-                        delivery.deltas.len(),
-                        delivery.devices.len()
-                    ));
-                    session::deliver(&mut channel, meter, delivery).await?;
+                let health = state_of_health(control, &state.posture).await;
+                match meter.delivery(health.clone(), now) {
+                    Some(delivery) => {
+                        // A node that reports nothing and one that reports
+                        // zeroes look the same from the panel, and the
+                        // difference is where a fault lives. Counting is per
+                        // access, so it is said only at the level that allows
+                        // that.
+                        say::Voice::following(&state.posture).counted(&format!(
+                            "reporting {} traffic and {} device counts",
+                            delivery.deltas.len(),
+                            delivery.devices.len()
+                        ));
+                        session::deliver(&mut channel, meter, delivery).await?;
+                    }
+                    // Nothing to report is still said. The panel answers what
+                    // a node sends and never speaks first, so a silent node is
+                    // one that cannot be told its accesses have changed.
+                    None => {
+                        if let Some(beat) = meter.heartbeat(health, now) {
+                            session::deliver(&mut channel, meter, beat).await?;
+                        }
+                    }
                 }
             }
         }

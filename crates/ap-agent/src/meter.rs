@@ -120,6 +120,25 @@ impl Meter {
         Some(telemetry)
     }
 
+    /// A report with nothing in it, to keep the conversation going.
+    ///
+    /// The panel answers what a node says and never speaks first, so a node
+    /// with no traffic to report would say nothing and be told nothing. The
+    /// node with nothing to report is exactly the one whose last access has
+    /// just been withdrawn — the one that most needs to hear that it has
+    /// nothing left to serve.
+    ///
+    /// Not kept for retry, unlike a delivery: there is nothing in it to lose.
+    pub fn heartbeat(&self, health: Health, now: OffsetDateTime) -> Option<Telemetry> {
+        Some(Telemetry {
+            revision: Uuid::now_v7(),
+            sent_at: ap_core::time::format_rfc3339(now).ok()?,
+            deltas: Vec::new(),
+            devices: Vec::new(),
+            health,
+        })
+    }
+
     /// Marks the outstanding delivery as received.
     ///
     /// An acknowledgement for something else is ignored rather than clearing
