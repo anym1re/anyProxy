@@ -79,6 +79,18 @@ impl NodeKindTag {
         }
     }
 
+    /// Whether a node of this kind hides behind a name.
+    ///
+    /// The two masked kinds do: a forged handshake borrows somebody else's
+    /// name, and a site of our own answers to one it holds a certificate for.
+    /// The other three serve as themselves.
+    ///
+    /// What follows from it is that their socket is part of the disguise and
+    /// is kept open whether or not anyone is being carried behind it.
+    pub fn hides(self) -> bool {
+        matches!(self, Self::FakeTls | Self::Web)
+    }
+
     /// How an operator chooses this kind: a transport, and whether it hides.
     ///
     /// There are five kinds and four transports, and the difference is one

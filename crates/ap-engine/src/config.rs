@@ -222,9 +222,18 @@ fn render_web(out: &mut String, config: &Config, settings: &Settings) -> Result<
         writeln!(out).ok();
     }
     if !any {
-        return Err(EngineError::Refused(
-            "a node serving web has no access that arrives that way".to_owned(),
-        ));
+        // A node between its last access and its next still has to look like
+        // the site it is. telemt refuses a vhost with no profile at all —
+        // "profiles must be non-empty" — and without the vhost it stops
+        // serving the site, so the node answers every visitor with 404 under
+        // a certificate in its own name, which no real site does.
+        //
+        // So the same user that stands in everywhere else stands in here, with
+        // a secret nobody was given.
+        writeln!(out, "[[web.vhosts.profiles]]").ok();
+        writeln!(out, "user = \"{NOBODY}\"").ok();
+        writeln!(out, "secret_mode = \"plain\"").ok();
+        writeln!(out).ok();
     }
     Ok(())
 }
@@ -254,8 +263,8 @@ fn render_access(out: &mut String, config: &Config) -> Result<(), EngineError> {
     }
     if !any {
         // telemt refuses a configuration with no users at all. A node with
-        // nothing to serve gets one that authenticates nobody.
-        writeln!(out, "{} = \"{}\"", NOBODY, "0".repeat(32)).ok();
+        // nothing to serve gets one nobody holds the secret for.
+        writeln!(out, "{} = \"{}\"", NOBODY, nobody_secret(config)).ok();
     }
     writeln!(out).ok();
 
@@ -289,6 +298,25 @@ fn render_access(out: &mut String, config: &Config) -> Result<(), EngineError> {
 
 /// The user a node with nothing to serve is configured with.
 const NOBODY: &str = "nobody";
+
+/// The secret that stands in for a node with nothing to serve.
+///
+/// Derived from the revision rather than written as zeros. A configuration
+/// naming a user is a configuration that will authenticate it, and thirty-two
+/// zeros is a secret anybody can guess: a node between its last access and its
+/// next would have let in whoever tried it.
+///
+/// Nobody is ever given this. It exists because telemt will not start without
+/// a user, and because the site a masked node shows must go on being shown
+/// whether or not anyone is being carried behind it.
+fn nobody_secret(config: &Config) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"anyproxy/nobody/");
+    hasher.update(config.revision.as_bytes());
+    hex::encode(&hasher.finalize()[..16])
+}
 
 /// The name one access answers to inside the engine.
 ///
@@ -578,12 +606,32 @@ mod tests {
     }
 
     #[test]
-    fn a_node_serving_web_with_no_access_that_arrives_that_way_is_refused() {
-        let config = a_config(
-            vec![a_listener("web", "0.0.0.0:443")],
-            vec![an_access("faketls")],
+    fn a_node_serving_web_with_nobody_to_carry_still_shows_its_site() {
+        // Refusing here used to look right and was worse than the fault: with
+        // no profile there is no vhost, with no vhost the engine stops serving
+        // the site, and the node answers every visitor with 404 under a
+        // certificate in its own name. So it keeps the site and carries
+        // nobody.
+        let config = a_config(vec![a_listener("web", "0.0.0.0:443")], Vec::new());
+        let rendered = render(&config, &settings()).expect("a site with no clients was refused");
+        assert!(rendered.contains("[[web.vhosts.profiles]]"), "{rendered}");
+        assert!(rendered.contains("web.vhosts.decoy"), "{rendered}");
+        assert!(
+            rendered.contains(&format!("user = \"{NOBODY}\"")),
+            "{rendered}"
         );
-        assert!(render(&config, &settings()).is_err());
+    }
+
+    #[test]
+    fn the_stand_in_user_carries_a_secret_nobody_could_guess() {
+        // Thirty-two zeros is a secret anyone would try, and a configuration
+        // naming a user is one that will authenticate it.
+        let config = a_config(Vec::new(), Vec::new());
+        let rendered = render(&config, &settings()).unwrap();
+        assert!(!rendered.contains(&"0".repeat(32)), "{rendered}");
+        let secret = nobody_secret(&config);
+        assert_eq!(secret.len(), 32);
+        assert!(secret.chars().any(|c| c != '0'));
     }
 
     #[test]

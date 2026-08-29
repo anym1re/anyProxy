@@ -377,17 +377,21 @@ async fn build_config(state: &AppState, node_id: Uuid) -> Result<Config, ApiErro
 
 /// The sockets a node opens.
 ///
-/// One method to a node, so one socket, and it opens only when there is an
-/// active access to serve on it — a listener answering for nobody is a port
-/// that answers for no reason.
+/// One method to a node, so one socket at most.
 ///
-/// The disguise a masked node needs does not depend on this. A node with a
-/// site is fronted by a web server that answers 443 with the site whether or
-/// not anything is carried behind it; a node with a forged handshake has no
-/// name of its own to be caught without, and its 443 is the engine's.
+/// A masked node opens it whether or not anyone is being carried behind it,
+/// because the socket is the disguise: a node with a forged handshake that
+/// stops answering 443 between its last access and its next is an address
+/// that went quiet, and one carrying a site must go on serving that site or
+/// answer visitors with nothing under a certificate in its own name.
+///
+/// A node serving in the open has no disguise to keep. Its socket is only a
+/// service, so one with nothing behind it is a port answering for no reason —
+/// and an open proxy port is what a scanner is looking for.
 fn listeners_for(kind: NodeKindTag, accesses: &[WireAccess]) -> Vec<Listener> {
     let method = kind.as_stored();
-    if !serves(accesses, method) {
+    let keeps_up_appearances = kind.hides();
+    if !keeps_up_appearances && !serves(accesses, method) {
         return Vec::new();
     }
     vec![Listener {
