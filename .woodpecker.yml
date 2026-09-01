@@ -1,0 +1,88 @@
+# Woodpecker CI. Mirrors .github/workflows/ci.yml for a self-hosted server and
+# agent. Written for Woodpecker 2.x/3.x (list-form steps, top-level `when`,
+# `services`). One workflow, one agent: steps run in order and share the clone.
+#
+# The GitHub run stays the source of truth for merges into main; this is so the
+# same checks run where the code actually lives now.
+
+when:
+  - event: [push, pull_request, manual]
+    branch: [dev, main]
+
+# gitleaks reads the commit history, so the clone must carry it rather than the
+# shallow default.
+clone:
+  - name: git
+    image: docker.io/woodpeckerci/plugin-git
+    settings:
+      partial: false
+
+services:
+  - name: postgres
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: anyproxy
+      POSTGRES_PASSWORD: anyproxy
+      POSTGRES_DB: anyproxy
+
+steps:
+  # The pinned toolchain is the image's default, so rust-toolchain.toml adds no
+  # download. --locked holds every crate to what Cargo.lock records.
+  - name: fmt-clippy-test
+    image: docker.io/library/rust:1.98.0
+    commands:
+      - rustc --version && cargo --version
+      - cargo fmt --all -- --check
+      - cargo clippy --all-targets --all-features --locked -- -D warnings
+      - cargo test --all --all-features --locked
+
+  - name: conventions
+    image: docker.io/library/debian:trixie-slim
+    commands:
+      - apt-get update -qq && apt-get install -y -qq bash >/dev/null
+      - bash scripts/test-conventions.sh
+      - bash scripts/check-conventions.sh .
+
+  # systemd-analyze and cosign are read when present and their absence is
+  # handled by the script itself, so a plain image is enough.
+  - name: deploy
+    image: docker.io/library/debian:trixie-slim
+    commands:
+      - apt-get update -qq && apt-get install -y -qq bash coreutils >/dev/null
+      - bash scripts/check-deploy.sh
+
+  - name: deny
+    image: docker.io/library/rust:1.98.0
+    commands:
+      - cargo install --locked cargo-deny
+      - cargo deny check
+
+  # The version is pinned rather than "latest": a scanner that changes under
+  # you turns a green history into a surprise. Bump it deliberately.
+  - name: secrets
+    image: docker.io/library/debian:trixie-slim
+    commands:
+      - apt-get update -qq && apt-get install -y -qq curl ca-certificates tar >/dev/null
+      - curl -fsSL -o /tmp/gitleaks.tar.gz
+          https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
+      - tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks
+      - gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
+
+  - name: store-panel-cli
+    image: docker.io/library/rust:1.98.0
+    environment:
+      DATABASE_URL: postgres://anyproxy:anyproxy@postgres:5432/anyproxy
+    commands:
+      # A started service is not yet a listening one, and there is no health
+      # gate here the way GitHub has one; wait for the port before the tests do.
+      - bash -c 'until (exec 3<>/dev/tcp/postgres/5432) 2>/dev/null; do sleep 1; done'
+      - cargo test -p ap-store -p ap-cli -p ap-panel --locked
+
+  # The digest in deploy/telemt.pin decides which engine this is, and the
+  # script refuses anything else.
+  - name: engine
+    image: docker.io/library/rust:1.98.0
+    commands:
+      - apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null
+      - export ANYPROXY_TELEMT="$(bash scripts/fetch-telemt.sh)"
+      - cargo test -p ap-engine --locked
