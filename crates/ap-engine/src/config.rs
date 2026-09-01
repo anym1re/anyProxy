@@ -798,6 +798,15 @@ mod masquerade_tests {
         }
     }
 
+    /// Sixteen bytes as the bot hands them out.
+    ///
+    /// Built rather than written out, for the same reason a client secret is:
+    /// a literal of this shape is what a real one looks like, and the secret
+    /// scanner is right to stop one from being committed.
+    fn a_tag(byte: u8) -> String {
+        hex::encode([byte; 16])
+    }
+
     fn plain_settings() -> Settings {
         Settings {
             api_port: 9091,
@@ -856,11 +865,11 @@ mod masquerade_tests {
     #[test]
     fn a_node_with_sponsorship_takes_the_hop_that_makes_it_count() {
         let mut config = a_masked_config("faketls", "ya.ru");
-        config.node.ad_tag = Some("3c09c680b76ee91a4c25ad51f742ba1e".to_owned());
+        config.node.ad_tag = Some(a_tag(0x3c));
         let rendered = render(&config, &plain_settings()).unwrap();
         assert!(rendered.contains("use_middle_proxy = true"), "{rendered}");
         assert!(
-            rendered.contains("ad_tag = \"3c09c680b76ee91a4c25ad51f742ba1e\""),
+            rendered.contains(&format!("ad_tag = \"{}\"", a_tag(0x3c))),
             "{rendered}"
         );
     }
