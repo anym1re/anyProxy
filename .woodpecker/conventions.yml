@@ -1,0 +1,14 @@
+# The conventions the code is held to, and what deployment promises. All of
+# it is shell and reads the tree; nothing is built.
+when:
+  - event: [push, pull_request, manual]
+    branch: [dev, main]
+
+steps:
+  - name: conventions
+    image: docker.io/library/debian:trixie-slim
+    commands:
+      - apt-get update -qq && apt-get install -y -qq bash >/dev/null
+      - bash scripts/test-conventions.sh
+      - bash scripts/check-conventions.sh .
+      - bash scripts/check-deploy.sh

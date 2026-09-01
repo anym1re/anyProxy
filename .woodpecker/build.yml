@@ -1,0 +1,14 @@
+# Formatting, lints and the unit tests. The heaviest of the checks: it builds
+# the whole workspace.
+when:
+  - event: [push, pull_request, manual]
+    branch: [dev, main]
+
+steps:
+  - name: fmt-clippy-test
+    image: docker.io/library/rust:1.98.0
+    commands:
+      - rustc --version && cargo --version
+      - cargo fmt --all -- --check
+      - cargo clippy --all-targets --all-features --locked -- -D warnings
+      - cargo test --all --all-features --locked

@@ -1,0 +1,12 @@
+# The engine, against the build the pin names and no other.
+when:
+  - event: [push, pull_request, manual]
+    branch: [dev, main]
+
+steps:
+  - name: against-telemt
+    image: docker.io/library/rust:1.98.0
+    commands:
+      - apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null
+      - export ANYPROXY_TELEMT="$(bash scripts/fetch-telemt.sh)"
+      - cargo test -p ap-engine --locked

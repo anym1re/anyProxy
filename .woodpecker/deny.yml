@@ -1,0 +1,17 @@
+# Licences and advisories of everything the workspace depends on.
+when:
+  - event: [push, pull_request, manual]
+    branch: [dev, main]
+
+steps:
+  # The published binary rather than a build of it: compiling the checker took
+  # minutes and the memory of a small agent, to arrive at the same bytes.
+  - name: cargo-deny
+    image: docker.io/library/rust:1.98.0
+    commands:
+      - apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null
+      - curl -fsSL -o /tmp/cargo-deny.tar.gz
+          https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+      - tar -xzf /tmp/cargo-deny.tar.gz --strip-components=1 -C /usr/local/bin
+          cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+      - cargo-deny check
