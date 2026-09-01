@@ -1,0 +1,23 @@
+# Findings reviewed and dismissed, by fingerprint.
+#
+# Each line names one finding in one commit at one line, so dismissing it says
+# nothing about any other. The rule itself stays as sharp as it was: the point
+# of `mtproto-secret` is to stop sixteen bytes of hexadecimal from being
+# committed, and it should go on doing that.
+#
+# These six are a made-up sponsorship tag written out as a literal in the tests
+# that introduced `AdTag`. They were never issued by anyone and never worked.
+# The literals are gone from the tree — the tests build the tag now, the way
+# they already built client secrets — but they remain in the commit that added
+# them, and a scan of the history still reaches them.
+#
+# Rewriting the history to erase a tag that was never real would cost more than
+# it is worth. Naming them here is the honest record: reviewed, understood,
+# left alone.
+
+cbfc64991584c881a87c3bc9e90d5fd6e5d3d7a5:crates/ap-core/src/name.rs:mtproto-secret:331
+cbfc64991584c881a87c3bc9e90d5fd6e5d3d7a5:crates/ap-core/src/name.rs:mtproto-secret:332
+cbfc64991584c881a87c3bc9e90d5fd6e5d3d7a5:crates/ap-core/src/name.rs:mtproto-secret:338
+cbfc64991584c881a87c3bc9e90d5fd6e5d3d7a5:crates/ap-core/src/name.rs:mtproto-secret:339
+cbfc64991584c881a87c3bc9e90d5fd6e5d3d7a5:crates/ap-engine/src/config.rs:mtproto-secret:811
+cbfc64991584c881a87c3bc9e90d5fd6e5d3d7a5:crates/ap-engine/src/config.rs:mtproto-secret:815

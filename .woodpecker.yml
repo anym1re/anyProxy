@@ -1,9 +1,9 @@
-# Woodpecker CI. Mirrors .github/workflows/ci.yml for a self-hosted server and
-# agent. Written for Woodpecker 2.x/3.x (list-form steps, top-level `when`,
-# `services`). One workflow, one agent: steps run in order and share the clone.
+# The CI. Runs on the self-hosted Woodpecker server and its agent, and is the
+# only one: the GitHub workflow it grew from has been removed, because two of
+# them meant green in one said nothing about the other.
 #
-# The GitHub run stays the source of truth for merges into main; this is so the
-# same checks run where the code actually lives now.
+# Written for Woodpecker 2.x/3.x (list-form steps, top-level `when`,
+# `services`). One workflow, one agent: steps run in order and share the clone.
 
 when:
   - event: [push, pull_request, manual]
