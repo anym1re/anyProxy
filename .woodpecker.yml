@@ -47,11 +47,16 @@ steps:
       - apt-get update -qq && apt-get install -y -qq bash coreutils >/dev/null
       - bash scripts/check-deploy.sh
 
+  # The published binary rather than a build of it: compiling the checker took
+  # minutes and the memory of a small agent, to arrive at the same bytes.
   - name: deny
     image: docker.io/library/rust:1.98.0
     commands:
-      - cargo install --locked cargo-deny
-      - cargo deny check
+      - curl -fsSL -o /tmp/cargo-deny.tar.gz
+          https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+      - tar -xzf /tmp/cargo-deny.tar.gz --strip-components=1 -C /usr/local/bin
+          cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+      - cargo-deny check
 
   # The version is pinned rather than "latest": a scanner that changes under
   # you turns a green history into a surprise. Bump it deliberately.
@@ -69,9 +74,10 @@ steps:
     environment:
       DATABASE_URL: postgres://anyproxy:anyproxy@postgres:5432/anyproxy
     commands:
-      # A started service is not yet a listening one, and there is no health
-      # gate here the way GitHub has one; wait for the port before the tests do.
-      - bash -c 'until (exec 3<>/dev/tcp/postgres/5432) 2>/dev/null; do sleep 1; done'
+      # A started service is not yet a listening one, and there is nothing here
+      # that waits for one. Bounded on purpose: a database that never arrives
+      # should say so, not hold the run until something else times it out.
+      - bash -c 'for _ in $(seq 1 60); do (exec 3<>/dev/tcp/postgres/5432) 2>/dev/null && exit 0; sleep 1; done; echo "postgres never came up"; exit 1'
       - cargo test -p ap-store -p ap-cli -p ap-panel --locked
 
   # The digest in deploy/telemt.pin decides which engine this is, and the
