@@ -29,6 +29,7 @@ time.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "net", "time", "signal"] }
 tokio-rustls.workspace = true
 uuid.workspace = true
+webpki-roots.workspace = true
 
 [dev-dependencies]
 ap-panel = { path = "../ap-panel" }

@@ -190,19 +190,20 @@ impl PresenceRepo {
         pool: &PgPool,
         node_id: Uuid,
         agent_version: &str,
-        health: Option<(&str, &str, Option<OffsetDateTime>)>,
+        health: Option<(&str, &str, &str, Option<OffsetDateTime>)>,
         at: OffsetDateTime,
     ) -> Result<(), StoreError> {
-        let (engine, site, cert_not_after) = match health {
-            Some((engine, site, expiry)) => (Some(engine), Some(site), expiry),
-            None => (None, None, None),
+        let (engine, site, reach, cert_not_after) = match health {
+            Some((engine, site, reach, expiry)) => (Some(engine), Some(site), Some(reach), expiry),
+            None => (None, None, None, None),
         };
 
         sqlx::query(
             "update node set last_seen_at = $2, agent_version = $3, \
              health_engine = coalesce($4, health_engine), \
              health_site = coalesce($5, health_site), \
-             cert_not_after = coalesce($6, cert_not_after), \
+             health_reach = coalesce($6, health_reach), \
+             cert_not_after = coalesce($7, cert_not_after), \
              state = case when state = 'pending' then 'active' else state end \
              where id = $1 and state <> 'burned'",
         )
@@ -211,6 +212,7 @@ impl PresenceRepo {
         .bind(agent_version)
         .bind(engine)
         .bind(site)
+        .bind(reach)
         .bind(cert_not_after)
         .execute(pool)
         .await?;

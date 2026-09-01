@@ -19,10 +19,33 @@ pub enum Site {
 }
 
 impl Site {
-    fn as_reported(self) -> &'static str {
+    /// The word the panel stores.
+    pub fn as_reported(self) -> &'static str {
         match self {
             Self::Up => "up",
             Self::Down => "down",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Whether the node could still reach Telegram when it last tried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// Something answered.
+    Open,
+    /// Nothing did.
+    Blocked,
+    /// Not asked.
+    Unknown,
+}
+
+impl Reach {
+    /// The word the panel stores.
+    pub fn as_reported(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Blocked => "blocked",
             Self::Unknown => "unknown",
         }
     }
@@ -37,6 +60,7 @@ impl Site {
 pub async fn report(
     control: &Control,
     site: Site,
+    reach: Reach,
     cert_not_after: Option<String>,
 ) -> Result<Health, EngineError> {
     let engine = match control.health().await {
@@ -49,6 +73,7 @@ pub async fn report(
     Ok(Health {
         engine: engine.to_owned(),
         site: site.as_reported().to_owned(),
+        reach: reach.as_reported().to_owned(),
         cert_not_after,
     })
 }
@@ -61,7 +86,7 @@ mod tests {
     async fn an_engine_that_does_not_answer_is_reported_down() {
         // Nothing listens here, so the control call fails rather than replies.
         let control = Control::new(1, "Bearer nothing");
-        let health = report(&control, Site::Up, None).await.unwrap();
+        let health = report(&control, Site::Up, Reach::Open, None).await.unwrap();
 
         assert_eq!(health.engine, "down");
         // And the site is reported on its own terms, not dragged down with it.
@@ -71,7 +96,9 @@ mod tests {
     #[tokio::test]
     async fn a_site_nobody_has_asked_about_is_not_reported_as_down() {
         let control = Control::new(1, "Bearer nothing");
-        let health = report(&control, Site::Unknown, None).await.unwrap();
+        let health = report(&control, Site::Unknown, Reach::Unknown, None)
+            .await
+            .unwrap();
         assert_eq!(health.site, "unknown");
         assert_ne!(health.site, "down");
     }
@@ -79,9 +106,14 @@ mod tests {
     #[tokio::test]
     async fn the_certificate_expiry_is_carried_through_as_it_was_given() {
         let control = Control::new(1, "Bearer nothing");
-        let health = report(&control, Site::Up, Some("2026-12-31T23:59:59Z".to_owned()))
-            .await
-            .unwrap();
+        let health = report(
+            &control,
+            Site::Up,
+            Reach::Open,
+            Some("2026-12-31T23:59:59Z".to_owned()),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             health.cert_not_after.as_deref(),
             Some("2026-12-31T23:59:59Z")

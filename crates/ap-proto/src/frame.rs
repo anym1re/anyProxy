@@ -154,6 +154,7 @@ mod tests {
                 health: Health {
                     engine: "up".to_owned(),
                     site: "up".to_owned(),
+                    reach: "open".to_owned(),
                     cert_not_after: None,
                 },
             }),

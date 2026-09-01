@@ -23,6 +23,11 @@ async fn a_destination() -> String {
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
             let _ = stream.write_all(b"arrived").await;
+            // Closed by shutting the sending half, not by dropping the socket.
+            // A socket dropped straight after a write can be closed with a
+            // reset, and a reset throws away what was still in flight — which
+            // this test then read as a proxy that lost the answer.
+            let _ = stream.shutdown().await;
         }
     });
     address

@@ -7,7 +7,7 @@ use ap_agent::posture::{Posture, Silent};
 use ap_agent::through::Through;
 use ap_agent::{AgentError, backoff, engine, identity, link, say, session};
 use ap_engine::control::Control;
-use ap_engine::health::{self, Site};
+use ap_engine::health::{self, Reach, Site};
 use ap_inbound::{Method, Registry};
 use ap_proto::Message;
 use clap::{Parser, Subcommand};
@@ -421,17 +421,46 @@ fn fresh_salt() -> [u8; 32] {
 
 /// What the node says about itself.
 async fn state_of_health(control: &Control, posture: &Posture) -> ap_proto::Health {
-    // The cover site is served by the front door, which does not exist yet, so
-    // there is nothing to ask about it. Saying so is not saying it is down.
-    let site = Site::Unknown;
-    let _ = posture;
-    health::report(control, site, None)
+    // The site is asked of the front door, the way a visitor asks, and only on
+    // a node that shows one. A node with no site to show has none to be down,
+    // and saying "unknown" there is the truth rather than a shrug.
+    let site = match site_of(posture) {
+        Some(domain) => ap_agent::probe::site(&domain).await,
+        None => Site::Unknown,
+    };
+
+    // Asked of every node, whatever it serves. A node carrying SOCKS5 or HTTP
+    // is carrying Telegram through them, so the path out matters there too.
+    let reach = if ap_agent::probe::reaches_telegram().await {
+        Reach::Open
+    } else {
+        Reach::Blocked
+    };
+
+    health::report(control, site, reach, None)
         .await
         .unwrap_or(ap_proto::Health {
             engine: "down".to_owned(),
-            site: "unknown".to_owned(),
+            site: site.as_reported().to_owned(),
+            reach: reach.as_reported().to_owned(),
             cert_not_after: None,
         })
+}
+
+/// The name this node serves a site on, when it serves one.
+fn site_of(posture: &Posture) -> Option<String> {
+    let Posture::Serving(running) = posture else {
+        return None;
+    };
+    if running.node.kind != "web" {
+        return None;
+    }
+    running
+        .node
+        .domain
+        .as_deref()
+        .filter(|domain| !domain.is_empty())
+        .map(str::to_owned)
 }
 
 /// Brings the engine to what the panel just sent.

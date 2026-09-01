@@ -90,6 +90,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0012_node_served_digest",
         include_str!("../../../migrations/0012_node_served_digest.sql"),
     ),
+    (
+        "0013_node_reach",
+        include_str!("../../../migrations/0013_node_reach.sql"),
+    ),
 ];
 
 /// The migrations this build carries, in the order they apply.

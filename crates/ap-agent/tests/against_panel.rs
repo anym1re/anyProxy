@@ -503,6 +503,7 @@ async fn what_the_node_counted_is_what_the_panel_holds() {
             ap_proto::Health {
                 engine: "up".to_owned(),
                 site: "unknown".to_owned(),
+                reach: "open".to_owned(),
                 cert_not_after: None,
             },
             now,
@@ -558,6 +559,7 @@ async fn a_delivery_repeated_after_a_lost_acknowledgement_counts_once() {
     let health = ap_proto::Health {
         engine: "up".to_owned(),
         site: "unknown".to_owned(),
+        reach: "open".to_owned(),
         cert_not_after: None,
     };
     let delivery = meter.delivery(health.clone(), now).unwrap();
@@ -649,6 +651,7 @@ async fn a_node_refused_by_the_panel_is_told_why() {
         health: ap_proto::Health {
             engine: "up".to_owned(),
             site: "unknown".to_owned(),
+            reach: "open".to_owned(),
             cert_not_after: None,
         },
     };
@@ -714,6 +717,7 @@ async fn a_delivery_counts_every_access_it_carries() {
             ap_proto::Health {
                 engine: "up".to_owned(),
                 site: "unknown".to_owned(),
+                reach: "open".to_owned(),
                 cert_not_after: None,
             },
             now,

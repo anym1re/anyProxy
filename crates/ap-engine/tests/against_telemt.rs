@@ -347,9 +347,14 @@ async fn reading_the_configuration_again_does_not_restart_the_process() {
 async fn a_health_report_says_the_engine_is_up_while_it_is() {
     let engine = engine!(vec![an_access()]);
 
-    let health = ap_engine::health::report(&engine.control, ap_engine::health::Site::Unknown, None)
-        .await
-        .unwrap();
+    let health = ap_engine::health::report(
+        &engine.control,
+        ap_engine::health::Site::Unknown,
+        ap_engine::health::Reach::Unknown,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(health.engine, "up");
     assert_eq!(health.site, "unknown");
 }

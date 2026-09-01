@@ -228,10 +228,23 @@ pub struct DeviceCount {
 pub struct Health {
     /// Whether the proxy engine is running.
     pub engine: String,
-    /// Whether the cover site answers.
+    /// Whether the cover site answers a visitor.
     pub site: String,
+    /// Whether the node can still reach Telegram.
+    ///
+    /// A node that cannot is serving nobody, whatever its engine says about
+    /// itself: the engine is up, the port is open, the link looks right, and
+    /// every client fails. Defaulted so an older agent that does not say is
+    /// read as not having said, rather than as a node that cannot reach.
+    #[serde(default = "unknown")]
+    pub reach: String,
     /// When the certificate stops being valid.
     pub cert_not_after: Option<String>,
+}
+
+/// What a report says about something it did not ask.
+fn unknown() -> String {
+    "unknown".to_owned()
 }
 
 /// Agent reports traffic, device counts and health.

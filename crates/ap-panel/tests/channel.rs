@@ -389,6 +389,7 @@ async fn telemetry_for_a_foreign_access_moves_nothing() {
         health: Health {
             engine: "up".to_owned(),
             site: "up".to_owned(),
+            reach: "open".to_owned(),
             cert_not_after: None,
         },
     };
@@ -444,6 +445,7 @@ async fn a_repeated_delivery_moves_the_counter_once() {
         health: Health {
             engine: "up".to_owned(),
             site: "up".to_owned(),
+            reach: "open".to_owned(),
             cert_not_after: None,
         },
     };

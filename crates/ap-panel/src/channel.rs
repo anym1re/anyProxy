@@ -487,6 +487,7 @@ async fn apply_telemetry(
         Some((
             telemetry.health.engine.as_str(),
             telemetry.health.site.as_str(),
+            telemetry.health.reach.as_str(),
             telemetry
                 .health
                 .cert_not_after
@@ -579,8 +580,18 @@ fn not_ours(node_id: Uuid, access_id: Uuid) {
 }
 
 /// Whether a health report says the node is serving.
+///
+/// Three things fail apart and any of them is enough to serve nobody: the
+/// engine stops, the site stops answering visitors, or the path out to
+/// Telegram closes. The last was invisible until the node was asked to look,
+/// and a node that cannot reach Telegram carries no client anywhere however
+/// healthy the rest of it is.
+///
+/// What was never asked is not held against a node: an older agent says
+/// nothing about the path out, and a node with no site to show has none to be
+/// down.
 pub fn is_serving(health: &Health) -> bool {
-    health.engine == "up" && health.site != "down"
+    health.engine == "up" && health.site != "down" && health.reach != "blocked"
 }
 
 /// Builds the configuration a node would receive, without a channel.
@@ -647,4 +658,43 @@ where
 /// Reads the pool out for a caller that already holds the state, for tests.
 pub fn pool_of(state: &AppState) -> &PgPool {
     state.pool()
+}
+
+#[cfg(test)]
+mod serving_tests {
+    use super::*;
+
+    fn health(engine: &str, site: &str, reach: &str) -> Health {
+        Health {
+            engine: engine.to_owned(),
+            site: site.to_owned(),
+            reach: reach.to_owned(),
+            cert_not_after: None,
+        }
+    }
+
+    #[test]
+    fn a_node_that_cannot_reach_telegram_is_not_serving() {
+        // Everything about the node is healthy and it carries nobody: found
+        // that way on a live node, by hand, after clients had been failing for
+        // hours with nothing anywhere saying why.
+        assert!(!is_serving(&health("up", "up", "blocked")));
+    }
+
+    #[test]
+    fn a_node_answering_visitors_with_nothing_is_not_serving() {
+        assert!(!is_serving(&health("up", "down", "open")));
+    }
+
+    #[test]
+    fn what_was_never_asked_is_not_held_against_a_node() {
+        // An older agent says nothing about the path out, and a node with no
+        // site to show has none to be down. Neither is a fault.
+        assert!(is_serving(&health("up", "unknown", "unknown")));
+    }
+
+    #[test]
+    fn a_node_with_everything_answering_is_serving() {
+        assert!(is_serving(&health("up", "up", "open")));
+    }
 }
