@@ -1,9 +1,5 @@
-# The CI. Runs on the self-hosted Woodpecker server and its agent, and is the
-# only one: the GitHub workflow it grew from has been removed, because two of
-# them meant green in one said nothing about the other.
-#
-# Written for Woodpecker 2.x/3.x (list-form steps, top-level `when`,
-# `services`). One workflow, one agent: steps run in order and share the clone.
+# The checks that must pass. Written for Woodpecker 2.x/3.x: list-form steps, a
+# top-level `when`, and `services`. Steps run in order and share one clone.
 
 when:
   - event: [push, pull_request, manual]
