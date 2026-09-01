@@ -214,6 +214,34 @@ async fn a_borrowed_name_may_be_worn_by_more_than_one_node() {
 }
 
 #[tokio::test]
+async fn a_heartbeat_does_not_erase_the_build_a_node_reported() {
+    // The greeting carries the agent's build and every heartbeat after it
+    // carries none. Assigning it outright wiped it half a minute after each
+    // node connected, leaving the panel unable to say which nodes had a fix.
+    let pool = db!();
+    let node = an_open_node(&pool).await;
+
+    ap_store::PresenceRepo::seen(&pool, node.id(), "1.2.3", None, OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    ap_store::PresenceRepo::seen(
+        &pool,
+        node.id(),
+        "",
+        Some(("up", "unknown", "open", None)),
+        OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
+
+    let read = NodeRepo::by_label(&pool, node.label())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.agent_version(), Some("1.2.3"));
+}
+
+#[tokio::test]
 async fn a_burned_node_is_never_moved_out_of_that_state() {
     let pool = db!();
     let node = an_open_node(&pool).await;

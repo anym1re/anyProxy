@@ -186,6 +186,12 @@ impl PresenceRepo {
     ///
     /// A node that is serving clients should not read as pending: an operator
     /// looking for one that stopped has to be able to tell the two apart.
+    ///
+    /// Nothing said is not the same as nothing known. A greeting carries the
+    /// agent's build and every heartbeat after it carries none, so assigning
+    /// the version outright erased it half a minute after each node connected
+    /// — leaving the panel unable to say which nodes had a fix and which were
+    /// still waiting for one, at exactly the moment that matters.
     pub async fn seen(
         pool: &PgPool,
         node_id: Uuid,
@@ -199,7 +205,8 @@ impl PresenceRepo {
         };
 
         sqlx::query(
-            "update node set last_seen_at = $2, agent_version = $3, \
+            "update node set last_seen_at = $2, \
+             agent_version = coalesce(nullif($3, ''), agent_version), \
              health_engine = coalesce($4, health_engine), \
              health_site = coalesce($5, health_site), \
              health_reach = coalesce($6, health_reach), \
