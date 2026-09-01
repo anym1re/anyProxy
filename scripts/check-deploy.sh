@@ -81,6 +81,25 @@ else
     report "the installer installs without verifying"
 fi
 
+# The panel installer carries the same two guards and one of its own: it will
+# not run where a node is, the mirror of decision 0049.
+panel="${root}/scripts/install-panel.sh"
+if grep -q 'id -u.*= 0' "${panel}"; then
+    echo "  the panel installer requires root"
+else
+    report "the panel installer does not check that it can install"
+fi
+if grep -q 'verify-release.sh' "${panel}"; then
+    echo "  the panel installer verifies before it installs"
+else
+    report "the panel installer installs without verifying"
+fi
+if grep -q 'runs a node' "${panel}"; then
+    echo "  the panel installer refuses a node's machine"
+else
+    report "the panel installer would install beside a node"
+fi
+
 # ── the node is told how it reaches its panel ────────────────────────────
 #
 # Each of these is run for real rather than read out of the file. The checks
