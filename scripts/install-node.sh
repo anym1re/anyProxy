@@ -173,6 +173,114 @@ esac
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ── the host is sized for a proxy, not left on desktop defaults ───────────
+#
+# A node's machine is small and stock: one core, half a gigabyte, no swap, a
+# kernel tuned for a laptop. On that a proxy runs out of file descriptors at
+# 1024, out of SYN queue at 128 and out of ephemeral ports at twenty-eight
+# thousand long before the engine is busy — and the first crowd of clients
+# ends in the OOM killer taking whatever it fancies. None of that is a knob an
+# operator should be guessing at, so it is measured and set here, in two sizes,
+# and set again on every install so a hand edit does not silently survive.
+# Decision 0055.
+if [ "${ANYPROXY_TUNE_HOST:-yes}" != no ]; then
+    memory_kb="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
+    if [ "${memory_kb}" -lt 1572864 ]; then
+        # Below one and a half gigabytes: socket buffers and file tables that
+        # would not fit are worse than small ones.
+        nofile=65536
+        socket_max=4194304
+        conntrack_max=65536
+    else
+        nofile=262144
+        socket_max=16777216
+        conntrack_max=262144
+    fi
+    memory_high="$(( memory_kb * 7 / 10 / 1024 ))M"
+
+    # BBR only where the module loads. The path out of the target countries to
+    # Telegram's data centres drops packets, and cubic collapses on loss where
+    # BBR keeps pacing. Nothing is set for it on a kernel that has not got it.
+    congestion=""
+    if modprobe tcp_bbr 2>/dev/null && grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control; then
+        congestion=$'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr'
+    fi
+
+    # Connection tracking is sized only when it is loaded: writing the key
+    # otherwise loads the module, and a node that was not filtering packets
+    # would start paying for tracking every one of them.
+    conntrack=""
+    if [ -e /proc/sys/net/netfilter/nf_conntrack_max ]; then
+        conntrack="net.netfilter.nf_conntrack_max = ${conntrack_max}"
+    fi
+
+    # Not in the list, on purpose: tcp_fastopen. It changes the handshake, and
+    # a handshake that differs from the site's own is the kind of tell the
+    # distinguishability model exists to avoid.
+    cat > /etc/sysctl.d/60-anyproxy.conf <<SYSCTL
+# Written by the anyProxy node installer. Edit a different file: this one is
+# rewritten on every install.
+
+# Queues sized for a crowd arriving at once.
+net.core.somaxconn = 4096
+net.ipv4.tcp_max_syn_backlog = 4096
+net.ipv4.tcp_syncookies = 1
+
+# Outbound connections to Telegram come and go quickly; give them ports and
+# let a closed one be reused without waiting out the timer.
+net.ipv4.ip_local_port_range = 10240 65535
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_tw_reuse = 1
+
+# Keepalives that outlive a NAT mapping and notice a dead peer in minutes.
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 5
+
+# Behind DPI and tunnels the path MTU is often lied about; probing finds it
+# instead of stalling the connection.
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+
+# Socket buffers by the memory this machine actually has.
+net.core.rmem_max = ${socket_max}
+net.core.wmem_max = ${socket_max}
+net.ipv4.tcp_rmem = 4096 87380 ${socket_max}
+net.ipv4.tcp_wmem = 4096 65536 ${socket_max}
+
+fs.file-max = $(( nofile * 4 ))
+vm.swappiness = 10
+${congestion}
+${conntrack}
+SYSCTL
+    sysctl --system >/dev/null
+
+    # Swap on a small machine is not for running out of: it is so that a crowd
+    # of clients ends in slowness rather than in the OOM killer.
+    if [ "${memory_kb}" -lt 2097152 ] && [ "$(wc -l < /proc/swaps)" -le 1 ] && [ ! -e /swapfile ]; then
+        if ! fallocate -l 1G /swapfile 2>/dev/null; then
+            dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none
+        fi
+        chmod 0600 /swapfile
+        mkswap /swapfile >/dev/null
+        swapon /swapfile
+        grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+
+    # The unit's limits follow the size. MemoryHigh throttles the proxy before
+    # the kernel has to choose a victim, and the score adjustment makes sure
+    # that when it does, the victim is the proxy and not sshd.
+    install -d -o root -g root -m 0755 /etc/systemd/system/anyproxy-agent.service.d
+    cat > /etc/systemd/system/anyproxy-agent.service.d/host.conf <<UNIT
+# Written by the anyProxy node installer for this machine's size.
+[Service]
+LimitNOFILE=${nofile}
+MemoryHigh=${memory_high}
+OOMScoreAdjust=500
+UNIT
+    echo "host sized: $(nproc) cpu, $(( memory_kb / 1024 )) MB, nofile ${nofile}${congestion:+, bbr}"
+fi
+
 case "$(uname -m)" in
     x86_64)          target=x86_64-linux-musl ;;
     aarch64 | arm64) target=aarch64-linux-musl ;;
