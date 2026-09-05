@@ -98,6 +98,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0014_node_machine",
         include_str!("../../../migrations/0014_node_machine.sql"),
     ),
+    (
+        "0015_admin_totp_optional",
+        include_str!("../../../migrations/0015_admin_totp_optional.sql"),
+    ),
 ];
 
 /// The migrations this build carries, in the order they apply.

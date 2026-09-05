@@ -47,15 +47,15 @@ pub enum AdminState {
 
 /// Someone who operates the panel.
 ///
-/// The second factor is a required field, not an option: an account without
-/// one cannot be constructed, so it cannot be created, so the check at sign-in
-/// never has to ask whether one was configured.
+/// The second factor is optional (0060). An account that has one cannot be
+/// entered without it; an account that has none is entered with a password
+/// alone, and whoever creates it says so at that moment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AdminUser {
     id: Uuid,
     login: AdminLogin,
     password_hash: String,
-    totp_secret: Encrypted<String>,
+    totp_secret: Option<Encrypted<String>>,
     role: Role,
     state: AdminState,
     created_at: OffsetDateTime,
@@ -66,7 +66,7 @@ impl AdminUser {
     pub fn new(
         login: AdminLogin,
         password_hash: String,
-        totp_secret: Encrypted<String>,
+        totp_secret: Option<Encrypted<String>>,
         role: Role,
         created_at: OffsetDateTime,
     ) -> Result<Self, Error> {
@@ -90,7 +90,7 @@ impl AdminUser {
         id: Uuid,
         login: AdminLogin,
         password_hash: String,
-        totp_secret: Encrypted<String>,
+        totp_secret: Option<Encrypted<String>>,
         role: Role,
         state: AdminState,
         created_at: OffsetDateTime,
@@ -121,9 +121,9 @@ impl AdminUser {
         &self.password_hash
     }
 
-    /// The sealed second-factor secret.
-    pub fn totp_secret(&self) -> &Encrypted<String> {
-        &self.totp_secret
+    /// The sealed second-factor secret, if this account has one.
+    pub fn totp_secret(&self) -> Option<&Encrypted<String>> {
+        self.totp_secret.as_ref()
     }
 
     /// What this administrator may do.
@@ -160,13 +160,28 @@ mod tests {
         let admin = AdminUser::new(
             AdminLogin::try_from("root").unwrap(),
             "$argon2id$v=19$…".to_owned(),
-            secret(),
+            Some(secret()),
             Role::Superadmin,
             OffsetDateTime::UNIX_EPOCH,
         )
         .unwrap();
         assert_eq!(admin.state(), AdminState::Active);
         assert_eq!(admin.role(), Role::Superadmin);
+        assert!(admin.totp_secret().is_some());
+    }
+
+    #[test]
+    fn an_administrator_may_be_registered_without_a_second_factor() {
+        let admin = AdminUser::new(
+            AdminLogin::try_from("root").unwrap(),
+            "$argon2id$v=19$…".to_owned(),
+            None,
+            Role::Superadmin,
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .unwrap();
+        assert_eq!(admin.state(), AdminState::Active);
+        assert!(admin.totp_secret().is_none());
     }
 
     #[test]
@@ -175,7 +190,7 @@ mod tests {
             AdminUser::new(
                 AdminLogin::try_from("root").unwrap(),
                 String::new(),
-                secret(),
+                Some(secret()),
                 Role::Superadmin,
                 OffsetDateTime::UNIX_EPOCH,
             ),

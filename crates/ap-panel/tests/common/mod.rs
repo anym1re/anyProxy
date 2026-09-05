@@ -123,9 +123,10 @@ pub(crate) fn code_now(secret: &str) -> String {
 
 pub(crate) async fn admin(panel: &Panel, role: Role) -> (String, String) {
     let login = unique("a");
-    let secret = ap_panel::create_admin(&panel.state, &login, "correct horse", role)
+    let secret = ap_panel::create_admin(&panel.state, &login, "correct horse", role, true)
         .await
-        .expect("admin");
+        .expect("admin")
+        .expect("a second factor was asked for");
     let reply = call(
         &panel.router,
         "POST",

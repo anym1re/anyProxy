@@ -83,6 +83,9 @@ impl FromRequestParts<AppState> for Actor {
 struct SignIn {
     login: String,
     password: String,
+    /// The one-time code, from an account that carries a second factor.
+    /// Absent and empty say the same thing: none was given (0060).
+    #[serde(default)]
     totp: String,
 }
 
@@ -109,10 +112,19 @@ async fn sign_in(
     let outcome = match &found {
         Some(admin) => {
             let password_ok = verify_password(&body.password, admin.password_hash());
-            let secret = admin.totp_secret().open(state.key()).ok();
-            let code_ok = match &secret {
-                Some(secret) => verify_totp(secret, &body.totp),
-                None => false,
+            let code_ok = match admin.totp_secret() {
+                Some(sealed) => match sealed.open(state.key()) {
+                    Ok(secret) => verify_totp(&secret, &body.totp),
+                    Err(_) => false,
+                },
+                // Nothing to check against, and the same work done anyway:
+                // were an answer quicker for an account without a second
+                // factor, a search would find those accounts and spend the
+                // rest of its time on them alone (Б14).
+                None => {
+                    verify_absent_totp(&body.totp);
+                    true
+                }
             };
             let active = admin.state() == ap_core::AdminState::Active;
             password_ok && code_ok && active

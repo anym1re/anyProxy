@@ -21,8 +21,12 @@ impl AdminRepo {
         .bind(admin.id())
         .bind(admin.login().as_str())
         .bind(admin.password_hash())
-        .bind(admin.totp_secret().nonce().to_vec())
-        .bind(admin.totp_secret().ciphertext().to_vec())
+        .bind(admin.totp_secret().map(|secret| secret.nonce().to_vec()))
+        .bind(
+            admin
+                .totp_secret()
+                .map(|secret| secret.ciphertext().to_vec()),
+        )
         .bind(admin.role().as_stored())
         .bind(admin.state().as_stored())
         .bind(admin.created_at())
@@ -65,16 +69,26 @@ impl AdminRepo {
 
 fn read_admin(row: sqlx::postgres::PgRow) -> Result<AdminUser, StoreError> {
     let login = AdminLogin::try_from(row.try_get::<String, _>("login")?)?;
-    let nonce: Vec<u8> = row.try_get("totp_nonce")?;
-    let nonce: [u8; 24] = nonce
-        .try_into()
-        .map_err(|_| StoreError::Domain(ap_core::Error::SealedValue))?;
-    let ciphertext: Vec<u8> = row.try_get("totp_ciphertext")?;
+    // Both halves or neither; the schema holds it to that, and a row that
+    // somehow carried one would be an account with an unusable second factor
+    // rather than one without it.
+    let nonce: Option<Vec<u8>> = row.try_get("totp_nonce")?;
+    let ciphertext: Option<Vec<u8>> = row.try_get("totp_ciphertext")?;
+    let totp_secret = match (nonce, ciphertext) {
+        (Some(nonce), Some(ciphertext)) => {
+            let nonce: [u8; 24] = nonce
+                .try_into()
+                .map_err(|_| StoreError::Domain(ap_core::Error::SealedValue))?;
+            Some(Encrypted::<String>::from_parts(nonce, ciphertext))
+        }
+        (None, None) => None,
+        _ => return Err(StoreError::Domain(ap_core::Error::SealedValue)),
+    };
     Ok(AdminUser::from_parts(
         row.try_get("id")?,
         login,
         row.try_get("password_hash")?,
-        Encrypted::<String>::from_parts(nonce, ciphertext),
+        totp_secret,
         Role::from_stored(&row.try_get::<String, _>("role")?)?,
         AdminState::from_stored(&row.try_get::<String, _>("state")?)?,
         row.try_get("created_at")?,

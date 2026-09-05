@@ -26,6 +26,11 @@ enum Command {
         /// What they may do: superadmin, operator or reseller.
         #[arg(long, default_value = "superadmin")]
         role: String,
+        /// Create the account without a second factor: a password is then
+        /// the whole of what stands between anyone and every secret this
+        /// panel holds.
+        #[arg(long)]
+        no_second_factor: bool,
     },
 }
 
@@ -56,7 +61,11 @@ fn main() {
 
     let outcome = match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => runtime.block_on(run(config, channel_bind)),
-        Command::AddAdmin { login, role } => runtime.block_on(add_admin(config, &login, &role)),
+        Command::AddAdmin {
+            login,
+            role,
+            no_second_factor,
+        } => runtime.block_on(add_admin(config, &login, &role, !no_second_factor)),
     };
 
     if let Err(reason) = outcome {
@@ -66,7 +75,12 @@ fn main() {
 }
 
 /// Creates the administrator the panel is first reached with.
-async fn add_admin(config: ap_panel::Config, login: &str, role: &str) -> Result<(), String> {
+async fn add_admin(
+    config: ap_panel::Config,
+    login: &str,
+    role: &str,
+    second_factor: bool,
+) -> Result<(), String> {
     let role = match role {
         "superadmin" => ap_core::Role::Superadmin,
         "operator" => ap_core::Role::Operator,
@@ -84,11 +98,14 @@ async fn add_admin(config: ap_panel::Config, login: &str, role: &str) -> Result<
     }
 
     let state = ap_panel::AppState::build(&config).await?;
-    let secret = ap_panel::create_admin(&state, login, password, role).await?;
+    let secret = ap_panel::create_admin(&state, login, password, role, second_factor).await?;
 
     // Shown once. It is not stored in a form anyone can read back, so an
     // operator who loses it needs a new administrator rather than a reminder.
-    println!("{secret}");
+    // An account created without a second factor has nothing to show.
+    if let Some(secret) = secret {
+        println!("{secret}");
+    }
     Ok(())
 }
 

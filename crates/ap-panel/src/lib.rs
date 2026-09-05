@@ -124,22 +124,29 @@ pub async fn serve(config: Config) -> Result<(), String> {
         .map_err(|error| format!("serve: {error}"))
 }
 
-/// Registers the first administrator, when none exists yet.
+/// Registers an administrator, with or without a second factor (0060).
 ///
-/// The second factor is generated here rather than accepted from the caller:
-/// an account is never created without one.
+/// The secret is generated here rather than accepted from the caller, and
+/// returned once: it is sealed on the way to the database and cannot be read
+/// back. An account created without one is entered with a password alone.
 pub async fn create_admin(
     state: &AppState,
     login: &str,
     password: &str,
     role: ap_core::Role,
-) -> Result<String, String> {
+    second_factor: bool,
+) -> Result<Option<String>, String> {
     use ap_core::{AdminLogin, AdminUser, Encrypted};
 
     let login = AdminLogin::try_from(login).map_err(|error| error.to_string())?;
     let hash = auth::hash_password(password).map_err(|_| "password".to_owned())?;
-    let secret = auth::new_totp_secret();
-    let sealed = Encrypted::seal(&secret, state.key()).map_err(|error| error.to_string())?;
+    let secret = second_factor.then(auth::new_totp_secret);
+    let sealed = match &secret {
+        Some(secret) => {
+            Some(Encrypted::seal(secret, state.key()).map_err(|error| error.to_string())?)
+        }
+        None => None,
+    };
     let admin = AdminUser::new(login, hash, sealed, role, time::OffsetDateTime::now_utc())
         .map_err(|error| error.to_string())?;
     ap_store::AdminRepo::insert(state.pool(), &admin)

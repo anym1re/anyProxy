@@ -340,7 +340,8 @@
   function loginView() {
     const login = h('input', { type: 'text', autocomplete: 'username', required: true, autofocus: true });
     const password = h('input', { type: 'password', autocomplete: 'current-password', required: true });
-    const totp = h('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', required: true, pattern: '[0-9]{6}' });
+    // Not required: an account may carry no second factor (0060).
+    const totp = h('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9]{6}', maxlength: '6' });
     const err = errorLine();
     const submit = h('button', { type: 'submit', class: 'btn primary' }, t('ui-login-submit'));
     const form = h('form', { class: 'card-b', on: { submit: async (event) => {

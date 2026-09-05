@@ -18,12 +18,19 @@ mod common;
 use common::{admin, an_access, call, code_now, unique};
 
 #[tokio::test]
-async fn signing_in_needs_all_three_factors() {
+async fn an_account_with_a_second_factor_is_not_entered_without_it() {
     let panel = panel!();
     let login = unique("a");
-    let secret = ap_panel::create_admin(&panel.state, &login, "correct horse", Role::Superadmin)
-        .await
-        .unwrap();
+    let secret = ap_panel::create_admin(
+        &panel.state,
+        &login,
+        "correct horse",
+        Role::Superadmin,
+        true,
+    )
+    .await
+    .unwrap()
+    .expect("a second factor was asked for");
 
     let missing = call(
         &panel.router,
@@ -74,13 +81,21 @@ async fn every_way_of_failing_to_sign_in_looks_the_same() {
         &wrong_password,
         "correct horse",
         Role::Superadmin,
+        true,
+    )
+    .await
+    .unwrap()
+    .expect("a second factor was asked for");
+    let wrong_code = unique("a");
+    ap_panel::create_admin(
+        &panel.state,
+        &wrong_code,
+        "correct horse",
+        Role::Superadmin,
+        true,
     )
     .await
     .unwrap();
-    let wrong_code = unique("a");
-    ap_panel::create_admin(&panel.state, &wrong_code, "correct horse", Role::Superadmin)
-        .await
-        .unwrap();
 
     let cases = [
         serde_json::json!({ "login": unique("nobody"), "password": "correct horse", "totp": code_now(&secret_a) }),
@@ -130,9 +145,15 @@ async fn every_way_of_failing_to_sign_in_looks_the_same() {
 async fn the_sixth_attempt_is_held_back() {
     let panel = panel!();
     let login = unique("a");
-    ap_panel::create_admin(&panel.state, &login, "correct horse", Role::Superadmin)
-        .await
-        .unwrap();
+    ap_panel::create_admin(
+        &panel.state,
+        &login,
+        "correct horse",
+        Role::Superadmin,
+        true,
+    )
+    .await
+    .unwrap();
 
     let body = serde_json::json!({ "login": login, "password": "wrong", "totp": "000000" });
     for _ in 0..5 {
@@ -628,4 +649,62 @@ async fn accesses_are_listed_across_clients_but_only_ones_own() {
     let own = call(&panel.router, "GET", "/v1/accesses", Some(&reseller), None).await;
     assert_eq!(own.status, StatusCode::OK, "{}", own.body);
     assert_eq!(own.json().as_array().map(Vec::len), Some(0), "{}", own.body);
+}
+
+#[tokio::test]
+async fn an_account_without_a_second_factor_is_entered_with_a_password() {
+    let panel = panel!();
+    let login = unique("a");
+    let none = ap_panel::create_admin(
+        &panel.state,
+        &login,
+        "correct horse",
+        Role::Superadmin,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(
+        none.is_none(),
+        "a secret was drawn for an account without one"
+    );
+
+    // No field at all, which is what the interface sends when the box is
+    // left empty.
+    let signed_in = call(
+        &panel.router,
+        "POST",
+        "/v1/session",
+        None,
+        Some(serde_json::json!({ "login": login, "password": "correct horse" })),
+    )
+    .await;
+    assert_eq!(signed_in.status, StatusCode::CREATED, "{}", signed_in.body);
+
+    // A code offered where none is kept changes nothing, and the password
+    // still has to be right.
+    let with_a_code = call(
+        &panel.router,
+        "POST",
+        "/v1/session",
+        None,
+        Some(serde_json::json!({ "login": login, "password": "correct horse", "totp": "000000" })),
+    )
+    .await;
+    assert_eq!(
+        with_a_code.status,
+        StatusCode::CREATED,
+        "{}",
+        with_a_code.body
+    );
+
+    let wrong = call(
+        &panel.router,
+        "POST",
+        "/v1/session",
+        None,
+        Some(serde_json::json!({ "login": login, "password": "wrong horse" })),
+    )
+    .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
 }

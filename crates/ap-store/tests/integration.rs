@@ -597,7 +597,7 @@ async fn a_day_series_is_scoped_to_an_owner_when_asked() {
     let owner = ap_core::AdminUser::new(
         ap_core::AdminLogin::try_from(unique("a").as_str()).unwrap(),
         "hash".to_owned(),
-        Encrypted::seal(&"secret".to_owned(), &key()).unwrap(),
+        Some(Encrypted::seal(&"secret".to_owned(), &key()).unwrap()),
         ap_core::Role::Reseller,
         OffsetDateTime::UNIX_EPOCH,
     )
