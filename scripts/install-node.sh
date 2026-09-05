@@ -253,7 +253,7 @@ vm.swappiness = 10
 ${congestion}
 ${conntrack}
 SYSCTL
-    sysctl --system >/dev/null
+    sysctl -q -p /etc/sysctl.d/60-anyproxy.conf
 
     # Swap on a small machine is not for running out of: it is so that a crowd
     # of clients ends in slowness rather than in the OOM killer.
