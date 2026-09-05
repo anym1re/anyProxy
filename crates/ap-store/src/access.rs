@@ -82,6 +82,36 @@ impl AccessRepo {
         rows.into_iter().map(read_access).collect()
     }
 
+    /// Accesses across every client, newest first.
+    ///
+    /// Public links are not among them: they belong to nobody and are listed
+    /// by name in [`Self::public`].
+    pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<AnyAccess>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "select {COLUMNS} from access where client_id is not null              order by created_at desc, id desc limit $1"
+        ))
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter().map(read_access).collect()
+    }
+
+    /// Accesses of the clients one administrator created, newest first.
+    pub async fn list_owned(
+        pool: &PgPool,
+        owner: Uuid,
+        limit: i64,
+    ) -> Result<Vec<AnyAccess>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "select {COLUMNS} from access              where client_id in (select id from client where owner_id = $1)              order by created_at desc, id desc limit $2"
+        ))
+        .bind(owner)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter().map(read_access).collect()
+    }
+
     /// Every access a node serves, oldest first.
     pub async fn by_node(pool: &PgPool, node_id: Uuid) -> Result<Vec<AnyAccess>, StoreError> {
         let rows = sqlx::query(&format!(

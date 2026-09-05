@@ -20,6 +20,17 @@ impl TrafficTotals {
     }
 }
 
+/// What every access together spent on one day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DailyTraffic {
+    /// The day, UTC.
+    pub day: Date,
+    /// Bytes received by clients.
+    pub bytes_in: i64,
+    /// Bytes sent by clients.
+    pub bytes_out: i64,
+}
+
 /// Reads and writes traffic counters. Aggregated by day; no record is kept of
 /// individual connections.
 pub struct TrafficRepo;
@@ -94,6 +105,35 @@ impl TrafficRepo {
             bytes_in: row.try_get("bytes_in")?,
             bytes_out: row.try_get("bytes_out")?,
         })
+    }
+
+    /// A day-by-day series from a date on, across every access — or, given
+    /// an owner, across the accesses of the clients that owner created.
+    ///
+    /// A day nobody used is absent, not zero: the caller lays the series over
+    /// its own calendar. Public links have no client and so no owner; they
+    /// are counted only in the unscoped series.
+    pub async fn daily(
+        pool: &PgPool,
+        since: Date,
+        owner: Option<Uuid>,
+    ) -> Result<Vec<DailyTraffic>, StoreError> {
+        let rows = sqlx::query(
+            "select t.day, sum(t.bytes_in)::bigint as bytes_in,              sum(t.bytes_out)::bigint as bytes_out              from traffic_daily t              join access a on a.id = t.access_id              left join client c on c.id = a.client_id              where t.day >= $1 and ($2::uuid is null or c.owner_id = $2)              group by t.day order by t.day",
+        )
+        .bind(since)
+        .bind(owner)
+        .fetch_all(pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(DailyTraffic {
+                    day: row.try_get("day")?,
+                    bytes_in: row.try_get("bytes_in")?,
+                    bytes_out: row.try_get("bytes_out")?,
+                })
+            })
+            .collect()
     }
 
     /// What a client has spent across every access it holds.

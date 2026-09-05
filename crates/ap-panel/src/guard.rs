@@ -2,7 +2,9 @@ use ap_core::{
     AccessState, AdTag, AdminUser, AnyAccess, Client, ClientState, Credential, Domain, Holder,
     KeyStore, Label, Node, NodeState, Role, Tag, TagName,
 };
-use ap_store::{AccessRepo, AuditRepo, ClientRepo, NodeRepo, TagRepo, TrafficRepo, TrafficTotals};
+use ap_store::{
+    AccessRepo, AuditRepo, ClientRepo, DailyTraffic, NodeRepo, TagRepo, TrafficRepo, TrafficTotals,
+};
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -162,6 +164,16 @@ impl<'a> Guarded<'a> {
     pub async fn accesses(&self, client_id: Uuid) -> Result<Vec<AnyAccess>, ApiError> {
         self.client(client_id).await?;
         Ok(AccessRepo::by_client(self.pool, client_id).await?)
+    }
+
+    /// Accesses across the clients this actor may see, newest first.
+    pub async fn all_accesses(&self, limit: Option<i64>) -> Result<Vec<AnyAccess>, ApiError> {
+        let limit = Self::page(limit);
+        if self.actor.role().reaches_every_client() {
+            Ok(AccessRepo::list(self.pool, limit).await?)
+        } else {
+            Ok(AccessRepo::list_owned(self.pool, self.actor.id(), limit).await?)
+        }
     }
 
     /// One access, if this actor may see its client.
@@ -326,6 +338,22 @@ impl<'a> Guarded<'a> {
         self.node(id).await?;
         NodeRepo::set_ad_tag(self.pool, id, ad_tag.as_ref()).await?;
         Ok(())
+    }
+
+    /// Traffic by day over the last `days`, summed over what this actor may
+    /// see.
+    ///
+    /// A reseller gets the clients they created and nothing else; the public
+    /// links, which are nobody's, are not in that sum.
+    pub async fn traffic_daily(&self, days: i64) -> Result<Vec<DailyTraffic>, ApiError> {
+        let days = days.clamp(1, 366);
+        let since = OffsetDateTime::now_utc().date() - time::Duration::days(days - 1);
+        let owner = if self.actor.role().reaches_every_client() {
+            None
+        } else {
+            Some(self.actor.id())
+        };
+        Ok(TrafficRepo::daily(self.pool, since, owner).await?)
     }
 
     /// The audit log.

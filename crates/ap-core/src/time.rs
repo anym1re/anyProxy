@@ -1,5 +1,6 @@
 //! RFC 3339 timestamps, always UTC and always whole seconds.
 
+use ::time::Date;
 use ::time::OffsetDateTime;
 use ::time::UtcOffset;
 use ::time::format_description::well_known::Rfc3339;
@@ -25,9 +26,22 @@ pub fn format_rfc3339(value: OffsetDateTime) -> Result<String, Error> {
         .map_err(|_| Error::Timestamp)
 }
 
+/// Renders a calendar day as `YYYY-MM-DD`.
+pub fn format_date(value: Date) -> Result<String, Error> {
+    let description = ::time::format_description::parse_borrowed::<2>("[year]-[month]-[day]")
+        .map_err(|_| Error::Timestamp)?;
+    value.format(&description).map_err(|_| Error::Timestamp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_day_is_rendered_with_its_zeroes() {
+        let day = Date::from_calendar_date(2026, ::time::Month::September, 5).unwrap();
+        assert_eq!(format_date(day).unwrap(), "2026-09-05");
+    }
 
     // A stamp with no fractional part is the form this project writes. Parsing
     // it must survive a round trip: the equivalent code in MTProxyMax appended

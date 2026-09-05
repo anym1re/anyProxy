@@ -22,7 +22,7 @@ pub use client::ClientRepo;
 pub use error::StoreError;
 pub use node::NodeRepo;
 pub use tag::TagRepo;
-pub use traffic::{TrafficRepo, TrafficTotals};
+pub use traffic::{DailyTraffic, TrafficRepo, TrafficTotals};
 
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;

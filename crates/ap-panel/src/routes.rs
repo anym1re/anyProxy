@@ -1,11 +1,12 @@
 use ap_core::{
     Access, AccessCommon, AccessState, AdTag, AdminLogin, AnyAccess, Client, ClientState,
-    Credential, Domain, Holder, Label, LinkName, Node, NodeKind, NodeKindTag, Open, OpenMethod,
-    Served, Stealth, StealthMethod, Tag, TagName, time::format_rfc3339,
+    Credential, Domain, Holder, Label, LinkName, Locale, Node, NodeKind, NodeKindTag, Open,
+    OpenMethod, Served, Stealth, StealthMethod, Tag, TagName, i18n::raw_messages,
+    time::format_date, time::format_rfc3339,
 };
 use axum::extract::{FromRequestParts, Path, Query, State};
-use axum::http::StatusCode;
 use axum::http::request::Parts;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -33,7 +34,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/clients/{id}/state", post(set_client_state))
         .route("/v1/clients/{id}/traffic", get(client_traffic))
         .route("/v1/clients/{id}/accesses", get(list_accesses))
-        .route("/v1/accesses", post(create_access))
+        .route("/v1/accesses", get(list_all_accesses).post(create_access))
         .route("/v1/accesses/public", get(list_public_accesses))
         .route("/v1/accesses/{id}", get(read_access))
         .route("/v1/accesses/{id}/state", post(set_access_state))
@@ -45,6 +46,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/nodes/{id}/sponsorship", post(sponsor_node))
         .route("/v1/nodes/{id}/enrollment", post(issue_enrollment))
         .route("/v1/audit", get(read_audit))
+        .route("/v1/traffic", get(traffic))
+        .route("/v1/i18n", get(interface_text))
+        .route("/", get(interface))
+        .route("/ui/app.css", get(interface_style))
+        .route("/ui/app.js", get(interface_script))
         .with_state(state)
 }
 
@@ -315,6 +321,16 @@ fn access_json(access: &AnyAccess) -> Result<serde_json::Value, ApiError> {
         "max_devices": common.max_devices(),
         "created_at": format_rfc3339(common.created_at())?,
     }))
+}
+
+async fn list_all_accesses(
+    State(state): State<AppState>,
+    actor: Actor,
+    Query(page): Query<Page>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let accesses = state.guarded(&actor).all_accesses(page.limit).await?;
+    let body: Result<Vec<_>, ApiError> = accesses.iter().map(access_json).collect();
+    Ok(Json(serde_json::json!(body?)))
 }
 
 async fn list_accesses(
@@ -802,16 +818,131 @@ async fn read_audit(
     Query(page): Query<Page>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let entries = state.guarded(&actor).audit(page.limit).await?;
-    Ok(Json(serde_json::json!(
-        entries
-            .iter()
-            .map(|entry| serde_json::json!({
+    let body: Result<Vec<_>, ApiError> = entries
+        .iter()
+        .map(|entry| {
+            Ok(serde_json::json!({
                 "id": entry.id,
                 "actor_id": entry.actor_id,
                 "action": entry.action,
                 "target": entry.target,
+                "at": format_rfc3339(entry.at)?,
                 "details": entry.details,
             }))
-            .collect::<Vec<_>>()
-    )))
+        })
+        .collect();
+    Ok(Json(serde_json::json!(body?)))
+}
+
+// ── traffic ──────────────────────────────────────────────────────────────
+
+/// How far back the series reaches when the caller does not say.
+const DEFAULT_TRAFFIC_DAYS: i64 = 30;
+
+#[derive(Deserialize)]
+struct TrafficRange {
+    days: Option<i64>,
+}
+
+/// Traffic by day, summed over everything the actor may see.
+async fn traffic(
+    State(state): State<AppState>,
+    actor: Actor,
+    Query(range): Query<TrafficRange>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let series = state
+        .guarded(&actor)
+        .traffic_daily(range.days.unwrap_or(DEFAULT_TRAFFIC_DAYS))
+        .await?;
+    let body: Result<Vec<_>, ApiError> = series
+        .iter()
+        .map(|point| {
+            Ok(serde_json::json!({
+                "day": format_date(point.day)?,
+                "bytes_in": point.bytes_in,
+                "bytes_out": point.bytes_out,
+            }))
+        })
+        .collect();
+    Ok(Json(serde_json::json!(body?)))
+}
+
+// ── the interface ────────────────────────────────────────────────────────
+
+const INTERFACE_PAGE: &str = include_str!("../../../ui/index.html");
+const INTERFACE_STYLE: &str = include_str!("../../../ui/app.css");
+const INTERFACE_SCRIPT: &str = include_str!("../../../ui/app.js");
+
+/// The web interface, built into the binary (0058).
+///
+/// Served without a session: the page holds no data, only the means to ask
+/// for it, and every request it makes carries the token the way the CLI
+/// does. The policy header keeps it from loading anything from anywhere but
+/// this panel, which is also the only place it could load from.
+async fn interface() -> Response {
+    (
+        [
+            ("content-type", "text/html; charset=utf-8"),
+            ("cache-control", "no-cache"),
+            (
+                "content-security-policy",
+                "default-src 'self'; frame-ancestors 'none'",
+            ),
+            ("x-content-type-options", "nosniff"),
+        ],
+        INTERFACE_PAGE,
+    )
+        .into_response()
+}
+
+async fn interface_style() -> Response {
+    (
+        [
+            ("content-type", "text/css; charset=utf-8"),
+            ("cache-control", "no-cache"),
+        ],
+        INTERFACE_STYLE,
+    )
+        .into_response()
+}
+
+async fn interface_script() -> Response {
+    (
+        [
+            ("content-type", "text/javascript; charset=utf-8"),
+            ("cache-control", "no-cache"),
+        ],
+        INTERFACE_SCRIPT,
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct LanguageQuery {
+    lang: Option<String>,
+}
+
+/// The interface's text in one language, as the catalogue has it.
+///
+/// Not behind a session: the words are the same for everyone and there is
+/// nothing in them to protect. `lang` wins over `Accept-Language`, so the
+/// switch in the interface holds regardless of what the browser prefers.
+async fn interface_text(
+    Query(query): Query<LanguageQuery>,
+    headers: HeaderMap,
+) -> Json<serde_json::Value> {
+    let preferred = headers
+        .get("accept-language")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(|value| value.split(';').next().unwrap_or(value).trim().to_owned());
+    let locale = Locale::from_code(&query.lang.or(preferred).unwrap_or_default());
+    // The interface's own words, and the sentences for what the panel
+    // refuses: the code travels, the sentence is made where it is read.
+    let messages: serde_json::Map<String, serde_json::Value> = raw_messages(locale, "ui-")
+        .into_iter()
+        .chain(raw_messages(locale, "api-"))
+        .map(|(key, pattern)| (key, serde_json::Value::String(pattern)))
+        .collect();
+    Json(serde_json::json!({ "lang": locale.code(), "messages": messages }))
 }

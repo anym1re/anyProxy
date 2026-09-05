@@ -530,3 +530,102 @@ async fn two_accesses_of_one_client_do_not_share_a_name() {
     // one, whoever actually used it.
     assert_ne!(names[0], names[1], "two accesses were given the same name");
 }
+
+#[tokio::test]
+async fn the_interface_is_served_without_a_session() {
+    let panel = panel!();
+    let page = call(&panel.router, "GET", "/", None, None).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains("/ui/app.js"), "{}", page.body);
+    for path in ["/ui/app.js", "/ui/app.css"] {
+        let file = call(&panel.router, "GET", path, None, None).await;
+        assert_eq!(file.status, StatusCode::OK, "{path}");
+        assert!(!file.body.is_empty(), "{path} is empty");
+    }
+}
+
+#[tokio::test]
+async fn the_interface_text_comes_in_the_language_asked_for() {
+    let panel = panel!();
+    let russian = call(&panel.router, "GET", "/v1/i18n?lang=ru", None, None).await;
+    assert_eq!(russian.status, StatusCode::OK);
+    assert_eq!(russian.json()["lang"], "ru");
+    assert_eq!(russian.json()["messages"]["ui-nav-nodes"], "Ноды");
+    // A placeable is handed over as written; the browser fills it.
+    assert!(
+        russian.json()["messages"]["ui-cert-until"]
+            .as_str()
+            .unwrap()
+            .contains("{ $date }")
+    );
+
+    let english = call(&panel.router, "GET", "/v1/i18n", None, None).await;
+    assert_eq!(english.json()["lang"], "en");
+    assert_eq!(english.json()["messages"]["ui-nav-nodes"], "Nodes");
+}
+
+#[tokio::test]
+async fn traffic_by_day_needs_a_session_and_answers_a_series() {
+    let panel = panel!();
+    let refused = call(&panel.router, "GET", "/v1/traffic", None, None).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+
+    let (_, token) = admin(&panel, Role::Superadmin).await;
+    let series = call(
+        &panel.router,
+        "GET",
+        "/v1/traffic?days=7",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(series.status, StatusCode::OK, "{}", series.body);
+    assert!(series.json().is_array(), "{}", series.body);
+
+    let (_, reseller) = admin(&panel, Role::Reseller).await;
+    let own = call(
+        &panel.router,
+        "GET",
+        "/v1/traffic?days=7",
+        Some(&reseller),
+        None,
+    )
+    .await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.body);
+    assert_eq!(own.json().as_array().map(Vec::len), Some(0), "{}", own.body);
+}
+
+#[tokio::test]
+async fn accesses_are_listed_across_clients_but_only_ones_own() {
+    let panel = panel!();
+    let refused = call(&panel.router, "GET", "/v1/accesses", None, None).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+
+    let (_, token) = admin(&panel, Role::Superadmin).await;
+    let (client_id, access_id) = an_access(&panel, &token, "socks5").await;
+    let listed = call(
+        &panel.router,
+        "GET",
+        "/v1/accesses?limit=200",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let items = listed.json();
+    let items = items.as_array().unwrap();
+    assert!(items.len() <= 200);
+    // Newest first, so the one just issued leads.
+    assert_eq!(items[0]["id"], access_id, "{}", listed.body);
+    assert_eq!(items[0]["client_id"], client_id);
+    assert!(
+        items.iter().all(|item| !item["client_id"].is_null()),
+        "a public link was listed"
+    );
+
+    // The reseller created none of these clients and sees none of the accesses.
+    let (_, reseller) = admin(&panel, Role::Reseller).await;
+    let own = call(&panel.router, "GET", "/v1/accesses", Some(&reseller), None).await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.body);
+    assert_eq!(own.json().as_array().map(Vec::len), Some(0), "{}", own.body);
+}

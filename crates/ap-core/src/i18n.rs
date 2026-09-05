@@ -132,6 +132,38 @@ fn render(locale: Locale, key: &str, args: FluentArgs<'_>) -> Result<String, Err
     }
 }
 
+/// The messages under a key prefix, as written in the catalogue.
+///
+/// Patterns are handed out unrendered, placeables and all: the web interface
+/// substitutes its own values in the browser, where there is no Fluent. A
+/// continuation line is joined to the line it continues with one space.
+pub fn raw_messages(locale: Locale, prefix: &str) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut collecting = false;
+    for line in locale.source().lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with(' ') {
+            if let Some((_, pattern)) = found.last_mut().filter(|_| collecting) {
+                pattern.push(' ');
+                pattern.push_str(line.trim());
+            }
+            continue;
+        }
+        let Some((key, pattern)) = line.split_once('=') else {
+            collecting = false;
+            continue;
+        };
+        let key = key.trim();
+        collecting = key.starts_with(prefix);
+        if collecting {
+            found.push((key.to_owned(), pattern.trim().to_owned()));
+        }
+    }
+    found
+}
+
 /// The keys a catalogue defines, in the order they appear.
 pub fn keys(locale: Locale) -> Vec<String> {
     let mut found = Vec::new();
@@ -244,6 +276,62 @@ mod tests {
         russian.sort();
         assert_eq!(english, russian, "the catalogues have drifted apart");
         assert!(!english.is_empty());
+    }
+
+    #[test]
+    fn the_interface_says_the_same_things_in_both_languages() {
+        let english = raw_messages(Locale::En, "ui-");
+        let russian = raw_messages(Locale::Ru, "ui-");
+        assert!(!english.is_empty());
+        let mut english_keys: Vec<_> = english.iter().map(|(key, _)| key.clone()).collect();
+        let mut russian_keys: Vec<_> = russian.iter().map(|(key, _)| key.clone()).collect();
+        english_keys.sort();
+        russian_keys.sort();
+        assert_eq!(
+            english_keys, russian_keys,
+            "the interface text has drifted apart"
+        );
+        for (key, pattern) in english.iter().chain(russian.iter()) {
+            assert!(!pattern.is_empty(), "{key} is empty");
+        }
+    }
+
+    #[test]
+    fn the_interface_uses_nothing_the_browser_cannot_substitute() {
+        // The browser fills `{ $name }` by itself and knows no Fluent: a
+        // selector would reach the screen as written.
+        for locale in Locale::all() {
+            let handed_over = raw_messages(locale, "ui-")
+                .into_iter()
+                .chain(raw_messages(locale, "api-"));
+            for (key, pattern) in handed_over {
+                assert!(!pattern.contains("->"), "{key} selects");
+                for (index, _) in pattern.match_indices('{') {
+                    let inside = pattern[index + 1..].trim_start();
+                    assert!(
+                        inside.starts_with('$'),
+                        "{key} holds a placeable that is not a variable"
+                    );
+                }
+                if !pattern.contains('$') {
+                    assert!(message(locale, &key).is_ok(), "{key} does not render");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_continuation_line_is_joined_to_its_message() {
+        // Only the interface keys are collected, and a continuation under a
+        // key outside the prefix must not be glued onto the last one inside.
+        let collected = raw_messages(Locale::En, "ui-");
+        assert!(
+            collected.iter().all(|(key, _)| key.starts_with("ui-")),
+            "a key outside the prefix was collected"
+        );
+        let cli = raw_messages(Locale::En, "cli-enrollment-code");
+        assert_eq!(cli.len(), 1);
+        assert!(cli[0].1.contains("{ $code }"));
     }
 
     #[test]

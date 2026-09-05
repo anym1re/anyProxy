@@ -590,3 +590,65 @@ async fn a_client_state_change_is_seen_on_the_next_read() {
         .unwrap();
     assert_eq!(read.state(), ClientState::Suspended);
 }
+
+#[tokio::test]
+async fn a_day_series_is_scoped_to_an_owner_when_asked() {
+    let pool = db!();
+    let owner = ap_core::AdminUser::new(
+        ap_core::AdminLogin::try_from(unique("a").as_str()).unwrap(),
+        "hash".to_owned(),
+        Encrypted::seal(&"secret".to_owned(), &key()).unwrap(),
+        ap_core::Role::Reseller,
+        OffsetDateTime::UNIX_EPOCH,
+    )
+    .unwrap();
+    ap_store::AdminRepo::insert(&pool, &owner).await.unwrap();
+
+    let mine = Client::new(
+        Label::try_from(unique("c").as_str()).unwrap(),
+        OffsetDateTime::UNIX_EPOCH,
+    );
+    ClientRepo::insert(&pool, &mine, Some(owner.id()))
+        .await
+        .unwrap();
+    let theirs = a_client(&pool).await;
+    let node = an_open_node(&pool).await;
+    let (own, _) = an_access(&pool, &mine, &node).await;
+    let (other, _) = an_access(&pool, &theirs, &node).await;
+
+    // A day of its own: the sum for today grows with every other test.
+    let day = Date::from_calendar_date(2001, time::Month::January, 1).unwrap();
+    for (access, bytes_in, bytes_out) in [(&own, 10, 20), (&other, 100, 200)] {
+        assert!(
+            TrafficRepo::apply_delta(
+                &pool,
+                Uuid::now_v7(),
+                access.common().id(),
+                day,
+                bytes_in,
+                bytes_out,
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .await
+            .unwrap()
+        );
+    }
+
+    let scoped = TrafficRepo::daily(&pool, day, Some(owner.id()))
+        .await
+        .unwrap();
+    assert_eq!(scoped.len(), 1, "{scoped:?}");
+    assert_eq!(
+        (scoped[0].day, scoped[0].bytes_in, scoped[0].bytes_out),
+        (day, 10, 20)
+    );
+
+    let everyone = TrafficRepo::daily(&pool, day, None).await.unwrap();
+    let that_day = everyone.iter().find(|point| point.day == day).unwrap();
+    assert!(that_day.bytes_in >= 110 && that_day.bytes_out >= 220);
+
+    let later = TrafficRepo::daily(&pool, day + time::Duration::days(1), Some(owner.id()))
+        .await
+        .unwrap();
+    assert!(later.is_empty(), "{later:?}");
+}
