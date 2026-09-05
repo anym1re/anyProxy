@@ -79,7 +79,7 @@ handler_without_actor() {
     # session begins, and four are the interface itself and its words — a
     # page and a catalogue hold no data (0058). Adding another should be
     # somebody's decision rather than an omission nobody sees.
-    local open_on_purpose="health|ready|sign_in|interface|interface_style|interface_script|interface_text"
+    local open_on_purpose="health|ready|sign_in|setup_state|set_up|interface|interface_style|interface_script|interface_text"
     local handler
 
     for handler in $(grep -oE "(get|post|delete|put|patch)\([a-z_]+\)" "$path"         | sed -E "s/^[a-z]+\(//; s/\)$//" | sort -u); do

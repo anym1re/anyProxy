@@ -119,30 +119,22 @@ fn start_panel() -> Option<Panel> {
     let login = unique("a");
     let password = "correct horse battery staple";
 
-    // The first administrator is made by the panel binary, which is how an
-    // operator makes one on a machine that has just been installed.
-    let mut made = Command::new(binary("anyproxy-panel"))
-        .args(["add-admin", &login])
-        .env("DATABASE_URL", &url)
-        .env("ANYPROXY_KEY_FILE", key_file())
-        .env("ANYPROXY_PANEL_BIND", &address)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    // An administrator to sign in as. The panel makes its own on first
+    // sight (0062), but this database has been set up by whatever ran
+    // before, so one is made through the library the panel itself uses.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
         .unwrap();
-    made.stdin
-        .as_mut()
-        .unwrap()
-        .write_all(password.as_bytes())
-        .unwrap();
-    let made = made.wait_with_output().unwrap();
-    assert!(
-        made.status.success(),
-        "the administrator was not created: {}",
-        String::from_utf8_lossy(&made.stderr)
-    );
-    let secret = String::from_utf8_lossy(&made.stdout).trim().to_owned();
+    let secret = runtime
+        .block_on(async {
+            let state =
+                ap_panel::AppState::build(&ap_panel::Config::loopback(0, url.clone(), key_file()))
+                    .await?;
+            ap_panel::create_admin(&state, &login, password, ap_core::Role::Superadmin, true).await
+        })
+        .expect("the administrator was not created")
+        .expect("a second factor was asked for");
 
     let process = Command::new(binary("anyproxy-panel"))
         .env("DATABASE_URL", &url)

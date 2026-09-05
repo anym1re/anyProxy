@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Turns a fresh machine into the panel.
 #
-#     scripts/install-panel.sh [--version <tag>] [--admin <login>]
+#     scripts/install-panel.sh [--version <tag>]
 #
 # The panel holds every client, every access and every secret. It listens on
 # loopback and is reached over WireGuard, an mTLS front or an onion service,
 # never by being published; only the agent channel faces the nodes. This sets
-# up the database, the encryption key, the service, and one administrator.
+# up the database, the encryption key and the service.
+#
+# It creates no administrator: the panel asks for one on its own screen the
+# first time it is opened, and takes no commands (0062).
 #
 # What the panel runs is checked before it runs: the binary against the release
 # signature, the same way a node checks its agent.
@@ -22,12 +25,10 @@ db_role="anyproxy"
 db_name="anyproxy_live"
 
 version=""
-admin_login="operator"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --version) version="$2";     shift 2 ;;
-        --admin)   admin_login="$2"; shift 2 ;;
+        --version) version="$2"; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -196,25 +197,8 @@ until su - postgres -c "psql -tAc \"select 1 from pg_database where datname='${d
 done
 echo "the panel is up"
 
-# ── one administrator ────────────────────────────────────────────────────
-
-# Skipped if one already exists: this is setup, not a way to add operators, and
-# a second run must not mint a fresh superadmin every time.
-if su - postgres -c "psql -tAc 'select count(*) from admin_user'" "${db_name}" | grep -q '^0$'; then
-    password="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 20)"
-    echo
-    echo "creating administrator '${admin_login}'. The password is shown once:"
-    echo "    ${password}"
-    echo
-    printf '%s\n' "${password}" | sudo -u "${service_user}" \
-        env DATABASE_URL="$(sed -n 's/^DATABASE_URL=//p' "${env_file}")" \
-            ANYPROXY_KEY_FILE="${key_file}" \
-        "${prefix}/anyproxy-panel" add-admin "${admin_login}" --role superadmin
-    echo
-    echo "the second-factor secret above is shown once too; enrol it now"
-else
-    echo "an administrator already exists; none was created"
-fi
-
 echo
 echo "the panel is installed. Reach it over a tunnel; it listens on loopback."
+if su - postgres -c "psql -tAc 'select count(*) from admin_user'" "${db_name}" | grep -q '^0$'; then
+    echo "open it and make your account; the first one to open it becomes the owner"
+fi

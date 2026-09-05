@@ -35,6 +35,38 @@ impl AdminRepo {
         Ok(())
     }
 
+    /// Registers the first administrator, and only while there is none.
+    ///
+    /// The condition travels with the insert, so two requests arriving
+    /// together cannot both make an owner: the second finds a row already
+    /// there and inserts nothing. A read followed by a write would let both
+    /// through.
+    ///
+    /// Returns whether this call was the one that created it.
+    pub async fn insert_first(pool: &PgPool, admin: &AdminUser) -> Result<bool, StoreError> {
+        let done = sqlx::query(
+            "insert into admin_user (id, login, password_hash, totp_nonce, totp_ciphertext, \
+             role, state, created_at) \
+             select $1, $2, $3, $4, $5, $6, $7, $8 \
+             where not exists (select 1 from admin_user)",
+        )
+        .bind(admin.id())
+        .bind(admin.login().as_str())
+        .bind(admin.password_hash())
+        .bind(admin.totp_secret().map(|secret| secret.nonce().to_vec()))
+        .bind(
+            admin
+                .totp_secret()
+                .map(|secret| secret.ciphertext().to_vec()),
+        )
+        .bind(admin.role().as_stored())
+        .bind(admin.state().as_stored())
+        .bind(admin.created_at())
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() == 1)
+    }
+
     /// Finds an administrator by the name they sign in with.
     pub async fn by_login(
         pool: &PgPool,

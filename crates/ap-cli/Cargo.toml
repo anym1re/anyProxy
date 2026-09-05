@@ -23,7 +23,11 @@ tokio = { workspace = true, features = ["io-util", "net"] }
 uuid.workspace = true
 
 [dev-dependencies]
+# The panel is the only way to make an administrator now that its binary
+# takes no commands (0062), and these tests need one to sign in with.
+ap-panel = { path = "../ap-panel" }
 serde_json.workspace = true
+tokio = { workspace = true, features = ["rt"] }
 totp-rs.workspace = true
 
 [lints]

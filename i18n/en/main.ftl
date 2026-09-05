@@ -79,6 +79,9 @@ api-node-without-domain = a stealth node requires a domain
 api-access-not-on-this-node = that access belongs to another node
 api-host-required = a connection link needs a host
 api-already-enrolled = that node has already enrolled
+api-password-too-short = the password is too short
+api-value-refused = the panel would not take that value
+api-already-set-up = this panel already has an owner
 api-unknown = the panel refused the request ({ $code })
 
 cli-signed-in = signed in as { $login }
@@ -130,6 +133,9 @@ ui-unit-mb = MB
 ui-unit-gb = GB
 ui-unit-tb = TB
 
+ui-setup-title = Your account
+ui-setup-second-factor = Second factor
+ui-setup-secret = Secret for the app
 ui-login-title = Sign in
 ui-login-login = Login
 ui-login-password = Password

@@ -708,3 +708,58 @@ async fn an_account_without_a_second_factor_is_entered_with_a_password() {
     .await;
     assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn a_panel_that_has_an_owner_cannot_be_set_up_again() {
+    let panel = panel!();
+    // The helper leaves an administrator behind, so from here on the panel
+    // is owned however it started.
+    let (_, _token) = admin(&panel, Role::Superadmin).await;
+
+    let asked = call(&panel.router, "GET", "/v1/setup", None, None).await;
+    assert_eq!(asked.status, StatusCode::OK, "{}", asked.body);
+    assert_eq!(asked.json()["needed"], false, "{}", asked.body);
+
+    let again = call(
+        &panel.router,
+        "POST",
+        "/v1/setup",
+        None,
+        Some(serde_json::json!({ "login": unique("a"), "password": "a long enough password" })),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+    assert_eq!(again.json()["error"]["code"], "already_set_up");
+
+    // Refused every time, not merely the first. Whether a row was written on
+    // the way to being refused is the store's own test.
+    let once_more = call(
+        &panel.router,
+        "POST",
+        "/v1/setup",
+        None,
+        Some(serde_json::json!({ "login": unique("a"), "password": "a long enough password" })),
+    )
+    .await;
+    assert_eq!(once_more.status, StatusCode::CONFLICT, "{}", once_more.body);
+}
+
+#[tokio::test]
+async fn a_short_password_is_not_taken_for_the_owner() {
+    let panel = panel!();
+    let refused = call(
+        &panel.router,
+        "POST",
+        "/v1/setup",
+        None,
+        Some(serde_json::json!({ "login": unique("a"), "password": "short" })),
+    )
+    .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        refused.body
+    );
+    assert_eq!(refused.json()["error"]["code"], "password_too_short");
+}

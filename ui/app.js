@@ -19,6 +19,8 @@
     range: Number(recall('localStorage', 'ap-range')) || 30,
     messages: {},
     me: null,
+    setupNeeded: false,
+    lastLogin: '',
     timer: null,
     nodeFilter: 'all',
   };
@@ -337,8 +339,62 @@
 
   // ── sign in ─────────────────────────────────────────────────────────────
 
+  // Shown while the panel has no owner: whoever opens it first makes the
+  // account, on this screen and nowhere else (0062).
+  function setupView() {
+    const login = h('input', { type: 'text', autocomplete: 'username', required: true, autofocus: true, pattern: '[a-z0-9_-]{1,32}', spellcheck: false });
+    const password = h('input', { type: 'password', autocomplete: 'new-password', required: true, minlength: '12' });
+    const second = h('input', { type: 'checkbox', checked: true });
+    const err = errorLine();
+    const submit = h('button', { type: 'submit', class: 'btn primary' }, t('ui-create'));
+    const form = h('form', { class: 'card-b', on: { submit: async (event) => {
+      event.preventDefault();
+      submit.disabled = true;
+      err.textContent = '';
+      try {
+        const made = await api('POST', '/v1/setup', {
+          login: login.value.trim(), password: password.value, second_factor: second.checked,
+        });
+        state.setupNeeded = false;
+        state.lastLogin = made.login;
+        if (made.secret) showSecret(made.secret);
+        else route();
+      } catch (error) {
+        err.textContent = error.message;
+        submit.disabled = false;
+      }
+    } } },
+      brandLine(),
+      h('h2', null, t('ui-setup-title')),
+      field(t('ui-login-login'), login),
+      field(t('ui-login-password'), password),
+      field(t('ui-setup-second-factor'), second, 'row'),
+      err,
+      submit,
+    );
+    return h('div', { class: 'content' }, h('section', { class: 'card login' }, form));
+  }
+
+  // The secret is shown here and nowhere else: it is sealed on its way to
+  // the database and cannot be read back.
+  function showSecret(secret) {
+    $('#main').replaceChildren(h('div', { class: 'content' }, h('section', { class: 'card login' },
+      h('div', { class: 'card-b' },
+        brandLine(),
+        h('h2', null, t('ui-setup-secret')),
+        h('p', { class: 'warn' }, t('ui-enrol-once')),
+        codeLine(secret),
+        h('button', { type: 'button', class: 'btn primary', on: { click: () => route() } }, t('ui-login-submit'))))));
+  }
+
+  function brandLine() {
+    return h('div', { class: 'brand' },
+      h('span', { class: 'mono', style: 'color:var(--key)' }, '◆'),
+      h('b', null, t('ui-title')));
+  }
+
   function loginView() {
-    const login = h('input', { type: 'text', autocomplete: 'username', required: true, autofocus: true });
+    const login = h('input', { type: 'text', autocomplete: 'username', required: true, autofocus: true, value: state.lastLogin });
     const password = h('input', { type: 'password', autocomplete: 'current-password', required: true });
     // Not required: an account may carry no second factor (0060).
     const totp = h('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9]{6}', maxlength: '6' });
@@ -363,9 +419,7 @@
         submit.disabled = false;
       }
     } } },
-      h('div', { class: 'brand' },
-        h('span', { class: 'mono', style: 'color:var(--key)' }, '◆'),
-        h('b', null, t('ui-title'))),
+      brandLine(),
       h('h2', null, t('ui-login-title')),
       field(t('ui-login-login'), login),
       field(t('ui-login-password'), password),
@@ -373,7 +427,7 @@
       err,
       submit,
     );
-    return h('div', { class: 'content', style: 'display:flex' }, h('section', { class: 'card login' }, form));
+    return h('div', { class: 'content' }, h('section', { class: 'card login' }, form));
   }
 
   // ── dashboard ───────────────────────────────────────────────────────────
@@ -879,7 +933,7 @@
     clearInterval(state.timer);
     const main = $('#main');
     if (!state.me) {
-      main.replaceChildren(loginView());
+      main.replaceChildren(state.setupNeeded ? setupView() : loginView());
       return;
     }
     let name = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/')[0];
@@ -923,6 +977,11 @@
     window.addEventListener('hashchange', route);
     if (state.token) {
       try { state.me = await api('GET', '/v1/session'); } catch { state.me = null; }
+    }
+    if (!state.me) {
+      // A panel nobody owns yet asks to be owned; one that is taken says so,
+      // and an answer that never came is treated as taken.
+      try { state.setupNeeded = (await api('GET', '/v1/setup')).needed === true; } catch { state.setupNeeded = false; }
     }
     showRail();
     route();

@@ -124,18 +124,24 @@ pub async fn serve(config: Config) -> Result<(), String> {
         .map_err(|error| format!("serve: {error}"))
 }
 
-/// Registers an administrator, with or without a second factor (0060).
-///
-/// The secret is generated here rather than accepted from the caller, and
-/// returned once: it is sealed on the way to the database and cannot be read
-/// back. An account created without one is entered with a password alone.
-pub async fn create_admin(
+/// What became of an attempt to set the panel up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FirstAdmin {
+    /// The account was created; the second-factor secret, if it has one, is
+    /// here and nowhere else.
+    Created(Option<String>),
+    /// Somebody already owns this panel.
+    AlreadySetUp,
+}
+
+/// Assembles an administrator and the secret to be shown once.
+fn build_admin(
     state: &AppState,
     login: &str,
     password: &str,
     role: ap_core::Role,
     second_factor: bool,
-) -> Result<Option<String>, String> {
+) -> Result<(ap_core::AdminUser, Option<String>), String> {
     use ap_core::{AdminLogin, AdminUser, Encrypted};
 
     let login = AdminLogin::try_from(login).map_err(|error| error.to_string())?;
@@ -149,8 +155,52 @@ pub async fn create_admin(
     };
     let admin = AdminUser::new(login, hash, sealed, role, time::OffsetDateTime::now_utc())
         .map_err(|error| error.to_string())?;
+    Ok((admin, secret))
+}
+
+/// Registers an administrator, with or without a second factor (0060).
+///
+/// The secret is generated here rather than accepted from the caller, and
+/// returned once: it is sealed on the way to the database and cannot be read
+/// back. An account created without one is entered with a password alone.
+pub async fn create_admin(
+    state: &AppState,
+    login: &str,
+    password: &str,
+    role: ap_core::Role,
+    second_factor: bool,
+) -> Result<Option<String>, String> {
+    let (admin, secret) = build_admin(state, login, password, role, second_factor)?;
     ap_store::AdminRepo::insert(state.pool(), &admin)
         .await
         .map_err(|error| error.to_string())?;
     Ok(secret)
+}
+
+/// Registers the administrator the panel is first opened by (0062).
+///
+/// Succeeds only while the panel has none. There is no command and no other
+/// door: whoever reaches the panel before anyone else has been set up becomes
+/// its owner, and everyone after that is told it is taken.
+pub async fn set_up(
+    state: &AppState,
+    login: &str,
+    password: &str,
+    second_factor: bool,
+) -> Result<FirstAdmin, String> {
+    let (admin, secret) = build_admin(
+        state,
+        login,
+        password,
+        ap_core::Role::Superadmin,
+        second_factor,
+    )?;
+    let created = ap_store::AdminRepo::insert_first(state.pool(), &admin)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(if created {
+        FirstAdmin::Created(secret)
+    } else {
+        FirstAdmin::AlreadySetUp
+    })
 }

@@ -23,10 +23,18 @@ use crate::{Actor, ApiError, AppState};
 /// How long a session lives.
 const SESSION_HOURS: i64 = 12;
 
+/// Shortest password the panel will accept for its own owner.
+///
+/// A length and nothing else: rules about characters push people towards one
+/// remembered word with a digit stuck on it, and the panel cannot tell a
+/// passphrase from a pattern anyway.
+const MINIMUM_PASSWORD: usize = 12;
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/ready", get(ready))
+        .route("/v1/setup", get(setup_state).post(set_up))
         .route("/v1/session", post(sign_in).get(whoami))
         .route("/v1/session", delete(sign_out))
         .route("/v1/clients", get(list_clients).post(create_client))
@@ -87,6 +95,54 @@ struct SignIn {
     /// Absent and empty say the same thing: none was given (0060).
     #[serde(default)]
     totp: String,
+}
+
+// ── the first administrator ──────────────────────────────────────────────
+
+/// Whether the panel is still waiting to be set up.
+///
+/// Open, like the page that asks it: it says only whether an owner exists,
+/// and whoever can reach this port could try to become one anyway (0062).
+async fn setup_state(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let taken = ap_store::AdminRepo::count(state.pool()).await? > 0;
+    Ok(Json(serde_json::json!({ "needed": !taken })))
+}
+
+#[derive(Deserialize)]
+struct SetUp {
+    login: String,
+    password: String,
+    /// Whether the account carries a second factor. Default yes: the panel
+    /// holds every secret in the system, and saying no should be a choice
+    /// rather than an omission (0060).
+    #[serde(default = "yes")]
+    second_factor: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Creates the administrator the panel is first opened by.
+async fn set_up(
+    State(state): State<AppState>,
+    Json(body): Json<SetUp>,
+) -> Result<Response, ApiError> {
+    if body.password.len() < MINIMUM_PASSWORD {
+        return Err(ApiError::Unprocessable("password_too_short"));
+    }
+    match crate::set_up(&state, &body.login, &body.password, body.second_factor)
+        .await
+        .map_err(|_| ApiError::Unprocessable("value_refused"))?
+    {
+        crate::FirstAdmin::Created(secret) => Ok((
+            StatusCode::CREATED,
+            [("cache-control", "no-store")],
+            Json(serde_json::json!({ "login": body.login, "secret": secret })),
+        )
+            .into_response()),
+        crate::FirstAdmin::AlreadySetUp => Err(ApiError::Conflict("already_set_up")),
+    }
 }
 
 /// Signs an administrator in.

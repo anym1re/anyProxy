@@ -277,6 +277,7 @@ input::placeholder { color: var(--ink-3); }
 .legend b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
 
 /* login */
+.content:has(> .login) { justify-content: center; align-items: center; }
 .login { margin: auto; width: min(380px, calc(100vw - 32px)); }
 .login .card-b { gap: 14px; padding: 22px 24px 24px; }
 .login h2 { margin: 0; font-size: 18px; letter-spacing: -0.02em; }

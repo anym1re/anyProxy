@@ -652,3 +652,42 @@ async fn a_day_series_is_scoped_to_an_owner_when_asked() {
         .unwrap();
     assert!(later.is_empty(), "{later:?}");
 }
+
+#[tokio::test]
+async fn only_the_first_administrator_is_let_in_that_way() {
+    let pool = db!();
+    let an_admin = |login: String| {
+        ap_core::AdminUser::new(
+            ap_core::AdminLogin::try_from(login.as_str()).unwrap(),
+            "hash".to_owned(),
+            None,
+            ap_core::Role::Superadmin,
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .unwrap()
+    };
+
+    // Whether this database is empty is not this test's to decide: other
+    // tests share it. What holds either way is that once one exists, the
+    // door is shut.
+    let first = an_admin(unique("a"));
+    let _ = ap_store::AdminRepo::insert_first(&pool, &first)
+        .await
+        .unwrap();
+    assert!(ap_store::AdminRepo::count(&pool).await.unwrap() > 0);
+
+    let second = an_admin(unique("a"));
+    assert!(
+        !ap_store::AdminRepo::insert_first(&pool, &second)
+            .await
+            .unwrap(),
+        "a second owner was let in"
+    );
+    assert!(
+        ap_store::AdminRepo::by_login(&pool, second.login())
+            .await
+            .unwrap()
+            .is_none(),
+        "the row was written after all"
+    );
+}

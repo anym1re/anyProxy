@@ -80,6 +80,9 @@ api-node-without-domain = скрытной ноде нужен домен
 api-access-not-on-this-node = этот доступ принадлежит другой ноде
 api-host-required = для ссылки нужен адрес
 api-already-enrolled = эта нода уже зарегистрирована
+api-password-too-short = пароль слишком короткий
+api-value-refused = панель не приняла значение
+api-already-set-up = у панели уже есть хозяин
 api-unknown = панель отклонила запрос ({ $code })
 
 cli-signed-in = вход выполнен: { $login }
@@ -131,6 +134,9 @@ ui-unit-mb = МБ
 ui-unit-gb = ГБ
 ui-unit-tb = ТБ
 
+ui-setup-title = Учётная запись
+ui-setup-second-factor = Второй фактор
+ui-setup-secret = Секрет для приложения
 ui-login-title = Вход
 ui-login-login = Логин
 ui-login-password = Пароль
