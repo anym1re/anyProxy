@@ -157,6 +157,7 @@ mod tests {
                     reach: "open".to_owned(),
                     cert_not_after: None,
                 },
+                machine: None,
             }),
             Message::Ack(Ack {
                 revision: Uuid::now_v7(),

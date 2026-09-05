@@ -115,6 +115,9 @@ impl Meter {
             deltas,
             devices,
             health,
+            // Filled in by whoever sends it: the machine is read at that
+            // moment, and a repeated delivery carries a fresh reading.
+            machine: None,
         };
         self.outstanding = Some(telemetry.clone());
         Some(telemetry)
@@ -136,6 +139,7 @@ impl Meter {
             deltas: Vec::new(),
             devices: Vec::new(),
             health,
+            machine: None,
         })
     }
 

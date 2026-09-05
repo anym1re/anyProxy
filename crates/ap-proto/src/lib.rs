@@ -13,6 +13,6 @@ pub use error::ProtoError;
 pub use frame::{HEADER_LEN, MAX_PAYLOAD, decode, encode};
 pub use message::{
     Ack, Applied, Command, CommandResult, Config, DeviceCount, Enroll, Enrolled, Health, Hello,
-    Listener, Message, NodeShape, PROTOCOL_VERSION, Policy, Refusal, Telemetry, TrafficDelta,
-    Welcome, WireAccess, WireCredential,
+    Listener, MachineReport, Message, NodeShape, PROTOCOL_VERSION, Policy, Refusal, Telemetry,
+    TrafficDelta, Welcome, WireAccess, WireCredential,
 };

@@ -5,7 +5,7 @@ use ap_agent::identity::Paths;
 use ap_agent::meter::Meter;
 use ap_agent::posture::{Posture, Silent};
 use ap_agent::through::Through;
-use ap_agent::{AgentError, backoff, engine, identity, link, say, session};
+use ap_agent::{AgentError, backoff, engine, host, identity, link, say, session};
 use ap_engine::control::Control;
 use ap_engine::health::{self, Reach, Site};
 use ap_inbound::{Method, Registry};
@@ -135,15 +135,18 @@ async fn serve(paths: &Paths, panel: &str, through: Option<&Through>) -> Result<
     let mut applied_revision = None;
     let mut attempt = 0u32;
     let mut meter = Meter::new();
+    let mut relaunch = engine::Relaunch::new();
 
     loop {
         if let Some(child) = engine_process.as_mut()
             && matches!(child.try_wait(), Ok(Some(_)))
         {
-            // It stopped on its own. The next configuration starts it again;
-            // until then the cover site is what answers.
+            // It stopped on its own. It is started again once the panel is
+            // back, after the wait its stopping earned; until then the cover
+            // site is what answers.
             eprintln!("the engine stopped");
             engine_process = None;
+            relaunch.stopped(std::time::Instant::now());
         }
 
         match once(
@@ -157,6 +160,7 @@ async fn serve(paths: &Paths, panel: &str, through: Option<&Through>) -> Result<
             &mut meter,
             &settings,
             &mut engine_process,
+            &mut relaunch,
             &inbound,
             &mut inbound_open,
             &mut cover_open,
@@ -190,6 +194,7 @@ async fn once(
     meter: &mut Meter,
     settings: &ap_engine::config::Settings,
     engine_process: &mut Option<std::process::Child>,
+    relaunch: &mut engine::Relaunch,
     inbound: &std::sync::Arc<Registry>,
     inbound_open: &mut bool,
     cover_open: &mut bool,
@@ -219,13 +224,18 @@ async fn once(
             // An open node serves logins and never runs the engine. Starting
             // it to watch it refuse the configuration would be a failure
             // reported every minute for something nobody asked for.
-            None if needs_engine(running) => match engine::start(paths, settings, running) {
-                Ok(child) => *engine_process = Some(child),
-                Err(reason) => eprintln!("the engine did not start: {reason}"),
-            },
+            None if needs_engine(running) => {
+                start_engine(paths, settings, running, engine_process, relaunch);
+            }
             None => {}
         }
     }
+
+    // What the machine was short of when last looked at, and what the probes
+    // last found. Both are kept so that under pressure the node can say what
+    // it knew rather than spend on finding out again.
+    let mut last_pressure = host::Pressure::Calm;
+    let mut last_probe: Option<(Site, Reach)> = None;
 
     // Whichever comes first: the panel says something, or it is time to read
     // the counters again.
@@ -266,10 +276,45 @@ async fn once(
                 if before != state.posture.is_serving() {
                     report(&state.posture);
                 }
+
+                // The engine may have died while the panel was still on the
+                // line. It is looked at here, on every beat, and started
+                // again after the wait its stopping earned.
+                let instant = std::time::Instant::now();
+                if let Some(child) = engine_process.as_mut()
+                    && matches!(child.try_wait(), Ok(Some(_)))
+                {
+                    eprintln!("the engine stopped");
+                    *engine_process = None;
+                    relaunch.stopped(instant);
+                }
+                if engine_process.is_none()
+                    && let Posture::Serving(running) = &state.posture
+                    && needs_engine(running)
+                    && relaunch.due(instant)
+                {
+                    start_engine(paths, settings, running, engine_process, relaunch);
+                }
+
+                // The machine, read before anything is spent on probes: what
+                // it is short of decides whether they run at all.
+                let machine = host::observe(engine_process.as_ref().map(std::process::Child::id));
+                let pressure = machine
+                    .as_ref()
+                    .map(host::Reading::pressure)
+                    .unwrap_or(host::Pressure::Calm);
+                if pressure != last_pressure {
+                    eprintln!("the machine is {}", pressure.as_reported());
+                    last_pressure = pressure;
+                }
+
                 measure(control, metrics_port, meter, inbound, now).await;
-                let health = state_of_health(control, &state.posture).await;
+                let health =
+                    state_of_health(control, &state.posture, pressure, &mut last_probe).await;
+                let machine = machine.as_ref().map(host::Reading::report);
                 match meter.delivery(health.clone(), now) {
-                    Some(delivery) => {
+                    Some(mut delivery) => {
+                        delivery.machine = machine;
                         // A node that reports nothing and one that reports
                         // zeroes look the same from the panel, and the
                         // difference is where a fault lives. Counting is per
@@ -286,12 +331,37 @@ async fn once(
                     // a node sends and never speaks first, so a silent node is
                     // one that cannot be told its accesses have changed.
                     None => {
-                        if let Some(beat) = meter.heartbeat(health, now) {
+                        if let Some(mut beat) = meter.heartbeat(health, now) {
+                            beat.machine = machine;
                             session::deliver(&mut channel, meter, beat).await?;
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/// Starts the engine and records how that went.
+///
+/// A start that does not take is counted like a stop, so a binary that is
+/// missing or refuses to run is retried at the same lengthening intervals
+/// as one that dies after starting, rather than on every beat.
+fn start_engine(
+    paths: &Paths,
+    settings: &ap_engine::config::Settings,
+    running: &ap_proto::Config,
+    engine_process: &mut Option<std::process::Child>,
+    relaunch: &mut engine::Relaunch,
+) {
+    match engine::start(paths, settings, running) {
+        Ok(child) => {
+            *engine_process = Some(child);
+            relaunch.started();
+        }
+        Err(reason) => {
+            eprintln!("the engine did not start: {reason}");
+            relaunch.failed(std::time::Instant::now());
         }
     }
 }
@@ -420,21 +490,39 @@ fn fresh_salt() -> [u8; 32] {
 }
 
 /// What the node says about itself.
-async fn state_of_health(control: &Control, posture: &Posture) -> ap_proto::Health {
-    // The site is asked of the front door, the way a visitor asks, and only on
-    // a node that shows one. A node with no site to show has none to be down,
-    // and saying "unknown" there is the truth rather than a shrug.
-    let site = match site_of(posture) {
-        Some(domain) => ap_agent::probe::site(&domain).await,
-        None => Site::Unknown,
-    };
-
-    // Asked of every node, whatever it serves. A node carrying SOCKS5 or HTTP
-    // is carrying Telegram through them, so the path out matters there too.
-    let reach = if ap_agent::probe::reaches_telegram().await {
-        Reach::Open
+///
+/// The probes open connections and hold file descriptors, which are exactly
+/// what a machine under pressure is short of. So they run only while the
+/// machine is calm; otherwise the node repeats what it last found, and a node
+/// that has never found anything says it was not asked.
+async fn state_of_health(
+    control: &Control,
+    posture: &Posture,
+    pressure: host::Pressure,
+    last_probe: &mut Option<(Site, Reach)>,
+) -> ap_proto::Health {
+    let (site, reach) = if pressure.eases_off() {
+        last_probe.unwrap_or((Site::Unknown, Reach::Unknown))
     } else {
-        Reach::Blocked
+        // The site is asked of the front door, the way a visitor asks, and
+        // only on a node that shows one. A node with no site to show has none
+        // to be down, and saying "unknown" there is the truth rather than a
+        // shrug.
+        let site = match site_of(posture) {
+            Some(domain) => ap_agent::probe::site(&domain).await,
+            None => Site::Unknown,
+        };
+
+        // Asked of every node, whatever it serves. A node carrying SOCKS5 or
+        // HTTP is carrying Telegram through them, so the path out matters
+        // there too.
+        let reach = if ap_agent::probe::reaches_telegram().await {
+            Reach::Open
+        } else {
+            Reach::Blocked
+        };
+        *last_probe = Some((site, reach));
+        (site, reach)
     };
 
     health::report(control, site, reach, None)

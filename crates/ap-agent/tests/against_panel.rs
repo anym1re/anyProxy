@@ -654,6 +654,7 @@ async fn a_node_refused_by_the_panel_is_told_why() {
             reach: "open".to_owned(),
             cert_not_after: None,
         },
+        machine: None,
     };
 
     let mut meter = Meter::new();

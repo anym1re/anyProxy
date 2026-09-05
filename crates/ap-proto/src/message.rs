@@ -247,6 +247,33 @@ fn unknown() -> String {
     "unknown".to_owned()
 }
 
+/// What the machine under the node is short of, as the node found it.
+///
+/// Read from the cgroup the node runs in, so the limits are the ones the
+/// installer set. The stall figures are the kernel's own: the share of the
+/// last ten seconds that tasks spent waiting for memory or for a processor.
+/// That is what pressure is; how much of either is in use is not.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MachineReport {
+    /// Processors the node may run on.
+    pub cpus: u32,
+    /// Memory the node's cgroup is using, in megabytes.
+    pub memory_used_mb: u64,
+    /// Memory it is allowed before being throttled, in megabytes, when there
+    /// is such a limit.
+    pub memory_limit_mb: Option<u64>,
+    /// Share of the last ten seconds spent waiting for memory, in percent.
+    pub memory_stall: f64,
+    /// Share of the last ten seconds spent waiting for a processor, in percent.
+    pub cpu_stall: f64,
+    /// Files the engine has open, when there is an engine.
+    pub open_files: Option<u64>,
+    /// Files the engine may have open.
+    pub file_limit: Option<u64>,
+    /// One of calm, strained, critical.
+    pub pressure: String,
+}
+
 /// Agent reports traffic, device counts and health.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Telemetry {
@@ -263,6 +290,12 @@ pub struct Telemetry {
     pub devices: Vec<DeviceCount>,
     /// State of the node.
     pub health: Health,
+    /// State of the machine under it.
+    ///
+    /// Absent from an agent that does not look, and ignored by a panel that
+    /// does not know to: either side may be the older one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<MachineReport>,
 }
 
 /// Panel confirms a delivery of telemetry.

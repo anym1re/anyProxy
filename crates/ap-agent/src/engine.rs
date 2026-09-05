@@ -150,6 +150,110 @@ fn fresh_token() -> String {
     hex::encode(bytes)
 }
 
+/// When the engine is started again after it stopped on its own.
+///
+/// Noticed while the panel is still on the line, and not only between
+/// connections: an engine that died under a long quiet channel stayed dead
+/// until the channel broke, which on a good day is never.
+///
+/// The wait doubles like the panel's own does, and for the same reason: an
+/// engine that dies on the spot every time is not helped by being started
+/// faster, and the site behind it keeps answering meanwhile.
+#[derive(Debug, Default)]
+pub struct Relaunch {
+    attempt: u32,
+    not_before: Option<std::time::Instant>,
+}
+
+impl Relaunch {
+    /// Ready to start at once.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The engine was found stopped. The next start waits its turn.
+    pub fn stopped(&mut self, now: std::time::Instant) {
+        self.not_before = Some(now + crate::backoff::base(self.attempt));
+        self.attempt = self.attempt.saturating_add(1);
+    }
+
+    /// A start that did not take counts as a stop.
+    pub fn failed(&mut self, now: std::time::Instant) {
+        self.stopped(now);
+    }
+
+    /// Whether it is time to try.
+    pub fn due(&self, now: std::time::Instant) -> bool {
+        self.not_before.is_none_or(|then| now >= then)
+    }
+
+    /// The engine is up; the count starts over.
+    pub fn started(&mut self) {
+        self.attempt = 0;
+        self.not_before = None;
+    }
+}
+
+#[cfg(test)]
+mod relaunch_tests {
+    use std::time::{Duration, Instant};
+
+    use super::Relaunch;
+
+    #[test]
+    fn a_fresh_relaunch_is_due_at_once() {
+        assert!(Relaunch::new().due(Instant::now()));
+    }
+
+    #[test]
+    fn a_stop_waits_a_second_and_then_is_due() {
+        let now = Instant::now();
+        let mut relaunch = Relaunch::new();
+        relaunch.stopped(now);
+        assert!(!relaunch.due(now));
+        assert!(!relaunch.due(now + Duration::from_millis(999)));
+        assert!(relaunch.due(now + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn repeated_stops_wait_longer_and_stop_growing_at_a_minute() {
+        let now = Instant::now();
+        let mut relaunch = Relaunch::new();
+        for _ in 0..3 {
+            relaunch.stopped(now);
+        }
+        // 1, 2, 4: the third stop set a four-second wait.
+        assert!(!relaunch.due(now + Duration::from_secs(3)));
+        assert!(relaunch.due(now + Duration::from_secs(4)));
+        for _ in 0..20 {
+            relaunch.stopped(now);
+        }
+        assert!(!relaunch.due(now + Duration::from_secs(59)));
+        assert!(relaunch.due(now + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn a_start_that_took_resets_the_count() {
+        let now = Instant::now();
+        let mut relaunch = Relaunch::new();
+        relaunch.stopped(now);
+        relaunch.stopped(now);
+        relaunch.started();
+        assert!(relaunch.due(now));
+        relaunch.stopped(now);
+        assert!(relaunch.due(now + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn a_failed_start_counts_like_a_stop() {
+        let now = Instant::now();
+        let mut relaunch = Relaunch::new();
+        relaunch.failed(now);
+        assert!(!relaunch.due(now));
+        assert!(relaunch.due(now + Duration::from_secs(1)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -392,6 +392,7 @@ async fn telemetry_for_a_foreign_access_moves_nothing() {
             reach: "open".to_owned(),
             cert_not_after: None,
         },
+        machine: None,
     };
 
     // The delivery is taken, because the panel cannot tell an access that was
@@ -448,6 +449,7 @@ async fn a_repeated_delivery_moves_the_counter_once() {
             reach: "open".to_owned(),
             cert_not_after: None,
         },
+        machine: None,
     };
 
     ap_panel::channel::ingest_telemetry(&state, node.id(), &telemetry)
