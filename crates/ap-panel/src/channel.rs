@@ -499,6 +499,29 @@ async fn apply_telemetry(
     .await
     .map_err(ApiError::from)?;
 
+    // What it said about the machine under it, when it said anything and the
+    // word is one of the three. An unknown word is a report the panel does
+    // not understand, and half of one is worse than none.
+    if let Some(reported) = &telemetry.machine
+        && let Some(pressure) = ap_core::Pressure::from_stored(&reported.pressure)
+    {
+        let machine = ap_core::Machine {
+            pressure,
+            cpus: i32::try_from(reported.cpus).ok(),
+            memory_used_mb: i64::try_from(reported.memory_used_mb).ok(),
+            memory_limit_mb: reported
+                .memory_limit_mb
+                .and_then(|mb| i64::try_from(mb).ok()),
+            memory_stall: Some(reported.memory_stall as f32),
+            cpu_stall: Some(reported.cpu_stall as f32),
+            open_files: reported.open_files.and_then(|n| i64::try_from(n).ok()),
+            file_limit: reported.file_limit.and_then(|n| i64::try_from(n).ok()),
+        };
+        ap_store::PresenceRepo::machine(pool, node_id, &machine)
+            .await
+            .map_err(ApiError::from)?;
+    }
+
     for count in &telemetry.devices {
         // The same ownership check the traffic gets: a node may only report on
         // what it serves.

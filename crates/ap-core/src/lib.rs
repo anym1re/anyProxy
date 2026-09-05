@@ -28,5 +28,5 @@ pub use limits::{
 };
 pub use link::{has_link, mtproto_link, stealth_link};
 pub use name::{AdTag, AdminLogin, Color, Domain, Label, LinkName, Note, TagName};
-pub use node::{Node, NodeKind, NodeKindTag, NodeState, Served};
+pub use node::{Machine, Node, NodeHealth, NodeKind, NodeKindTag, NodeState, Pressure, Served};
 pub use tag::Tag;

@@ -869,11 +869,24 @@ async fn node(command: NodeCommand, context: Context) -> Outcome {
                 Format::Text => Ok(Rendered::Text(
                     rows.iter()
                         .map(|node| {
+                            // The three words of health and the machine's
+                            // word, after the state: a node reading "active"
+                            // with its path blocked is the one to look at.
+                            let word = |path: &str| {
+                                node.pointer(path)
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("-")
+                                    .to_owned()
+                            };
                             format!(
-                                "{} {} {}",
+                                "{} {} {} {} {} {} {}",
                                 text(node, "label"),
                                 text(node, "kind"),
-                                text(node, "state")
+                                text(node, "state"),
+                                word("/health/engine"),
+                                word("/health/site"),
+                                word("/health/reach"),
+                                word("/machine/pressure")
                             )
                         })
                         .collect(),

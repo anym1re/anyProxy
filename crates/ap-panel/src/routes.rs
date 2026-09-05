@@ -592,6 +592,33 @@ async fn create_tag(
 // ── nodes ────────────────────────────────────────────────────────────────
 
 fn node_json(node: &Node) -> Result<serde_json::Value, ApiError> {
+    // Everything the panel knows about the node goes out. The three words of
+    // health and the machine's word are what an operator looks at first; a
+    // listing that showed only the state was a listing that hid every node
+    // in trouble behind the word "active".
+    let health = node
+        .health()
+        .map(|health| -> Result<serde_json::Value, ApiError> {
+            Ok(serde_json::json!({
+                "engine": health.engine,
+                "site": health.site,
+                "reach": health.reach,
+                "cert_not_after": health.cert_not_after.map(format_rfc3339).transpose()?,
+            }))
+        })
+        .transpose()?;
+    let machine = node.machine().map(|machine| {
+        serde_json::json!({
+            "pressure": machine.pressure.as_stored(),
+            "cpus": machine.cpus,
+            "memory_used_mb": machine.memory_used_mb,
+            "memory_limit_mb": machine.memory_limit_mb,
+            "memory_stall": machine.memory_stall,
+            "cpu_stall": machine.cpu_stall,
+            "open_files": machine.open_files,
+            "file_limit": machine.file_limit,
+        })
+    });
     Ok(serde_json::json!({
         "id": node.id(),
         "label": node.label().as_str(),
@@ -599,7 +626,13 @@ fn node_json(node: &Node) -> Result<serde_json::Value, ApiError> {
         "masked": node.kind().tag().chosen().1,
         "ad_tag": node.ad_tag().map(AdTag::as_str),
         "domain": node.kind().domain().map(Domain::as_str),
+        "address": node.address().map(|address| address.to_string()),
         "state": node.state().as_stored(),
+        "agent_version": node.agent_version(),
+        "last_seen_at": node.last_seen_at().map(format_rfc3339).transpose()?,
+        "health": health,
+        "machine": machine,
+        "wants_attention": node.wants_attention(),
         "created_at": format_rfc3339(node.created_at())?,
     }))
 }

@@ -31,6 +31,14 @@ pub async fn serve(
         let Ok((stream, peer)) = listener.accept().await else {
             continue;
         };
+        // Accepted and closed at once while the machine is short: an accept
+        // that is never made leaves the client hanging in the backlog until
+        // its own timeout, and a close is what tells it to try elsewhere.
+        // Those already talking keep talking.
+        if registry.shedding() {
+            drop(stream);
+            continue;
+        }
         // Small writes are what this carries: a request head, then its body,
         // then an answer. Waiting for the previous one to be acknowledged
         // before sending the next adds a delayed acknowledgement to every
@@ -315,6 +323,31 @@ mod tests {
         });
 
         (inbound, target, registry)
+    }
+
+    #[tokio::test]
+    async fn while_shedding_a_new_client_is_closed_at_the_door() {
+        let access = an_access("socks5", "alice", "opens the door");
+        let (inbound, _target, registry) = a_node(Method::Socks5, access).await;
+        registry.set_shedding(true);
+
+        let mut client = TcpStream::connect(inbound).await.unwrap();
+        // The server would otherwise wait fifteen seconds for a greeting;
+        // an end of stream inside two is the door being closed.
+        let mut heard = [0u8; 8];
+        let read = tokio::time::timeout(Duration::from_secs(2), client.read(&mut heard))
+            .await
+            .expect("the connection was neither closed nor answered")
+            .unwrap_or(0);
+        assert_eq!(read, 0, "a shed client was answered");
+
+        // And the door opens again the moment the machine is calm.
+        registry.set_shedding(false);
+        let mut client = TcpStream::connect(inbound).await.unwrap();
+        client.write_all(&[0x05, 0x01, 0x02]).await.unwrap();
+        let mut answer = [0u8; 2];
+        client.read_exact(&mut answer).await.unwrap();
+        assert_eq!(answer, [0x05, 0x02]);
     }
 
     #[tokio::test]

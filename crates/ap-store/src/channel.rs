@@ -226,6 +226,37 @@ impl PresenceRepo {
         Ok(())
     }
 
+    /// Records what the node said about the machine under it.
+    ///
+    /// Written whole: the figures belong to the moment the word was chosen,
+    /// and a word from one reading beside numbers from another would say
+    /// something no node ever said.
+    pub async fn machine(
+        pool: &PgPool,
+        node_id: Uuid,
+        machine: &ap_core::Machine,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "update node set machine_pressure = $2, machine_cpus = $3, \
+             machine_memory_used_mb = $4, machine_memory_limit_mb = $5, \
+             machine_memory_stall = $6, machine_cpu_stall = $7, \
+             machine_open_files = $8, machine_file_limit = $9 \
+             where id = $1 and state <> 'burned'",
+        )
+        .bind(node_id)
+        .bind(machine.pressure.as_stored())
+        .bind(machine.cpus)
+        .bind(machine.memory_used_mb)
+        .bind(machine.memory_limit_mb)
+        .bind(machine.memory_stall)
+        .bind(machine.cpu_stall)
+        .bind(machine.open_files)
+        .bind(machine.file_limit)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
     /// Records how many devices used one access in a period.
     ///
     /// A count, applied once per delivery. What it was derived from stays in

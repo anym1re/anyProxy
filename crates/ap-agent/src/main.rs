@@ -307,6 +307,10 @@ async fn once(
                     eprintln!("the machine is {}", pressure.as_reported());
                     last_pressure = pressure;
                 }
+                // The node's own listeners turn the next client away while
+                // the machine is critical: it would fail after being paid
+                // for, and take the clients already served down with it.
+                inbound.set_shedding(matches!(pressure, host::Pressure::Critical));
 
                 measure(control, metrics_port, meter, inbound, now).await;
                 let health =

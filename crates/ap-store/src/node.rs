@@ -1,4 +1,6 @@
-use ap_core::{AdTag, Domain, Label, Node, NodeKind, NodeKindTag, NodeState};
+use ap_core::{
+    AdTag, Domain, Label, Machine, Node, NodeHealth, NodeKind, NodeKindTag, NodeState, Pressure,
+};
 use sqlx::{PgPool, Row};
 use std::net::IpAddr;
 use time::OffsetDateTime;
@@ -7,7 +9,11 @@ use uuid::Uuid;
 use crate::StoreError;
 
 const COLUMNS: &str = "id, label, kind, domain, address, agent_version, last_seen_at, \
-                       state, created_at, ad_tag";
+                       state, created_at, ad_tag, \
+                       health_engine, health_site, health_reach, cert_not_after, \
+                       machine_pressure, machine_cpus, machine_memory_used_mb, \
+                       machine_memory_limit_mb, machine_memory_stall, machine_cpu_stall, \
+                       machine_open_files, machine_file_limit";
 
 /// Reads and writes nodes.
 pub struct NodeRepo;
@@ -209,6 +215,37 @@ fn read_node(row: sqlx::postgres::PgRow) -> Result<Node, StoreError> {
     let address = row
         .try_get::<Option<String>, _>("address")?
         .and_then(|text| text.parse::<IpAddr>().ok());
+    // Health is there once the node has said anything at all; before that
+    // every word is null and there is no report to hand over.
+    let health = NodeHealth {
+        engine: row.try_get("health_engine")?,
+        site: row.try_get("health_site")?,
+        reach: row.try_get("health_reach")?,
+        cert_not_after: row.try_get::<Option<OffsetDateTime>, _>("cert_not_after")?,
+    };
+    let health = (health.engine.is_some() || health.site.is_some() || health.reach.is_some())
+        .then_some(health);
+
+    // The machine is known by its word; the figures around it may each be
+    // missing on their own, as they are on a node without an engine.
+    let machine = row
+        .try_get::<Option<String>, _>("machine_pressure")?
+        .as_deref()
+        .and_then(Pressure::from_stored)
+        .map(|pressure| -> Result<Machine, StoreError> {
+            Ok(Machine {
+                pressure,
+                cpus: row.try_get("machine_cpus")?,
+                memory_used_mb: row.try_get("machine_memory_used_mb")?,
+                memory_limit_mb: row.try_get("machine_memory_limit_mb")?,
+                memory_stall: row.try_get("machine_memory_stall")?,
+                cpu_stall: row.try_get("machine_cpu_stall")?,
+                open_files: row.try_get("machine_open_files")?,
+                file_limit: row.try_get("machine_file_limit")?,
+            })
+        })
+        .transpose()?;
+
     Ok(Node::from_parts(
         row.try_get("id")?,
         label,
@@ -219,5 +256,7 @@ fn read_node(row: sqlx::postgres::PgRow) -> Result<Node, StoreError> {
         NodeState::from_stored(&row.try_get::<String, _>("state")?)?,
         row.try_get("created_at")?,
         ad_tag,
-    ))
+    )
+    .with_health(health)
+    .with_machine(machine))
 }

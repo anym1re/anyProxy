@@ -180,8 +180,82 @@ pub enum NodeState {
     Burned,
 }
 
-/// A server that carries client traffic.
+/// How short the machine under a node is, in the node's own word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pressure {
+    /// Nothing is waiting for anything.
+    Calm,
+    /// Something is short; the node has eased off what it can.
+    Strained,
+    /// The next client is the one that fails.
+    Critical,
+}
+
+impl Pressure {
+    /// The word as the node reports it and the panel stores it.
+    pub fn as_stored(self) -> &'static str {
+        match self {
+            Self::Calm => "calm",
+            Self::Strained => "strained",
+            Self::Critical => "critical",
+        }
+    }
+
+    /// Reads the word. Anything else is not a pressure and is not kept.
+    pub fn from_stored(text: &str) -> Option<Self> {
+        match text {
+            "calm" => Some(Self::Calm),
+            "strained" => Some(Self::Strained),
+            "critical" => Some(Self::Critical),
+            _ => None,
+        }
+    }
+
+    /// Whether an operator should be looking at this node.
+    pub fn wants_attention(self) -> bool {
+        !matches!(self, Self::Calm)
+    }
+}
+
+/// What a node last said about the machine under it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Machine {
+    /// The one word.
+    pub pressure: Pressure,
+    /// Processors the node may run on.
+    pub cpus: Option<i32>,
+    /// Megabytes the node's cgroup is using.
+    pub memory_used_mb: Option<i64>,
+    /// Megabytes it may use before being throttled.
+    pub memory_limit_mb: Option<i64>,
+    /// Share of the last ten seconds spent waiting for memory, in percent.
+    pub memory_stall: Option<f32>,
+    /// Share of the last ten seconds spent waiting for a processor.
+    pub cpu_stall: Option<f32>,
+    /// Files the engine had open.
+    pub open_files: Option<i64>,
+    /// Files it may have open.
+    pub file_limit: Option<i64>,
+}
+
+/// The three words a node says about itself, and its certificate's life.
+///
+/// Each word is kept as the node said it: the panel stores them and decides
+/// by them, and does not turn them into anything else on the way.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeHealth {
+    /// Whether the proxy engine was running.
+    pub engine: Option<String>,
+    /// Whether the cover site answered a visitor.
+    pub site: Option<String>,
+    /// Whether the node could reach Telegram.
+    pub reach: Option<String>,
+    /// When the node's certificate stops being valid.
+    pub cert_not_after: Option<OffsetDateTime>,
+}
+
+/// A server that carries client traffic.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     id: Uuid,
     label: Label,
@@ -192,6 +266,8 @@ pub struct Node {
     state: NodeState,
     created_at: OffsetDateTime,
     ad_tag: Option<AdTag>,
+    health: Option<NodeHealth>,
+    machine: Option<Machine>,
 }
 
 impl Node {
@@ -207,6 +283,8 @@ impl Node {
             state: NodeState::Pending,
             created_at,
             ad_tag: None,
+            health: None,
+            machine: None,
         }
     }
 
@@ -233,7 +311,46 @@ impl Node {
             state,
             created_at,
             ad_tag,
+            health: None,
+            machine: None,
         }
+    }
+
+    /// Adds what the node last said about itself.
+    pub fn with_health(mut self, health: Option<NodeHealth>) -> Self {
+        self.health = health;
+        self
+    }
+
+    /// Adds what the node last said about the machine under it.
+    pub fn with_machine(mut self, machine: Option<Machine>) -> Self {
+        self.machine = machine;
+        self
+    }
+
+    /// What the node last said about itself, if it has said anything.
+    pub fn health(&self) -> Option<&NodeHealth> {
+        self.health.as_ref()
+    }
+
+    /// What the node last said about the machine under it.
+    pub fn machine(&self) -> Option<&Machine> {
+        self.machine.as_ref()
+    }
+
+    /// Whether an operator should be looking at this node: something it
+    /// reported is not right, or the machine under it is short of something.
+    pub fn wants_attention(&self) -> bool {
+        let health_says_so = self.health.as_ref().is_some_and(|health| {
+            health.engine.as_deref() == Some("down")
+                || health.site.as_deref() == Some("down")
+                || health.reach.as_deref() == Some("blocked")
+        });
+        let machine_says_so = self
+            .machine
+            .as_ref()
+            .is_some_and(|machine| machine.pressure.wants_attention());
+        health_says_so || machine_says_so
     }
 
     /// The sponsorship tag this node carries, when it carries one.

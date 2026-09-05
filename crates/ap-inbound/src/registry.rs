@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ap_proto::{WireAccess, WireCredential};
 use sha2::{Digest, Sha256};
@@ -60,6 +61,14 @@ pub struct Registry {
     accounts: Mutex<BTreeMap<String, Account>>,
     usage: Mutex<BTreeMap<Uuid, Usage>>,
     salt: [u8; 32],
+    /// Whether a new client is turned away at the door.
+    ///
+    /// Set by whoever watches the machine. A node that has run out of memory
+    /// or of file descriptors does not serve the next client anyway; it fails
+    /// it after spending on it, and takes the clients it already has down
+    /// with it. Refusing at the door is the cheaper of the two, and the
+    /// client's own retry finds another node or a later moment.
+    shedding: AtomicBool,
 }
 
 impl Registry {
@@ -70,9 +79,21 @@ impl Registry {
             accounts: Mutex::new(BTreeMap::new()),
             usage: Mutex::new(BTreeMap::new()),
             salt,
+            shedding: AtomicBool::new(false),
         };
         registry.replace(accesses);
         registry
+    }
+
+    /// Whether new clients are being turned away.
+    pub fn shedding(&self) -> bool {
+        self.shedding.load(Ordering::Relaxed)
+    }
+
+    /// Starts or stops turning new clients away. Clients already being
+    /// served are not touched either way.
+    pub fn set_shedding(&self, shedding: bool) {
+        self.shedding.store(shedding, Ordering::Relaxed);
     }
 
     /// Takes a new configuration, keeping what has been used so far.

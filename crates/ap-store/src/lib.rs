@@ -94,6 +94,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0013_node_reach",
         include_str!("../../../migrations/0013_node_reach.sql"),
     ),
+    (
+        "0014_node_machine",
+        include_str!("../../../migrations/0014_node_machine.sql"),
+    ),
 ];
 
 /// The migrations this build carries, in the order they apply.
