@@ -252,6 +252,17 @@ impl<'a> Guarded<'a> {
         Ok(NodeRepo::list(self.pool).await?)
     }
 
+    /// What is running on the nodes this actor may see.
+    pub async fn processes(
+        &self,
+        nodes: &[Uuid],
+    ) -> Result<Vec<(Uuid, ap_core::Process)>, ApiError> {
+        if !self.actor.role().sees_nodes() {
+            return Err(ApiError::NotFound);
+        }
+        Ok(ap_store::PresenceRepo::processes_of(self.pool, nodes).await?)
+    }
+
     /// One node by the name an operator knows it by.
     pub async fn node_by_label(&self, label: &Label) -> Result<Node, ApiError> {
         if !self.actor.role().sees_nodes() {

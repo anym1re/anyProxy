@@ -1,48 +1,86 @@
-// The panel's interface. Everything on the screen comes from the API and
-// every word from the catalogue; the page itself holds no data.
+// The panel's interface.
+//
+// No markup is written here. Every screen is the stand's own, carried in a
+// <template> in the page; this fills it. A list keeps its first row as the
+// shape to clone, so a row on screen is the row that was drawn.
 (() => {
   'use strict';
 
-  const RANGES = [['ui-range-week', 7], ['ui-range-month', 30], ['ui-range-half', 180], ['ui-range-year', 365]];
   const REFRESH_MS = 30000;
   const PAGE = 200;
+  // The stand's four ranges. The series the panel keeps is by day, so the
+  // shortest is a week rather than the stand's single day.
+  const RANGES = [['Н', 7], ['М', 30], ['6М', 180], ['Г', 365]];
 
-  // Browser storage can be absent or refuse; the interface works without it.
-  function recall(store, key) { try { return window[store].getItem(key); } catch { return null; } }
-  function remember(store, key, value) { try { window[store].setItem(key, value); } catch { /* nothing to keep it in */ } }
-  function forget(store, key) { try { window[store].removeItem(key); } catch { /* already gone */ } }
+  const recall = (store, key) => { try { return window[store].getItem(key); } catch { return null; } };
+  const remember = (store, key, value) => { try { window[store].setItem(key, value); } catch { /* nothing to keep it in */ } };
+  const forget = (store, key) => { try { window[store].removeItem(key); } catch { /* already gone */ } };
 
   const state = {
     token: recall('sessionStorage', 'ap-token'),
-    lang: recall('localStorage', 'ap-lang') || ((navigator.language || 'en').toLowerCase().startsWith('ru') ? 'ru' : 'en'),
+    lang: recall('localStorage', 'ap-lang') || 'ru',
     theme: recall('localStorage', 'ap-theme') || 'dark',
     range: Number(recall('localStorage', 'ap-range')) || 30,
     messages: {},
     me: null,
+    version: '',
     setupNeeded: false,
+    secondFactor: true,
     lastLogin: '',
+    filter: 'all',
     timer: null,
-    nodeFilter: 'all',
+    known: { nodes: [], clients: [] },
   };
 
   const $ = (selector, root) => (root || document).querySelector(selector);
+  const $$ = (selector, root) => [...(root || document).querySelectorAll(selector)];
 
-  // ── building ────────────────────────────────────────────────────────────
+  // ── filling what the stand drew ─────────────────────────────────────────
+
+  /** The screen as drawn, ready to be filled. */
+  const screen = (name) => $(`#screen-${name}`).content.cloneNode(true).firstElementChild;
+
+  /** Sets the text of one element inside a piece of drawn markup. */
+  function put(root, selector, text) {
+    const el = selector ? $(selector, root) : root;
+    if (el) el.textContent = text == null ? '' : String(text);
+    return el;
+  }
+
+  /**
+   * Repeats a drawn row for every item.
+   *
+   * The first child is the shape: it was drawn with sample data, and every
+   * row on screen is a copy of it with the sample replaced.
+   */
+  function repeat(container, items, fill) {
+    if (!container) return;
+    const shape = container.firstElementChild;
+    if (!shape) return;
+    const drawn = items.map((item, index) => {
+      const row = shape.cloneNode(true);
+      fill(row, item, index);
+      return row;
+    });
+    container.replaceChildren(...drawn);
+  }
+
+  /** Puts one of the stand's status dots into the state it should show. */
+  function dot(el, kind) {
+    if (!el) return;
+    el.classList.remove('w', 'b', 'n');
+    if (kind && kind !== 'ok') el.classList.add(kind === 'warn' ? 'w' : kind === 'bad' ? 'b' : 'n');
+  }
 
   function h(tag, attrs, ...children) {
     const el = document.createElement(tag);
-    if (attrs) {
-      for (const [name, value] of Object.entries(attrs)) {
-        if (value == null || value === false) continue;
-        if (name === 'class') el.className = value;
-        // Through the object model, not the attribute: the page's policy
-        // allows no inline attributes, and this is not one.
-        else if (name === 'style') el.style.cssText = value;
-        else if (name === 'on') for (const [event, fn] of Object.entries(value)) el.addEventListener(event, fn);
-        else if (name === 'dataset') Object.assign(el.dataset, value);
-        else if (typeof value === 'boolean') el[name] = value;
-        else el.setAttribute(name, value);
-      }
+    for (const [name, value] of Object.entries(attrs || {})) {
+      if (value == null || value === false) continue;
+      if (name === 'class') el.className = value;
+      else if (name === 'style') el.style.cssText = value;
+      else if (name === 'on') for (const [event, fn] of Object.entries(value)) el.addEventListener(event, fn);
+      else if (typeof value === 'boolean') el[name] = value;
+      else el.setAttribute(name, value);
     }
     for (const child of children.flat(Infinity)) {
       if (child == null || child === false) continue;
@@ -51,12 +89,7 @@
     return el;
   }
 
-  function s(tag, attrs, ...children) {
-    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
-    for (const [name, value] of Object.entries(attrs || {})) el.setAttribute(name, value);
-    for (const child of children.flat(Infinity)) if (child != null) el.append(child);
-    return el;
-  }
+  // ── words ───────────────────────────────────────────────────────────────
 
   function t(key, args) {
     let text = state.messages[key];
@@ -65,9 +98,15 @@
     return text;
   }
 
-  function applyStaticText() {
-    for (const el of document.querySelectorAll('[data-t]')) el.textContent = t(el.dataset.t);
-    document.title = t('ui-title');
+  const applyStaticText = (root) => $$('[data-t]', root || document).forEach((el) => { el.textContent = t(el.dataset.t); });
+
+  async function loadMessages() {
+    const reply = await fetch(`/v1/i18n?lang=${encodeURIComponent(state.lang)}`, { cache: 'no-store' });
+    const payload = await reply.json();
+    state.messages = payload.messages || {};
+    state.lang = payload.lang || state.lang;
+    document.documentElement.lang = state.lang;
+    applyStaticText();
   }
 
   // ── talking to the panel ────────────────────────────────────────────────
@@ -79,6 +118,11 @@
       this.code = code;
       this.retryAfter = retryAfter;
     }
+  }
+
+  function refusalText(code) {
+    const key = `api-${String(code).replace(/_/g, '-')}`;
+    return state.messages[key] === undefined ? t('api-unknown', { code }) : t(key);
   }
 
   async function api(method, path, body) {
@@ -106,101 +150,82 @@
     return text ? JSON.parse(text) : null;
   }
 
-  // The sentence for a refusal code, from the same catalogue the CLI reads.
-  function refusalText(code) {
-    const key = `api-${String(code).replace(/_/g, '-')}`;
-    return state.messages[key] === undefined ? t('api-unknown', { code }) : t(key);
-  }
+  // ── figures ─────────────────────────────────────────────────────────────
 
-  async function loadMessages() {
-    const reply = await fetch(`/v1/i18n?lang=${encodeURIComponent(state.lang)}`, { cache: 'no-store' });
-    const payload = await reply.json();
-    state.messages = payload.messages || {};
-    state.lang = payload.lang || state.lang;
-    document.documentElement.lang = state.lang;
-    applyStaticText();
-  }
+  const locale = () => (state.lang === 'ru' ? 'ru-RU' : 'en-GB');
+  const num = (value) => Number(value || 0).toLocaleString(locale());
 
-  // ── words and figures ───────────────────────────────────────────────────
+  const UNITS = ['ui-unit-b', 'ui-unit-kb', 'ui-unit-mb', 'ui-unit-gb', 'ui-unit-tb'];
 
-  const HEALTH_CLASS = { up: 'ok', down: 'bad', open: 'ok', blocked: 'bad', unknown: 'warn' };
-  const PRESSURE_CLASS = { calm: 'ok', strained: 'warn', critical: 'bad' };
-  const STATE_CLASS = { active: 'ok', pending: 'warn', disabled: 'warn', suspended: 'warn', burned: 'bad', archived: 'bad', revoked: 'bad' };
-
-  function locale() { return state.lang === 'ru' ? 'ru-RU' : 'en-GB'; }
-
-  // Everything the panel says is in UTC, and so is everything shown: a
-  // date that shifted with the operator's clock would not be the date the
-  // panel acts on.
-  function fmtDateTime(iso) {
-    if (!iso) return t('ui-never');
-    return new Intl.DateTimeFormat(locale(), { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(new Date(iso));
-  }
-
-  function fmtDate(iso) {
-    if (!iso) return t('ui-no-expiry');
-    return new Intl.DateTimeFormat(locale(), { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(iso));
-  }
-
-  function fmtDateShort(iso) {
-    if (!iso) return t('ui-no-expiry');
-    return new Intl.DateTimeFormat(locale(), { dateStyle: 'short', timeZone: 'UTC' }).format(new Date(iso));
-  }
-
-  function fmtDay(ymd) {
-    const [year, month, day] = ymd.split('-').map(Number);
-    return new Intl.DateTimeFormat(locale(), { day: 'numeric', month: 'short' }).format(new Date(Date.UTC(year, month - 1, day)));
-  }
-
-  function fmtNum(value) { return Number(value || 0).toLocaleString(locale()); }
-
-  function fmtBytes(value) {
-    const units = ['ui-unit-b', 'ui-unit-kb', 'ui-unit-mb', 'ui-unit-gb', 'ui-unit-tb'];
+  function scale(value) {
     let amount = Number(value) || 0;
     let unit = 0;
-    while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
+    while (amount >= 1024 && unit < UNITS.length - 1) { amount /= 1024; unit += 1; }
     const digits = unit === 0 ? 0 : amount < 10 ? 2 : amount < 100 ? 1 : 0;
-    return `${amount.toLocaleString(locale(), { maximumFractionDigits: digits })} ${t(units[unit])}`;
+    return [amount.toLocaleString(locale(), { maximumFractionDigits: digits }), t(UNITS[unit])];
   }
 
-  function fmtMb(mb) { return fmtBytes(Number(mb || 0) * 1024 * 1024); }
+  const bytes = (value) => scale(value).join(' ');
+  const mbytes = (mb) => bytes(Number(mb || 0) * 1024 * 1024);
+  const quota = (value) => (value == null ? t('ui-no-limit') : bytes(value));
 
-  function fmtQuota(bytes) { return bytes == null ? t('ui-no-limit') : fmtBytes(bytes); }
+  const clock = (iso) => (iso ? new Intl.DateTimeFormat(locale(), { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }).format(new Date(iso)) : '—');
+  const stamp = (iso) => (iso ? new Intl.DateTimeFormat(locale(), { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(new Date(iso)) : t('ui-never'));
+  const date = (iso) => (iso ? new Intl.DateTimeFormat(locale(), { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(iso)) : t('ui-no-expiry'));
+  const shortDate = (iso) => (iso ? new Intl.DateTimeFormat(locale(), { dateStyle: 'short', timeZone: 'UTC' }).format(new Date(iso)) : t('ui-no-expiry'));
 
-  function gbToBytes(text) {
+  function day(ymd) {
+    const [year, month, date_] = ymd.split('-').map(Number);
+    return new Intl.DateTimeFormat(locale(), { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(year, month - 1, date_)));
+  }
+
+  function ago(iso) {
+    if (!iso) return t('ui-never');
+    const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+    const rel = new Intl.RelativeTimeFormat(locale(), { numeric: 'auto' });
+    if (minutes < 60) return rel.format(-minutes, 'minute');
+    if (minutes < 60 * 24) return rel.format(-Math.round(minutes / 60), 'hour');
+    return rel.format(-Math.round(minutes / 1440), 'day');
+  }
+
+  /// Days, hours or minutes — whichever says it in one figure.
+  function uptime(seconds) {
+    const total = Number(seconds) || 0;
+    if (total >= 86400) return t('ui-uptime-days', { count: Math.floor(total / 86400) });
+    if (total >= 3600) return t('ui-uptime-hours', { count: Math.floor(total / 3600) });
+    return t('ui-uptime-minutes', { count: Math.floor(total / 60) });
+  }
+
+  const gbToBytes = (text) => {
     const value = Number(String(text || '').replace(',', '.'));
     return text === '' || !(value > 0) ? null : Math.round(value * 1024 * 1024 * 1024);
+  };
+  const dayToExpiry = (text) => (text ? `${text}T23:59:59Z` : null);
+
+  const kindOf = (node) => t(node.kind === 'mtproto' && node.masked ? 'ui-kind-mtproto-masked' : `ui-kind-${node.kind}`);
+
+  // How a node stands: well, uneasy, bad, or silent.
+  function standing(node) {
+    if (!node.health && !node.last_seen_at) return 'none';
+    if (!node.health) return 'warn';
+    if (node.health.engine === 'down' || node.health.reach === 'blocked') return 'bad';
+    if (node.machine && node.machine.pressure === 'critical') return 'bad';
+    if (node.health.site === 'down' || node.health.site === 'unknown' || node.health.reach === 'unknown') return 'warn';
+    if (node.machine && node.machine.pressure !== 'calm') return 'warn';
+    return 'ok';
   }
 
-  function dayToExpiry(text) { return text ? `${text}T23:59:59Z` : null; }
-
-  function kindOf(node) { return t(node.kind === 'mtproto' && node.masked ? 'ui-kind-mtproto-masked' : `ui-kind-${node.kind}`); }
-
-  function dot(cls) { return h('i', { class: `dot ${cls || ''}` }); }
-
-  function word(value) { return h('span', { class: 'word' }, dot(HEALTH_CLASS[value]), t(`ui-word-${value}`)); }
-
-  function pressure(value) { return h('span', { class: `word ${PRESSURE_CLASS[value] || ''}` }, dot(PRESSURE_CLASS[value]), t(`ui-pressure-${value}`)); }
-
-  function stateChip(prefix, value) { return h('span', { class: `chipst ${STATE_CLASS[value] || ''}` }, t(`ui-${prefix}-state-${value}`)); }
-
-  function whyAttention(node) {
-    const reasons = [];
+  function trouble(node) {
+    if (!node.health && !node.last_seen_at) return t('ui-trouble-silent');
     if (node.health) {
-      if (node.health.engine === 'down') reasons.push(`${t('ui-health-engine')}: ${t('ui-word-down')}`);
-      if (node.health.site === 'down') reasons.push(`${t('ui-health-site')}: ${t('ui-word-down')}`);
-      if (node.health.reach === 'blocked') reasons.push(`${t('ui-health-reach')}: ${t('ui-word-blocked')}`);
+      if (node.health.engine === 'down') return t('ui-trouble-engine');
+      if (node.health.reach === 'blocked') return t('ui-trouble-reach');
+      if (node.health.site === 'down') return t('ui-trouble-site');
     }
-    if (node.machine && node.machine.pressure !== 'calm') reasons.push(`${t('ui-col-pressure')}: ${t(`ui-pressure-${node.machine.pressure}`)}`);
-    return reasons.join(' · ');
-  }
-
-  function ratio(used, limit) { return limit ? Math.min(1, Number(used || 0) / Number(limit)) : 0; }
-
-  function bar(used, limit) {
-    const share = ratio(used, limit);
-    const cls = share >= 0.95 ? 'bad' : share >= 0.85 ? 'warn' : '';
-    return h('span', { class: `bar ${cls}` }, h('i', { style: `width:${Math.round(share * 100)}%` }));
+    if (node.machine && node.machine.pressure === 'critical') return t('ui-trouble-critical');
+    if (node.machine && node.machine.pressure === 'strained') return t('ui-trouble-strained');
+    if (!node.health) return t('ui-trouble-silent');
+    return t('ui-trouble-unknown');
   }
 
   async function copy(text) {
@@ -213,14 +238,8 @@
       try { document.execCommand('copy'); } catch { /* nothing else to try */ }
       area.remove();
     }
-    toast(t('ui-copied'), 'ok');
+    toast(t('ui-copied'));
   }
-
-  function copyButton(text) { return h('button', { type: 'button', class: 'btn sm', on: { click: () => copy(text) } }, t('ui-copy')); }
-
-  function codeLine(text) { return h('div', { class: 'code' }, h('code', null, text), copyButton(text)); }
-
-  // ── toast and modal ─────────────────────────────────────────────────────
 
   function toast(text, kind) {
     const root = $('#toast-root');
@@ -229,77 +248,66 @@
     toast.timer = setTimeout(() => root.replaceChildren(), 3600);
   }
 
-  function refused(error) {
-    if (error instanceof Refusal && error.status === 401) return;
-    toast(t('ui-refused', { message: error.message }), 'bad');
-  }
+  const refused = (error) => { if (!(error instanceof Refusal && error.status === 401)) toast(t('ui-refused', { message: error.message }), 'bad'); };
 
-  function modal({ title, body, actions, onClose }) {
+  // ── dialogs, also as drawn ──────────────────────────────────────────────
+
+  /**
+   * Shows one of the drawn dialogs.
+   *
+   * `prepare` gets the dialog's own markup to fill and wire; the scrim, the
+   * Esc key and the buttons are the stand's.
+   */
+  const DIALOG_SCREEN = { link: 'link', user: 'new-user', node: 'new-node', delete: 'delete' };
+
+  function dialog(name, prepare) {
     const root = $('#modal-root');
-    const box = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, h('h2', null, title), body);
-    const acts = h('div', { class: 'actions' });
+    root.className = `scr-${DIALOG_SCREEN[name] || name}`;
+    const wrap = $(`#dialog-${name}`).content.cloneNode(true).firstElementChild;
+    const box = $('.dlg', wrap) || wrap;
     function close() {
       root.replaceChildren();
       document.removeEventListener('keydown', onKey);
-      if (onClose) onClose();
     }
     function onKey(event) { if (event.key === 'Escape') close(); }
-    for (const action of actions || []) {
-      const button = h('button', { type: 'button', class: `btn ${action.kind || ''}` }, action.label);
-      button.addEventListener('click', () => action.run(close, button));
-      if (action.ready) action.ready(button);
-      acts.append(button);
-    }
-    if (acts.childElementCount) box.append(acts);
-    const back = h('div', { class: 'back', on: { click: (event) => { if (event.target === back) close(); } } }, box);
-    root.replaceChildren(back);
+    root.replaceChildren(h('div', { class: 'scrim', on: { click: close } }), wrap);
     document.addEventListener('keydown', onKey);
-    const first = box.querySelector('input:not([type=checkbox]), select, button');
+    prepare(box, close);
+    const first = $('input, select, button', box);
     if (first) first.focus();
     return close;
   }
 
-  function field(label, input, extra) {
-    return h('label', { class: `field ${extra || ''}` }, h('span', null, label), input);
+  /** Turns a drawn field box into one that can be typed into. */
+  function editable(box, value, onInput) {
+    if (!box) return null;
+    const field = h('input', { class: 'inp', type: 'text', value: value == null ? '' : value });
+    if (onInput) field.addEventListener('input', () => onInput(field.value));
+    box.replaceWith(field);
+    return field;
   }
 
-  function errorLine() { return h('div', { class: 'err' }); }
-
-  // Runs one request from a modal, showing what the panel answered.
-  async function attempt(button, err, run) {
-    button.disabled = true;
-    err.textContent = '';
-    try {
-      await run();
-    } catch (error) {
-      err.textContent = error.message;
-      refused(error);
-    } finally {
-      button.disabled = false;
-    }
-  }
-
-  // ── shell ───────────────────────────────────────────────────────────────
+  // ── the shell ───────────────────────────────────────────────────────────
 
   function applyTheme() {
     document.documentElement.dataset.theme = state.theme;
-    for (const button of $('#theme').querySelectorAll('button')) button.classList.toggle('on', button.dataset.theme === state.theme);
+    $$('#theme > *').forEach((el) => el.classList.toggle('on', el.dataset.theme === state.theme));
   }
 
-  function applyLangButtons() {
-    for (const button of $('#lang').querySelectorAll('button')) button.classList.toggle('on', button.dataset.lang === state.lang);
-  }
+  const applyLang = () => $$('#lang > *').forEach((el) => el.classList.toggle('on', el.dataset.lang === state.lang));
 
   function showRail() {
-    const rail = $('#rail');
-    rail.hidden = !state.me;
+    $('.rail').hidden = !state.me;
+    $('.barstrip').hidden = !state.me;
     if (!state.me) return;
-    $('#me-login').textContent = state.me.login;
-    $('#me-role').textContent = t(`ui-role-${state.me.role}`);
-    for (const link of $('#nav').querySelectorAll('a')) {
-      const needs = link.dataset.needs;
-      link.hidden = (needs === 'nodes' && state.me.role === 'reseller') || (needs === 'audit' && state.me.role !== 'superadmin');
-    }
+    put(document, '#me-login', state.me.login);
+    put(document, '#me-role', t(`ui-role-${state.me.role}`));
+    put(document, '#me-version', state.version || '—');
+    $$('#screen ~ *, .rail .nav a').forEach(() => {});
+    $$('.rail .nav a').forEach((link) => {
+      const view = link.dataset.view;
+      link.hidden = (view === 'nodes' && state.me.role === 'reseller') || (view === 'log' && state.me.role !== 'superadmin');
+    });
   }
 
   function leave() {
@@ -315,125 +323,125 @@
     leave();
   }
 
-  function topbar(name) {
-    return h('div', { class: 'topbar' },
-      h('h1', null, t(`ui-nav-${name}`)),
-      h('div', { class: 'sp' }),
-      h('button', { type: 'button', class: 'btn ghost sm', on: { click: () => route() } }, t('ui-refresh')),
-    );
-  }
+  // ── the way in ──────────────────────────────────────────────────────────
 
-  function card(cls, title, count, ...body) {
-    const head = title === null ? null : h('div', { class: 'card-h' }, h('h3', null, title), count != null ? h('span', { class: 'n mono' }, count) : null, h('div', { class: 'sp' }));
-    return h('section', { class: `card ${cls}` }, head, h('div', { class: 'card-b' }, body));
-  }
-
-  function table(columns, rows) {
-    return h('div', { class: 'scroll' }, h('table', { class: 'tbl' },
-      h('thead', null, h('tr', null, columns.map((column) => h('th', { class: `${column.right ? 'r' : ''} ${column.opt ? 'opt' : ''}` }, column.label)))),
-      h('tbody', null, rows),
-    ));
-  }
-
-  function empty(text) { return h('div', { class: 'empty' }, text || t('ui-empty')); }
-
-  // ── sign in ─────────────────────────────────────────────────────────────
-
-  // Shown while the panel has no owner: whoever opens it first makes the
-  // account, on this screen and nowhere else (0062).
-  function setupView() {
-    const login = h('input', { type: 'text', autocomplete: 'username', required: true, autofocus: true, pattern: '[a-z0-9_-]{1,32}', spellcheck: false });
-    const password = h('input', { type: 'password', autocomplete: 'new-password', required: true, minlength: '12' });
-    const second = h('input', { type: 'checkbox', checked: true });
-    const err = errorLine();
-    const submit = h('button', { type: 'submit', class: 'btn primary' }, t('ui-create'));
-    const form = h('form', { class: 'card-b', on: { submit: async (event) => {
-      event.preventDefault();
-      submit.disabled = true;
-      err.textContent = '';
-      try {
-        const made = await api('POST', '/v1/setup', {
-          login: login.value.trim(), password: password.value, second_factor: second.checked,
-        });
-        state.setupNeeded = false;
-        state.lastLogin = made.login;
-        if (made.secret) showSecret(made.secret);
-        else route();
-      } catch (error) {
-        err.textContent = error.message;
-        submit.disabled = false;
-      }
-    } } },
-      brandLine(),
-      h('h2', null, t('ui-setup-title')),
-      field(t('ui-login-login'), login),
-      field(t('ui-login-password'), password),
-      field(t('ui-setup-second-factor'), second, 'row'),
-      err,
-      submit,
-    );
-    return h('div', { class: 'content' }, h('section', { class: 'card login' }, form));
-  }
-
-  // The secret is shown here and nowhere else: it is sealed on its way to
-  // the database and cannot be read back.
-  function showSecret(secret) {
-    $('#main').replaceChildren(h('div', { class: 'content' }, h('section', { class: 'card login' },
-      h('div', { class: 'card-b' },
-        brandLine(),
-        h('h2', null, t('ui-setup-secret')),
-        h('p', { class: 'warn' }, t('ui-enrol-once')),
-        codeLine(secret),
-        h('button', { type: 'button', class: 'btn primary', on: { click: () => route() } }, t('ui-login-submit'))))));
-  }
-
-  function brandLine() {
-    return h('div', { class: 'brand' },
-      h('span', { class: 'mono', style: 'color:var(--key)' }, '◆'),
-      h('b', null, t('ui-title')));
+  function gate(name, prepare) {
+    const drawn = $(`#gate-${name}`).content.cloneNode(true).firstElementChild;
+    // Both gates were drawn twice, side by side, to show the two states; a
+    // panel shows the one it is in.
+    const cards = $$('.card', drawn);
+    prepare(drawn, cards);
+    return drawn;
   }
 
   function loginView() {
-    const login = h('input', { type: 'text', autocomplete: 'username', required: true, autofocus: true, value: state.lastLogin });
-    const password = h('input', { type: 'password', autocomplete: 'current-password', required: true });
-    // Not required: an account may carry no second factor (0060).
-    const totp = h('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9]{6}', maxlength: '6' });
-    const err = errorLine();
-    const submit = h('button', { type: 'submit', class: 'btn primary' }, t('ui-login-submit'));
-    const form = h('form', { class: 'card-b', on: { submit: async (event) => {
-      event.preventDefault();
-      submit.disabled = true;
-      err.textContent = '';
-      try {
-        const reply = await api('POST', '/v1/session', { login: login.value.trim(), password: password.value, totp: totp.value.trim() });
-        state.token = reply.token;
-        remember('sessionStorage', 'ap-token', reply.token);
-        state.me = await api('GET', '/v1/session');
-        showRail();
-        location.hash = '#/dashboard';
-        route();
-      } catch (error) {
-        if (error.status === 429) err.textContent = t('ui-login-wait', { seconds: error.retryAfter || '' });
-        else if (error.status === 401) err.textContent = t('ui-login-failed');
-        else err.textContent = error.message;
-        submit.disabled = false;
+    return gate('login', (drawn, cards) => {
+      // With a code where somebody signs in with one, without it where
+      // nobody does.
+      const card = state.secondFactor ? cards[0] : cards[1];
+      cards.filter((other) => other !== card).forEach((other) => other.remove());
+      const fields = $$('.fld .inp', card);
+      const login = editable(fields[0], state.lastLogin);
+      const password = editable(fields[1], '');
+      password.type = 'password';
+      const code = fields[2] ? editable(fields[2], '') : null;
+      if (code) { code.inputMode = 'numeric'; code.maxLength = 6; }
+      const err = h('div', { class: 'hint bad' });
+      const button = $('.btn', card);
+      button.before(err);
+      const submit = async () => {
+        button.disabled = true;
+        err.textContent = '';
+        try {
+          const reply = await api('POST', '/v1/session', {
+            login: login.value.trim(), password: password.value, totp: code ? code.value.trim() : '',
+          });
+          state.token = reply.token;
+          remember('sessionStorage', 'ap-token', reply.token);
+          state.me = await api('GET', '/v1/session');
+          showRail();
+          location.hash = '#/dashboard';
+          route();
+        } catch (error) {
+          err.textContent = error.status === 401 ? t('ui-login-failed') : error.message;
+          button.disabled = false;
+        }
+      };
+      button.addEventListener('click', submit);
+      for (const field of [login, password, code]) {
+        if (field) field.addEventListener('keydown', (event) => { if (event.key === 'Enter') submit(); });
       }
-    } } },
-      brandLine(),
-      h('h2', null, t('ui-login-title')),
-      field(t('ui-login-login'), login),
-      field(t('ui-login-password'), password),
-      field(t('ui-login-totp'), totp),
-      err,
-      submit,
-    );
-    return h('div', { class: 'content' }, h('section', { class: 'card login' }, form));
+    });
   }
 
-  // ── dashboard ───────────────────────────────────────────────────────────
+  function setupView() {
+    return gate('setup', (drawn, cards) => {
+      const [form, secret] = cards;
+      secret.remove();
+      const fields = $$('.fld .inp', form);
+      const login = editable(fields[0], '');
+      const password = editable(fields[1], '');
+      password.type = 'password';
+      const check = $('.chk', form);
+      let second = true;
+      check.addEventListener('click', () => {
+        second = !second;
+        $('.bx', check).style.cssText = second ? '' : 'background: transparent; border-color: var(--ink-3);';
+        $('.bx svg', check).style.opacity = second ? '1' : '0';
+      });
+      $('.bx svg', check).style.opacity = '1';
+      $('.bx', check).style.cssText = 'background: var(--key); border-color: var(--key);';
+      const err = h('div', { class: 'hint bad' });
+      const button = $('.btn', form);
+      button.before(err);
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        err.textContent = '';
+        try {
+          const made = await api('POST', '/v1/setup', { login: login.value.trim(), password: password.value, second_factor: second });
+          state.setupNeeded = false;
+          state.secondFactor = second;
+          state.lastLogin = made.login;
+          if (made.secret) showSecret(made.secret);
+          else route();
+        } catch (error) {
+          err.textContent = error.message;
+          button.disabled = false;
+        }
+      });
+    });
+  }
 
-  function chart(series, days) {
-    const byDay = new Map(series.map((point) => [point.day, point]));
+  function showSecret(value) {
+    const drawn = gate('setup', (root, cards) => {
+      const [form, secret] = cards;
+      form.remove();
+      put(secret, '.secret', value);
+      $('.secret', secret).append(h('span', { class: 'cp', on: { click: () => copy(value) } }, '⧉'));
+      $('.btn', secret).addEventListener('click', () => route());
+    });
+    $('#screen').replaceChildren(drawn);
+  }
+
+  // ── the dashboard ───────────────────────────────────────────────────────
+
+  function curve(points, width, top, floor) {
+    const max = Math.max(1, ...points.map((point) => point.in + point.out));
+    const x = (index) => (index / Math.max(1, points.length - 1)) * width;
+    const y = (value) => top + (1 - value / max) * (floor - top);
+    const line = points.map((point, index) => {
+      const px = x(index).toFixed(1);
+      const py = y(point.in + point.out).toFixed(1);
+      if (!index) return `M ${px} ${py}`;
+      const previous = points[index - 1];
+      const mid = ((x(index - 1) + x(index)) / 2).toFixed(1);
+      return `C ${mid} ${y(previous.in + previous.out).toFixed(1)} ${mid} ${py} ${px} ${py}`;
+    }).join(' ');
+    return { line, x, y };
+  }
+
+  function series(rows, days) {
+    const byDay = new Map(rows.map((point) => [point.day, point]));
     const now = new Date();
     const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     const points = [];
@@ -442,547 +450,913 @@
       const point = byDay.get(key);
       points.push({ day: key, in: point ? Number(point.bytes_in) : 0, out: point ? Number(point.bytes_out) : 0 });
     }
-    const W = 600; const H = 160; const L = 6; const R = 6; const T = 10; const B = 22;
-    const max = Math.max(1, ...points.map((point) => Math.max(point.in, point.out)));
-    const x = (index) => L + (index / Math.max(1, points.length - 1)) * (W - L - R);
-    const y = (value) => T + (1 - value / max) * (H - T - B);
-    const line = (key) => points.map((point, index) => `${index ? 'L' : 'M'}${x(index).toFixed(1)},${y(point[key]).toFixed(1)}`).join(' ');
-    const floor = (H - B).toFixed(1);
-    const area = (key) => `${line(key)} L${x(points.length - 1).toFixed(1)},${floor} L${x(0).toFixed(1)},${floor} Z`;
-    const stop = (offset, color) => s('stop', { offset, 'stop-color': color });
-    const labels = [0, Math.floor((points.length - 1) / 2), points.length - 1].map((index) =>
-      s('text', { x: x(index).toFixed(1), y: H - 6, 'text-anchor': index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle' }, fmtDay(points[index].day)));
-    const grid = [0.25, 0.5, 0.75].map((share) => s('line', { x1: L, x2: W - R, y1: y(max * share).toFixed(1), y2: y(max * share).toFixed(1) }));
-    const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img' },
-      s('defs', null,
-        s('linearGradient', { id: 'area-in', x1: 0, y1: 0, x2: 0, y2: 1 }, stop('0%', 'var(--area-1)'), stop('100%', 'var(--area-2)')),
-        s('linearGradient', { id: 'area-out', x1: 0, y1: 0, x2: 0, y2: 1 }, stop('0%', 'var(--area-out-1)'), stop('100%', 'var(--area-out-2)'))),
-      s('g', { class: 'grid' }, grid),
-      s('path', { class: 'area-in', d: area('in') }),
-      s('path', { class: 'area-out', d: area('out') }),
-      s('path', { class: 'line-in', d: line('in') }),
-      s('path', { class: 'line-out', d: line('out') }),
-      s('g', { class: 'axis' }, labels),
-    );
     const received = points.reduce((sum, point) => sum + point.in, 0);
     const sent = points.reduce((sum, point) => sum + point.out, 0);
-    return { svg, received, sent };
+    const peak = points.reduce((best, point, index) => (point.in + point.out > points[best].in + points[best].out ? index : best), 0);
+    return { points, received, sent, peak, total: received + sent };
   }
 
-  async function dashboardView() {
+  async function dashboard(root) {
     const seesNodes = state.me.role !== 'reseller';
     const readsAudit = state.me.role === 'superadmin';
-    const [nodes, clients, publics, audit, series] = await Promise.all([
+    const [nodes, clients, accesses, now, before] = await Promise.all([
       seesNodes ? api('GET', '/v1/nodes') : Promise.resolve([]),
       api('GET', `/v1/clients?limit=${PAGE}`),
-      seesNodes ? api('GET', '/v1/accesses/public').catch(() => []) : Promise.resolve([]),
-      readsAudit ? api('GET', '/v1/audit?limit=12') : Promise.resolve([]),
+      api('GET', `/v1/accesses?limit=${PAGE}`),
       api('GET', `/v1/traffic?days=${state.range}`),
+      api('GET', `/v1/traffic?days=${state.range * 2}`),
     ]);
+    state.known = { nodes, clients };
+
     const live = nodes.filter((node) => node.state !== 'burned');
-    const attention = live.filter((node) => node.wants_attention);
-    const drawn = chart(series, state.range);
+    const seen = live.filter((node) => node.last_seen_at);
+    const wanting = live.filter((node) => node.wants_attention || standing(node) === 'none');
+    const drawn = series(now, state.range);
+    const older = series(before, state.range * 2);
+    const earlier = older.total - drawn.total;
+    const change = earlier > 0 ? Math.round(((drawn.total - earlier) / earlier) * 100) : null;
 
-    const attentionCard = seesNodes ? card('c12', t('ui-dash-attention'), attention.length,
-      attention.length
-        ? h('div', { class: 'attn' }, attention.map((node) => h('a', { href: '#/nodes' }, dot('bad'), h('b', null, node.label), h('span', { class: 'm2' }, kindOf(node)), h('span', { class: 'why' }, whyAttention(node)))))
-        : h('div', { class: 'calm' }, dot('ok'), t('ui-dash-all-calm'))) : null;
+    put(root, '.phead h1', t('ui-nav-dashboard'));
+    // Two figures, as drawn: when it was refreshed, and how often it is.
+    $('.pmeta', root).replaceChildren(
+      `${t('ui-dash-updated')} `, h('span', { class: 'mono' }, clock(new Date().toISOString())),
+      h('br'), `${t('ui-dash-every-prefix')} `, h('span', { class: 'mono' }, t('ui-dash-every-value', { seconds: REFRESH_MS / 1000 })));
 
-    const metric = (n, k, sub) => h('section', { class: 'card c3' }, h('div', { class: 'metric' }, h('div', { class: 'n' }, n), h('div', { class: 'k' }, k), h('div', { class: 's' }, sub)));
-    const strip = [
-      seesNodes ? metric(fmtNum(live.length), t('ui-dash-nodes'), `${fmtNum(live.filter((node) => node.state === 'active').length)} ${t('ui-dash-in-service')} · ${fmtNum(attention.length)} ${t('ui-dash-attention-count')}`) : null,
-      metric(fmtNum(clients.length), t('ui-dash-clients'), `${fmtNum(clients.filter((client) => client.state === 'active').length)} ${t('ui-dash-active-count')}`),
-      seesNodes ? metric(fmtNum(publics.length), t('ui-dash-public'), `${fmtNum(publics.filter((access) => access.state === 'active').length)} ${t('ui-dash-active-count')}`) : null,
-      metric(fmtBytes(drawn.received + drawn.sent), t('ui-dash-traffic'), `${t('ui-dash-received')} ${fmtBytes(drawn.received)} · ${t('ui-dash-sent')} ${fmtBytes(drawn.sent)}`),
-    ];
+    const cards = $$('.g > .card', root);
+    const [attention, traffic, fleet, strip, hosts, processes, events] = cards;
 
-    const chips = h('div', { class: 'chips' }, RANGES.map(([key, days]) => h('button', { type: 'button', class: `chip ${days === state.range ? 'on' : ''}`, on: { click: () => { state.range = days; remember('localStorage', 'ap-range', String(days)); route(); } } }, t(key))));
-    const trafficCard = h('section', { class: 'card c8' },
-      h('div', { class: 'card-h' }, h('h3', null, t('ui-dash-traffic')), h('div', { class: 'sp' }), chips),
-      h('div', { class: 'card-b' },
-        h('div', { class: 'chart' }, drawn.svg),
-        h('div', { class: 'legend' },
-          h('span', { class: 'in' }, h('i'), `${t('ui-dash-received')} `, h('b', null, fmtBytes(drawn.received))),
-          h('span', { class: 'out' }, h('i'), `${t('ui-dash-sent')} `, h('b', null, fmtBytes(drawn.sent))))));
-
-    const processes = seesNodes ? card('c4', t('ui-dash-processes'), live.length,
-      live.length ? h('div', { class: 'scroll' }, h('table', { class: 'tbl' }, h('tbody', null, live.map((node) => h('tr', null,
-        h('td', { class: 'name' }, node.label),
-        h('td', null, node.health ? word(node.health.engine) : h('span', { class: 'm3' }, t('ui-no-report'))),
-        h('td', null, node.health ? word(node.health.site) : ''),
-        h('td', null, node.health ? word(node.health.reach) : ''),
-      ))))) : empty()) : null;
-
-    const hosts = seesNodes ? card('c12', t('ui-dash-hosts'), live.length,
-      live.length ? table([
-        { label: t('ui-col-node') }, { label: t('ui-col-cpus'), right: true }, { label: t('ui-col-memory'), right: true },
-        { label: t('ui-col-files'), right: true }, { label: t('ui-col-stall'), right: true }, { label: t('ui-col-pressure') },
-      ], live.map((node) => {
-        const m = node.machine;
-        return h('tr', null,
-          h('td', { class: 'name' }, node.label, h('div', { class: 'sub' }, kindOf(node))),
-          h('td', { class: 'r mono' }, m ? fmtNum(m.cpus) : ''),
-          h('td', { class: 'r mono' }, m ? [fmtMb(m.memory_used_mb), m.memory_limit_mb ? ` / ${fmtMb(m.memory_limit_mb)}` : '', m.memory_limit_mb ? bar(m.memory_used_mb, m.memory_limit_mb) : null] : ''),
-          h('td', { class: 'r mono' }, m && m.open_files != null ? [fmtNum(m.open_files), m.file_limit ? ` / ${fmtNum(m.file_limit)}` : ''] : ''),
-          h('td', { class: 'r mono' }, m ? `${Number(m.memory_stall).toFixed(1)}% · ${Number(m.cpu_stall).toFixed(1)}%` : ''),
-          h('td', null, m ? pressure(m.pressure) : h('span', { class: 'm3' }, t('ui-no-report'))),
-        );
-      })) : empty()) : null;
-
-    const events = readsAudit ? card('c12', t('ui-dash-events'), audit.length,
-      audit.length ? table([{ label: t('ui-col-time') }, { label: t('ui-col-action') }, { label: t('ui-col-target') }],
-        audit.map((entry) => h('tr', null, h('td', { class: 'mono m2' }, fmtDateTime(entry.at)), h('td', null, entry.action), h('td', { class: 'mono' }, entry.target || '')))) : empty()) : null;
-
-    return h('div', { class: 'content' },
-      attentionCard,
-      h('div', { class: 'g' }, strip),
-      h('div', { class: 'g' }, trafficCard, processes),
-      hosts ? h('div', { class: 'g' }, hosts) : null,
-      events ? h('div', { class: 'g' }, events) : null,
-    );
-  }
-
-  // ── nodes ───────────────────────────────────────────────────────────────
-
-  function enrolCommand(host, code, fingerprint) {
-    return `anyproxy-agent enroll --panel ${host || '<panel-host>'}:8443 --code ${code} --fingerprint ${fingerprint}`;
-  }
-
-  function showEnrolment(node, issued) {
-    const host = h('input', { type: 'text', placeholder: '<panel-host>', spellcheck: false });
-    const command = h('code', null, enrolCommand('', issued.code, issued.panel_fingerprint));
-    host.addEventListener('input', () => { command.textContent = enrolCommand(host.value.trim(), issued.code, issued.panel_fingerprint); });
-    modal({
-      title: `${t('ui-enrol-title')} · ${node.label}`,
-      body: h('div', { style: 'display:flex;flex-direction:column;gap:12px' },
-        h('p', { class: 'warn' }, `${t('ui-enrol-once')} · ${t('ui-enrol-expires', { date: fmtDateTime(issued.expires_at) })}`),
-        h('div', { class: 'kv' },
-          h('span', { class: 'k' }, t('ui-enrol-code')), h('span', { class: 'mono' }, issued.code),
-          h('span', { class: 'k' }, t('ui-enrol-fingerprint')), h('span', { class: 'mono', style: 'overflow-wrap:anywhere' }, issued.panel_fingerprint)),
-        field(t('ui-panel-host'), host),
-        field(t('ui-enrol-command'), h('div', { class: 'code' }, command, h('button', { type: 'button', class: 'btn sm', on: { click: () => copy(command.textContent) } }, t('ui-copy')))),
-      ),
-      actions: [{ label: t('ui-close'), run: (close) => close() }],
-      onClose: () => route(),
-    });
-  }
-
-  function newNodeModal() {
-    const label = h('input', { type: 'text', required: true, pattern: '[a-z0-9_-]{1,32}', spellcheck: false });
-    const kind = h('select', null, ['mtproto', 'web', 'socks5', 'http'].map((value) => h('option', { value }, t(`ui-kind-${value}`))));
-    const masked = h('input', { type: 'checkbox', checked: true });
-    const domain = h('input', { type: 'text', placeholder: 'example.com', spellcheck: false });
-    const maskedField = field(t('ui-new-node-masked'), masked, 'row');
-    const domainField = field(t('ui-new-node-domain'), domain, 'wide');
-    const err = errorLine();
-    function refresh() {
-      maskedField.hidden = kind.value !== 'mtproto';
-      domainField.hidden = !(kind.value === 'web' || (kind.value === 'mtproto' && masked.checked));
+    // ── needs attention ──
+    put(attention, '.ch h2', t('ui-dash-attention'));
+    put(attention, '.ch .cnt', num(wanting.length));
+    const all = put(attention, '.ch .lnk', t('ui-dash-all-nodes'));
+    if (all) all.setAttribute('href', '#/nodes');
+    if (wanting.length) {
+      repeat($('.cb', attention), wanting.slice(0, 6), (row, node) => {
+        dot($('.sd', row), standing(node));
+        $('.nm', row).lastChild.textContent = node.label;
+        put(row, '.what', trouble(node));
+        put(row, '.since', ago(node.last_seen_at));
+        const act = $('.act .btn', row);
+        act.textContent = t('ui-dash-open-node');
+        act.setAttribute('href', '#/nodes');
+        // The stand marks the row that needs doing something about first.
+        act.classList.toggle('key', standing(node) === 'bad');
+      });
+    } else {
+      const row = $('.cb .prow', attention);
+      dot($('.sd', row), 'ok');
+      $('.nm', row).lastChild.textContent = t('ui-dash-all-calm');
+      put(row, '.what', t('ui-dash-calm-note', { count: num(seen.length) }));
+      put(row, '.since', '');
+      $('.act', row).replaceChildren();
+      $('.cb', attention).replaceChildren(row);
+      attention.classList.remove('att');
     }
-    kind.addEventListener('change', refresh);
-    masked.addEventListener('change', refresh);
-    refresh();
-    modal({
-      title: t('ui-new-node-title'),
-      body: h('div', { class: 'form' }, field(t('ui-new-node-label'), label), field(t('ui-new-node-kind'), kind), maskedField, domainField, h('div', { class: 'wide' }, err)),
-      actions: [
-        { label: t('ui-cancel'), run: (close) => close() },
-        { label: t('ui-new-node-submit'), kind: 'primary', run: (close, button) => attempt(button, err, async () => {
-          const body = { label: label.value.trim(), kind: kind.value };
-          if (kind.value === 'mtproto') body.masked = masked.checked;
-          if (!domainField.hidden) body.domain = domain.value.trim();
-          const node = await api('POST', '/v1/nodes', body);
-          const issued = await api('POST', `/v1/nodes/${node.id}/enrollment`);
-          close();
-          showEnrolment(node, issued);
-        }) },
-      ],
-    });
+
+    // ── traffic ──
+    put(traffic, '.ch h2', t('ui-dash-traffic'));
+    put(traffic, '.ch .note', t('ui-dash-traffic-note'));
+    const seg = $('.seg', traffic);
+    seg.replaceChildren(...RANGES.map(([label, days]) => h('label', {
+      class: days === state.range ? 'on' : '',
+      role: 'button',
+      tabindex: '0',
+      on: { click: () => { state.range = days; remember('localStorage', 'ap-range', String(days)); route(); } },
+    }, label)));
+    const [total, unit] = scale(drawn.total);
+    put(traffic, '.big .v', total);
+    put(traffic, '.big .u', unit);
+    const delta = $('.big .delta', traffic);
+    if (change == null) {
+      delta.remove();
+    } else {
+      // The stand carried a figure per range in its own <b>; one range is
+      // drawn here, so the spares go with it.
+      $$('b', delta).slice(1).forEach((spare) => spare.remove());
+      put(delta, 'b', t(change < 0 ? 'ui-dash-down' : 'ui-dash-up', { percent: Math.abs(change) }));
+    }
+
+    const svg = $('.chart svg', traffic);
+    const view = svg.getAttribute('viewBox').split(' ').map(Number);
+    const { line, x, y } = curve(drawn.points, view[2], 8, 162);
+    // The stand drew a curve per range; the panel draws the one it was asked
+    // for, so the spare fills and lines go — the first of each stays.
+    const fills = $$('.fill', svg);
+    const lines = $$('.line', svg);
+    fills.slice(1).forEach((path) => path.remove());
+    lines.slice(1).forEach((path) => path.remove());
+    const fill = fills[0];
+    const stroke = lines[0];
+    fill.setAttribute('d', `${line} L ${view[2]} ${view[3]} L 0 ${view[3]} Z`);
+    stroke.setAttribute('d', line);
+    // The line is drawn by a dash the length of the path; the stand's was
+    // 1500 units long and ours is whatever the days make it, so it is
+    // measured rather than assumed — otherwise the curve arrives in pieces.
+    const length = Math.ceil(stroke.getTotalLength());
+    stroke.style.strokeDasharray = length;
+    stroke.style.strokeDashoffset = length;
+    stroke.style.animationName = 'draw';
+    const top = drawn.points[drawn.peak];
+    const peakX = x(drawn.peak).toFixed(1);
+    const peakY = y(top.in + top.out).toFixed(1);
+    const vline = $('.vline', svg);
+    vline.setAttribute('x1', peakX);
+    vline.setAttribute('x2', peakX);
+    vline.setAttribute('y1', peakY);
+    const mark = $('.pk', svg);
+    mark.setAttribute('cx', peakX);
+    mark.setAttribute('cy', peakY);
+    const tip = $('.tip', traffic);
+    tip.style.left = `${Math.min(88, Math.max(12, (drawn.peak / Math.max(1, drawn.points.length - 1)) * 100))}%`;
+    put(tip, '.d', day(top.day));
+    put(tip, '.n', bytes(top.in + top.out));
+    put(tip, '.s', `${t('ui-dash-received')} ${bytes(top.in)} · ${t('ui-dash-sent')} ${bytes(top.out)}`);
+    const axis = $$('.xax > span', traffic);
+    put(axis[0], null, day(drawn.points[0].day));
+    put(axis[1], null, day(drawn.points[drawn.points.length - 1].day));
+    const foot = $$('.tfoot > span', traffic);
+    const figure = (span, label, value) => span.replaceChildren(`${label} `, h('b', null, value));
+    figure(foot[0], t('ui-dash-received'), bytes(drawn.received));
+    figure(foot[1], t('ui-dash-sent'), bytes(drawn.sent));
+    figure(foot[2], t('ui-dash-peak'), bytes(top.in + top.out));
+    figure(foot[3], t('ui-dash-average'), bytes(drawn.total / state.range));
+
+    // ── the fleet ──
+    if (!seesNodes) fleet.remove();
+    else {
+      put(fleet, '.ch h2', t('ui-dash-nodes'));
+      put(fleet, '.ch .note', t('ui-dash-updated-at', { time: clock(new Date().toISOString()) }));
+      const count = $('.fleet', fleet);
+      count.replaceChildren(h('span', { class: 'v' }, num(seen.length)), h('span', { class: 'u' }, t('ui-dash-in-touch', { count: num(live.length) })));
+      repeat($('.bars', fleet), live.slice(0, 24), (bar, node, index) => {
+        dot(bar, standing(node));
+        bar.style.setProperty('--sd', `${index * 40}ms`);
+      });
+      repeat($('.nlist', fleet), live.slice(0, 5), (row, node) => {
+        dot($('.sd', row), standing(node));
+        put(row, '.nm', node.label);
+        $('.nm', row).classList.toggle('m3', standing(node) === 'none');
+        const rt = $('.rt', row);
+        rt.className = `rt ${standing(node) === 'ok' ? '' : standing(node) === 'bad' ? 'b' : 'w'}`;
+        rt.textContent = standing(node) === 'ok' ? `${node.agent_version || '—'} · ${clock(node.last_seen_at)}` : trouble(node);
+      });
+      const banner = $('.banner', fleet);
+      if (!wanting.length) banner.remove();
+      else {
+        put(banner, 'span', `${wanting[0].label}: ${trouble(wanting[0])}`);
+        const link = $('a', banner);
+        link.textContent = t('ui-dash-open-node');
+        link.setAttribute('href', '#/nodes');
+      }
+    }
+
+    // ── the strip of four ──
+    const versions = [...new Set(live.map((node) => node.agent_version).filter(Boolean))];
+    const cells = $$('.strip4 > div', strip);
+    const cell = (index, label, ...value) => {
+      put(cells[index], '.k', label);
+      $('.v', cells[index]).replaceChildren(...value);
+    };
+    cell(0, t('ui-strip-panel'), h('span', { class: 'mono' }, state.version || '—'));
+    cell(1, t('ui-strip-agents'), h('span', { class: 'mono' }, versions.length ? versions.join(' · ') : '—'));
+    cell(2, t('ui-strip-channel'), h('span', { class: `sd ${seen.length === live.length ? '' : 'w'}` }), t('ui-dash-in-touch-of', { seen: num(seen.length), total: num(live.length) }));
+    cell(3, t('ui-strip-accesses'), h('span', { class: 'sd' }), h('span', { class: 'mono' }, num(accesses.filter((access) => access.state === 'active').length)),
+      h('span', { class: 'm3' }, ` · ${t('ui-strip-of-clients', { count: num(clients.length) })}`));
+
+    // ── hosts ──
+    if (!seesNodes) hosts.remove();
+    else {
+      put(hosts, '.ch h2', t('ui-dash-hosts'));
+      put(hosts, '.ch .note', t('ui-dash-hosts-note'));
+      const head = $$('.t-host .th > div', hosts);
+      [t('ui-col-node'), t('ui-col-cpu'), t('ui-col-memory'), t('ui-col-network'), t('ui-col-connections'), t('ui-col-uptime')]
+        .forEach((label, index) => { if (head[index]) put(head[index], null, label); });
+      const reported = live.filter((node) => node.machine);
+      const shown = (reported.length ? reported : live).slice(0, 8);
+      const body = $('.t-host', hosts);
+      const rows = [...body.children].filter((child) => child.classList.contains('tr'));
+      const shape = rows[0];
+      body.replaceChildren($('.th', body), ...shown.map((node) => {
+        const row = shape.cloneNode(true);
+        const machine = node.machine;
+        dot($('.nmdot .sd', row), standing(node));
+        $('.nmdot', row).lastChild.textContent = node.label;
+        const cellAt = (index, text, part) => {
+          const box = $$('.cell', row)[index];
+          put(box, '.pct', text);
+          $('.pct', box).classList.toggle('warn', part != null && part >= 0.85);
+          const bar = $('.bar i', box);
+          if (part == null) $('.bar', box).remove();
+          else { bar.style.setProperty('--p', part.toFixed(2)); bar.classList.toggle('hot', part >= 0.85); }
+        };
+        const share = (used, limit) => (limit ? Math.min(1, Number(used) / Number(limit)) : null);
+        const percent = (part) => (part == null ? '—' : `${Math.round(part * 100)} %`);
+        if (machine) {
+          const processor = machine.cpu_percent == null ? null : Math.min(1, machine.cpu_percent / 100);
+          const memory = share(machine.memory_used_mb, machine.memory_limit_mb);
+          cellAt(0, processor == null ? '—' : `${Math.round(machine.cpu_percent)} %`, processor);
+          cellAt(1, percent(memory), memory);
+        } else {
+          // The stand draws a silent node as a short row of dashes rather
+          // than as gauges with nothing in them.
+          const cells = $$('.cell', row);
+          cells[0].className = 'm3';
+          cells[0].replaceChildren(t('ui-no-report'));
+          cells[1].className = 'm3';
+          cells[1].replaceChildren('—');
+        }
+        const rest = [...row.children].slice(3);
+        const speed = (bytes) => (bytes == null ? '—' : `${(Number(bytes) * 8 / 1e6).toFixed(1)}`);
+        if (machine && (machine.rx_bps != null || machine.tx_bps != null)) {
+          rest[0].replaceChildren(speed(machine.rx_bps), h('span', { class: 'm3' }, ` / ${speed(machine.tx_bps)}`));
+        } else {
+          put(rest[0], null, '—');
+        }
+        put(rest[1], null, machine && machine.connections != null ? num(machine.connections) : '—');
+        put(rest[2], null, machine && machine.uptime_seconds != null ? uptime(machine.uptime_seconds) : '—');
+        return row;
+      }));
+    }
+
+    // ── processes ──
+    // What the agent says about the engine and about itself. The columns the
+    // stand drew for cpu, memory and restarts are not reported yet, and stay
+    // empty rather than filled with a guess.
+    if (!seesNodes) processes.remove();
+    else {
+      // One row per process name, gathered across the nodes that report it.
+      const gathered = new Map();
+      for (const node of live) {
+        for (const process of node.processes || []) {
+          const row = gathered.get(process.name) || { name: process.name, hosts: 0, cpu: 0, memory: 0, restarts: 0 };
+          row.hosts += 1;
+          row.cpu += Number(process.cpu_percent || 0);
+          row.memory += Number(process.memory_mb || 0);
+          row.restarts += Number(process.restarts || 0);
+          gathered.set(process.name, row);
+        }
+      }
+      const rows = [...gathered.values()].map((row) => ({
+        name: row.name,
+        hosts: t('ui-proc-of-nodes', { count: num(row.hosts), total: num(live.length) }),
+        cpu: `${(row.cpu / Math.max(1, row.hosts)).toFixed(1)} %`,
+        memory: mbytes(row.memory),
+        restarts: row.restarts,
+        well: row.restarts === 0,
+      }));
+      const head = $$('.t-proc .th > div', processes);
+      [t('ui-col-process'), t('ui-col-hosts'), t('ui-col-cpu'), t('ui-col-memory'), t('ui-col-restarts')]
+        .forEach((label, index) => { if (head[index]) head[index].textContent = label; });
+      const body = $('.t-proc', processes);
+      const shape = [...body.children].find((child) => child.classList.contains('tr'));
+      if (!rows.length) {
+        body.replaceChildren($('.th', body), h('div', { class: 'tr m3' }, t('ui-no-report')));
+      } else body.replaceChildren($('.th', body), ...rows.map((row) => {
+        const drawn = shape.cloneNode(true);
+        dot($('.nmdot .sd', drawn), row.well ? 'ok' : 'warn');
+        $('.nmdot .mono', drawn).textContent = row.name;
+        const rest = [...drawn.children].slice(1);
+        put(rest[0], null, row.hosts);
+        put(rest[1], null, row.cpu);
+        put(rest[2], null, row.memory);
+        put(rest[3], null, t('ui-proc-restarts', { count: num(row.restarts) }));
+        rest[3].className = row.restarts ? 'r mono warn' : 'r mono m3';
+        return drawn;
+      }));
+    }
+
+    // ── events ──
+    if (!readsAudit) events.remove();
+    else {
+      const audit = await api('GET', '/v1/audit?limit=6');
+      put(events, '.ch h2', t('ui-dash-events'));
+      const all = $('.ch .lnk', events);
+      if (all) { all.textContent = t('ui-dash-all-log'); all.setAttribute('href', '#/log'); }
+      repeat($('.cb', events), audit, (row, entry) => {
+        put(row, '.t', clock(entry.at));
+        dot($('.sd', row), entry.action.includes('burn') || entry.action.includes('revoke') ? 'bad' : 'ok');
+        const words = [...row.children].find((child) => !child.className);
+        if (words) words.textContent = `${entry.action}${entry.target ? ` · ${entry.target}` : ''}`;
+        put(row, '.who', entry.actor_id ? entry.actor_id.slice(0, 8) : t('ui-none'));
+      });
+    }
+
   }
 
-  function deleteNodeModal(node) {
-    const typed = h('input', { type: 'text', autocomplete: 'off', spellcheck: false });
-    const err = errorLine();
-    modal({
-      title: t('ui-node-delete-title', { label: node.label }),
-      body: h('div', { style: 'display:flex;flex-direction:column;gap:12px' }, h('p', null, t('ui-node-delete-text')), field(t('ui-node-delete-type'), typed), err),
-      actions: [
-        { label: t('ui-cancel'), run: (close) => close() },
-        { label: t('ui-node-delete-confirm'), kind: 'danger', ready: (button) => { button.disabled = true; typed.addEventListener('input', () => { button.disabled = typed.value.trim() !== node.label; }); },
-          run: (close, button) => attempt(button, err, async () => { await api('POST', `/v1/nodes/${node.id}/burn`); close(); route(); }) },
-      ],
-    });
-  }
+  // ── nodes, users, log: the stand's own markup, filled ───────────────────
 
-  function domainModal(node) {
-    const domain = h('input', { type: 'text', value: node.domain || '', spellcheck: false });
-    const err = errorLine();
-    modal({
-      title: `${t('ui-rename-title')} · ${node.label}`,
-      body: h('div', { style: 'display:flex;flex-direction:column;gap:12px' }, field(t('ui-node-domain'), domain), err),
-      actions: [
-        { label: t('ui-cancel'), run: (close) => close() },
-        { label: t('ui-save'), kind: 'primary', run: (close, button) => attempt(button, err, async () => { await api('POST', `/v1/nodes/${node.id}/names`, { domain: domain.value.trim() || null }); close(); route(); }) },
-      ],
-    });
-  }
+  async function nodes(root) {
+    const [list, accesses] = await Promise.all([
+      api('GET', '/v1/nodes'),
+      api('GET', `/v1/accesses?limit=${PAGE}`),
+    ]);
+    state.known.nodes = list;
+    const live = list.filter((node) => node.state !== 'burned');
+    const shown = live.filter((node) => state.filter === 'all'
+      || (state.filter === 'attention' ? standing(node) !== 'ok' : node.kind === state.filter));
+    const held = new Map();
+    for (const access of accesses) held.set(access.node_id, (held.get(access.node_id) || 0) + 1);
 
-  function sponsorModal(node) {
-    const tag = h('input', { type: 'text', value: node.ad_tag || '', pattern: '[0-9a-f]{32}', spellcheck: false, placeholder: '0'.repeat(32) });
-    const err = errorLine();
-    const actions = [{ label: t('ui-cancel'), run: (close) => close() }];
-    if (node.ad_tag) actions.push({ label: t('ui-sponsor-clear'), kind: 'danger', run: (close, button) => attempt(button, err, async () => { await api('POST', `/v1/nodes/${node.id}/sponsorship`, { ad_tag: null }); close(); route(); }) });
-    actions.push({ label: t('ui-save'), kind: 'primary', run: (close, button) => attempt(button, err, async () => { await api('POST', `/v1/nodes/${node.id}/sponsorship`, { ad_tag: tag.value.trim() }); close(); route(); }) });
-    modal({ title: `${t('ui-sponsor-title')} · ${node.label}`, body: h('div', { style: 'display:flex;flex-direction:column;gap:12px' }, field(t('ui-node-ad-tag'), tag), err), actions });
-  }
+    put(root, '.phead h1', t('ui-nav-nodes'));
+    const well = live.filter((node) => standing(node) === 'ok').length;
+    $('.phead .pmeta', root)?.replaceChildren(
+      t('ui-nodes-well', { well: num(well), total: num(live.length) }), h('br'),
+      t('ui-nodes-wanting', { count: num(live.length - well) }));
 
-  function nodeCard(node, index) {
-    const manages = state.me.role === 'superadmin';
-    const m = node.machine;
-    const burned = node.state === 'burned';
-    const acts = manages && !burned ? h('div', { class: 'acts' },
-      node.domain != null ? h('button', { type: 'button', class: 'btn sm', on: { click: () => domainModal(node) } }, t('ui-node-rename')) : null,
-      node.kind === 'mtproto' ? h('button', { type: 'button', class: 'btn sm', on: { click: () => sponsorModal(node) } }, t('ui-node-sponsor')) : null,
-      h('button', { type: 'button', class: 'btn sm', on: { click: async () => { try { showEnrolment(node, await api('POST', `/v1/nodes/${node.id}/enrollment`)); } catch (error) { refused(error); } } } }, t('ui-node-code')),
-      h('button', { type: 'button', class: 'btn sm danger', on: { click: () => deleteNodeModal(node) } }, t('ui-node-delete')),
-    ) : null;
-    return h('section', { class: 'card c6 ncard', style: `--d:${index * 40}ms; ${burned ? 'opacity:.55' : ''}` }, h('div', { class: 'card-b' },
-      h('div', { class: 'top' }, node.wants_attention ? dot('bad') : null, h('span', { class: 'lbl' }, node.label), h('span', { class: 'm2' }, kindOf(node)), h('div', { class: 'sp', style: 'flex:1' }), stateChip('node', node.state)),
-      h('div', { class: 'line' },
-        node.domain ? h('span', null, `${t('ui-node-domain')} `, h('span', { class: 'mono' }, node.domain)) : null,
-        node.address ? h('span', null, `${t('ui-node-address')} `, h('span', { class: 'mono' }, node.address)) : null,
-        node.ad_tag ? h('span', null, `${t('ui-node-ad-tag')} `, h('span', { class: 'mono' }, `${node.ad_tag.slice(0, 8)}…`)) : null),
-      node.health
-        ? h('div', { class: 'health' },
-          h('span', null, `${t('ui-health-engine')} `, word(node.health.engine)),
-          h('span', null, `${t('ui-health-site')} `, word(node.health.site)),
-          h('span', null, `${t('ui-health-reach')} `, word(node.health.reach)),
-          h('span', { class: node.health.cert_not_after ? 'm2' : 'm3' }, node.health.cert_not_after ? t('ui-cert-until', { date: fmtDate(node.health.cert_not_after) }) : (node.kind === 'web' ? t('ui-cert-none') : '')))
-        : h('div', { class: 'health m3' }, t('ui-no-report')),
-      m ? h('div', { class: 'hw' },
-        h('b', null, fmtNum(m.cpus)), ` ${t('ui-col-cpus')} · `,
-        h('b', null, fmtMb(m.memory_used_mb)), m.memory_limit_mb ? ` / ${fmtMb(m.memory_limit_mb)}` : '', ` · ${t('ui-col-files')} `,
-        h('b', null, m.open_files != null ? fmtNum(m.open_files) : t('ui-none')), m.file_limit ? ` / ${fmtNum(m.file_limit)}` : '', ' · ', pressure(m.pressure)) : null,
-      h('div', { class: 'line m3' },
-        h('span', null, `${t('ui-node-agent')} `, h('span', { class: 'mono' }, node.agent_version || t('ui-none'))),
-        h('span', null, `${t('ui-node-seen')} `, h('span', { class: 'mono' }, fmtDateTime(node.last_seen_at))),
-        h('span', null, `${t('ui-node-created')} `, h('span', { class: 'mono' }, fmtDate(node.created_at)))),
-      acts,
-    ));
-  }
-
-  async function nodesView() {
-    const nodes = await api('GET', '/v1/nodes');
-    const kinds = [...new Set(nodes.map((node) => node.kind))];
-    const filters = [['all', t('ui-all')], ['attention', t('ui-filter-attention')], ...kinds.map((kind) => [kind, t(`ui-kind-${kind}`)])];
-    const shown = nodes.filter((node) => state.nodeFilter === 'all' || (state.nodeFilter === 'attention' ? node.wants_attention : node.kind === state.nodeFilter));
-    const chips = h('div', { class: 'chips' }, filters.map(([value, label]) => h('button', { type: 'button', class: `chip ${state.nodeFilter === value ? 'on' : ''}`, on: { click: () => { state.nodeFilter = value; route(); } } }, label)));
-    return h('div', { class: 'content' },
-      h('div', { class: 'phead' }, h('div', { class: 'tools' }, chips), state.me.role === 'superadmin' ? h('button', { type: 'button', class: 'btn primary', on: { click: newNodeModal } }, t('ui-nodes-new')) : null),
-      shown.length ? h('div', { class: 'g' }, shown.map(nodeCard)) : h('section', { class: 'card' }, h('div', { class: 'card-b' }, empty())),
-    );
-  }
-
-  // ── users ───────────────────────────────────────────────────────────────
-
-  function nodeName(nodes, id) {
-    const node = nodes.find((candidate) => candidate.id === id);
-    return node ? node.label : id.slice(0, 8);
-  }
-
-  async function clientModal(client) {
-    let used = null;
-    try { used = await api('GET', `/v1/clients/${client.id}/traffic`); } catch (error) { refused(error); }
-    const err = errorLine();
-    const setState = (value) => (close, button) => attempt(button, err, async () => { await api('POST', `/v1/clients/${client.id}/state`, { state: value }); close(); route(); });
-    const actions = [{ label: t('ui-close'), run: (close) => close() }];
-    if (client.state === 'active') actions.push({ label: t('ui-client-suspend'), run: setState('suspended') });
-    if (client.state === 'suspended') actions.push({ label: t('ui-client-resume'), kind: 'primary', run: setState('active') });
-    if (client.state !== 'archived') actions.push({ label: t('ui-client-archive'), kind: 'danger', run: setState('archived') });
-    modal({
-      title: client.label,
-      body: h('div', { style: 'display:flex;flex-direction:column;gap:12px' }, h('div', { class: 'kv' },
-        h('span', { class: 'k' }, t('ui-col-state')), stateChip('client', client.state),
-        h('span', { class: 'k' }, t('ui-col-quota')), h('span', null, fmtQuota(client.quota_bytes)),
-        h('span', { class: 'k' }, t('ui-used')), h('span', null, used ? fmtBytes(used.total) : t('ui-none')),
-        h('span', { class: 'k' }, t('ui-col-expires')), h('span', null, fmtDate(client.expires_at)),
-        h('span', { class: 'k' }, t('ui-node-created')), h('span', null, fmtDate(client.created_at))), err),
-      actions,
-    });
-  }
-
-  function newClientModal() {
-    const label = h('input', { type: 'text', required: true, pattern: '[a-z0-9_-]{1,32}', spellcheck: false });
-    const quota = h('input', { type: 'number', min: '0', step: '0.1' });
-    const expires = h('input', { type: 'date' });
-    const err = errorLine();
-    modal({
-      title: t('ui-new-client-title'),
-      body: h('div', { class: 'form' }, field(t('ui-new-client-label'), label, 'wide'), field(t('ui-new-client-quota'), quota), field(t('ui-new-client-expires'), expires), h('div', { class: 'wide' }, err)),
-      actions: [
-        { label: t('ui-cancel'), run: (close) => close() },
-        { label: t('ui-create'), kind: 'primary', run: (close, button) => attempt(button, err, async () => {
-          await api('POST', '/v1/clients', { label: label.value.trim(), quota_bytes: gbToBytes(quota.value), expires_at: dayToExpiry(expires.value) });
-          close();
-          route();
-        }) },
-      ],
-    });
-  }
-
-  function newAccessModal(clients, nodes, isPublic) {
-    const client = h('select', null, clients.filter((candidate) => candidate.state === 'active').map((candidate) => h('option', { value: candidate.id }, candidate.label)));
-    const name = h('input', { type: 'text', maxlength: '64' });
-    const node = h('select', null, nodes.filter((candidate) => candidate.state !== 'burned').map((candidate) => h('option', { value: candidate.id }, `${candidate.label} · ${kindOf(candidate)}`)));
-    const quota = h('input', { type: 'number', min: '0', step: '0.1' });
-    const expires = h('input', { type: 'date' });
-    const devices = h('input', { type: 'number', min: '1', max: '1000', step: '1' });
-    const err = errorLine();
-    modal({
-      title: t(isPublic ? 'ui-users-new-public' : 'ui-new-access-title'),
-      body: h('div', { class: 'form' },
-        isPublic ? field(t('ui-new-access-name'), name, 'wide') : field(t('ui-new-access-client'), client, 'wide'),
-        field(t('ui-new-access-node'), node, 'wide'),
-        field(t('ui-new-access-quota'), quota), field(t('ui-new-access-expires'), expires), field(t('ui-new-access-devices'), devices),
-        h('div', { class: 'wide' }, err)),
-      actions: [
-        { label: t('ui-cancel'), run: (close) => close() },
-        { label: t('ui-create'), kind: 'primary', run: (close, button) => attempt(button, err, async () => {
-          const body = { node_id: node.value, quota_bytes: gbToBytes(quota.value), expires_at: dayToExpiry(expires.value), max_devices: devices.value ? Number(devices.value) : null };
-          if (isPublic) body.name = name.value.trim(); else body.client_id = client.value;
-          await api('POST', '/v1/accesses', body);
-          close();
-          route();
-        }) },
-      ],
-    });
-  }
-
-  function linkModal(access, node) {
-    const host = h('input', { type: 'text', value: (node && node.address) || (node && node.domain) || '', spellcheck: false });
-    const ack = h('input', { type: 'checkbox' });
-    const err = errorLine();
-    const result = h('div', { style: 'display:flex;flex-direction:column;gap:8px' });
-    modal({
-      title: `${t('ui-link-title')} · ${access.name || nodeName(node ? [node] : [], access.node_id)}`,
-      body: h('div', { style: 'display:flex;flex-direction:column;gap:12px' }, field(t('ui-link-host'), host), field(t('ui-link-ack'), ack, 'row'), err, result),
-      actions: [
-        { label: t('ui-close'), run: (close) => close() },
-        { label: t('ui-link-get'), kind: 'primary', run: (close, button) => attempt(button, err, async () => {
-          const issued = await api('POST', `/v1/accesses/${access.id}/link`, { host: host.value.trim(), acknowledged: ack.checked });
-          result.replaceChildren();
-          if (issued.link) {
-            result.append(codeLine(issued.link));
-          } else {
-            result.append(h('div', { class: 'kv' },
-              h('span', { class: 'k' }, t('ui-link-host')), h('span', { class: 'mono' }, issued.host),
-              h('span', { class: 'k' }, t('ui-link-port')), h('span', { class: 'mono' }, issued.port),
-              h('span', { class: 'k' }, t('ui-link-user')), h('span', { class: 'mono' }, issued.user),
-              h('span', { class: 'k' }, t('ui-link-password')), h('span', { class: 'mono' }, issued.password)));
-            result.append(codeLine(`${issued.method}://${issued.user}:${issued.password}@${issued.host}:${issued.port}`));
-          }
-          button.disabled = true;
-        }) },
-      ],
-    });
-  }
-
-  function revokeModal(access, label) {
-    const err = errorLine();
-    modal({
-      title: `${t('ui-access-revoke')} · ${label}`,
-      body: h('div', null, h('p', null, t('ui-access-revoke-text')), err),
-      actions: [
-        { label: t('ui-cancel'), run: (close) => close() },
-        { label: t('ui-access-revoke'), kind: 'danger', run: (close, button) => attempt(button, err, async () => { await api('POST', `/v1/accesses/${access.id}/state`, { state: 'revoked' }); close(); route(); }) },
-      ],
-    });
-  }
-
-  function accessActions(access, label, node) {
-    if (access.state === 'revoked') return null;
-    const flip = async (value) => { try { await api('POST', `/v1/accesses/${access.id}/state`, { state: value }); route(); } catch (error) { refused(error); } };
-    return [
-      access.state === 'active' ? h('button', { type: 'button', class: 'btn sm', on: { click: () => linkModal(access, node) } }, t('ui-access-link')) : null,
-      access.state === 'active'
-        ? h('button', { type: 'button', class: 'btn sm', on: { click: () => flip('disabled') } }, t('ui-access-disable'))
-        : h('button', { type: 'button', class: 'btn sm', on: { click: () => flip('active') } }, t('ui-access-enable')),
-      h('button', { type: 'button', class: 'btn sm danger', on: { click: () => revokeModal(access, label) } }, t('ui-access-revoke')),
+    // The filters the stand drew, made to work.
+    const kinds = [...new Set(live.map((node) => node.kind))];
+    const filters = [
+      ['all', t('ui-all'), live.length],
+      ['attention', t('ui-filter-attention'), live.filter((node) => standing(node) !== 'ok').length],
+      ...kinds.map((kind) => [kind, t(`ui-kind-${kind}`), live.filter((node) => node.kind === kind).length]),
     ];
+    const bar = $('.fbar', root);
+    if (bar) {
+      const shape = bar.firstElementChild;
+      bar.replaceChildren(...filters.map(([value, label, count]) => {
+        const chip = shape.cloneNode(true);
+        const badge = $('.n', chip);
+        chip.replaceChildren(label, badge || '');
+        if (badge) badge.textContent = num(count);
+        chip.classList.toggle('on', state.filter === value);
+        chip.removeAttribute('for');
+        chip.addEventListener('click', () => { state.filter = value; route(); });
+        return chip;
+      }));
+      if (state.me.role === 'superadmin') {
+        bar.append(h('button', { type: 'button', class: 'btn key', style: 'margin-left: auto',
+          on: { click: newNode } }, t('ui-nodes-new')));
+      }
+    }
+
+    // The stand drew a node in four conditions and a tile for adding one.
+    // A node takes the card it was drawn in rather than the first one.
+    const grid = $('.grid', root);
+    const drawn = [...grid.children].filter((child) => child.classList.contains('card'));
+    const add = $('.add', grid);
+    const shapes = {
+      ok: drawn[0],
+      warn: drawn[1] || drawn[0],
+      bad: drawn[drawn.length - 1],
+      none: drawn[drawn.length - 1],
+    };
+    const cards = shown.map((node, index) => {
+      const card = shapes[standing(node)].cloneNode(true);
+      card.style.setProperty('--d', `${Math.min(index, 12) * 40}ms`);
+      fillNodeCard(card, node, held.get(node.id) || 0);
+      return card;
+    });
+    if (add && state.me.role === 'superadmin') {
+      add.removeAttribute('href');
+      add.addEventListener('click', (event) => { event.preventDefault(); newNode(); });
+      cards.push(add);
+    }
+    grid.replaceChildren(...cards);
   }
 
-  function accessCells(access, nodes) {
-    const node = nodes.find((candidate) => candidate.id === access.node_id);
-    return [
-      h('td', null, nodeName(nodes, access.node_id), h('div', { class: 'sub' }, t(`ui-method-${access.method}`))),
-      h('td', null, stateChip('access', access.state)),
-      h('td', { class: 'r mono' }, fmtQuota(access.quota_bytes)),
-      h('td', { class: 'r mono' }, fmtDateShort(access.expires_at)),
-      h('td', { class: 'r mono opt' }, access.max_devices == null ? t('ui-none') : fmtNum(access.max_devices)),
-      h('td', { class: 'mono m2 opt' }, fmtDateShort(access.created_at)),
-      node,
-    ];
+  const DOT_WORD = { ok: 'up', warn: 'warn', bad: 'bad', none: 'none' };
+
+  function fillNodeCard(card, node, accesses) {
+    const machine = node.machine;
+    const how = standing(node);
+    const head = $('.chead', card);
+    const mark = $('.sd', head);
+    mark.className = `sd ${DOT_WORD[how]}`;
+    put(head, '.nm', node.label);
+    const badge = $('.badge', head);
+    if (badge) {
+      badge.textContent = t(`ui-node-state-${node.state}`);
+      badge.className = `badge ${how === 'ok' ? 'hid' : ''}`;
+    }
+    const where = node.domain || node.address || '—';
+    const line = $('.cline', card);
+    if (how === 'ok') line.replaceChildren(h('span', { class: 'mono' }, where), ` · ${kindOf(node)}`);
+    else line.replaceChildren(trouble(node), ' · ', h('span', { class: 'mono' }, where));
+    put(card, '.hw', machine
+      ? `${num(machine.cpus)} CPU · ${machine.memory_limit_mb ? mbytes(machine.memory_limit_mb) : '—'}`
+      : '—');
+
+    const stats = $$('.stat', card);
+    const stat = (index, key, value, unit) => {
+      if (!stats[index]) return;
+      put(stats[index], '.k', key);
+      $('.v', stats[index]).replaceChildren(value, unit ? h('span', null, ` ${unit}`) : '');
+    };
+    stat(0, t('ui-col-accesses'), num(accesses));
+    stat(1, t('ui-col-connections'), machine && machine.connections != null ? num(machine.connections) : '—');
+    stat(2, t('ui-col-uptime'), machine && machine.uptime_seconds != null ? uptime(machine.uptime_seconds) : '—');
+
+    const health = $$('.health > div', card);
+    const words = node.health
+      ? [[t('ui-health-engine'), node.health.engine], [t('ui-health-site'), node.health.site], [t('ui-health-reach'), node.health.reach]]
+      : [[t('ui-health-engine'), null], [t('ui-health-site'), null], [t('ui-health-reach'), null]];
+    words.forEach(([key, value], index) => {
+      if (!health[index]) return;
+      put(health[index], '.k', key);
+      const shownValue = value ? t(`ui-word-${value}`) : t('ui-no-report');
+      const mark_ = h('i', { class: value === 'up' || value === 'open' ? '' : value ? 'bad' : 'n' });
+      $('.v', health[index]).replaceChildren(mark_, shownValue);
+    });
+
+    // The stand's strip is half an hour of history, which the panel does not
+    // keep yet; the bars stand for what the node is now, so the shape is the
+    // drawn one and says nothing it does not know.
+    const strip = $('.strip', card);
+    if (strip) {
+      repeat(strip, Array.from({ length: 20 }), (bar, _, index) => {
+        dot(bar, how);
+        bar.style.setProperty('--sd', `${index * 12}ms`);
+      });
+    }
+    const label = $('.striplbl', card);
+    if (label) {
+      const spans = [...label.children];
+      put(spans[0], null, node.last_seen_at ? ago(node.last_seen_at) : t('ui-never'));
+      put(spans[1], null, t(`ui-node-state-${node.state}`));
+    }
+
+    const foot = $('.cfoot', card);
+    if (foot) {
+      put(foot, '.mono', `${node.agent_version || '—'} · ${node.last_seen_at ? clock(node.last_seen_at) : t('ui-never')}`);
+      const cert = $('.cert', foot);
+      if (cert) {
+        cert.textContent = node.health && node.health.cert_not_after
+          ? t('ui-cert-until', { date: date(node.health.cert_not_after) })
+          : (node.kind === 'web' ? t('ui-cert-none') : '');
+      }
+      const acts = $('.a', foot);
+      if (acts) {
+        acts.replaceChildren(...(state.me.role === 'superadmin' && node.state !== 'burned' ? [
+          node.domain != null ? h('a', { href: '#', on: { click: (event) => { event.preventDefault(); renameNode(node); } } }, t('ui-node-rename')) : null,
+          h('a', { href: '#', on: { click: (event) => { event.preventDefault(); enrol(node); } } }, t('ui-node-code')),
+          h('a', { href: '#', class: 'risk', on: { click: (event) => { event.preventDefault(); deleteNode(node); } } }, t('ui-node-delete')),
+        ].filter(Boolean) : []));
+      }
+    }
   }
 
-  async function usersView() {
+  async function users(root) {
     const seesAll = state.me.role !== 'reseller';
-    const [clients, accesses, nodes, publics] = await Promise.all([
+    const [clients, accesses, list, publics] = await Promise.all([
       api('GET', `/v1/clients?limit=${PAGE}`),
       api('GET', `/v1/accesses?limit=${PAGE}`),
       seesAll ? api('GET', '/v1/nodes').catch(() => []) : Promise.resolve([]),
       seesAll ? api('GET', '/v1/accesses/public').catch(() => []) : Promise.resolve([]),
     ]);
+    state.known = { nodes: list, clients };
+
+    put(root, '.phead h1', t('ui-nav-users'));
+    $('.phead .pmeta', root)?.replaceChildren(
+      t('ui-users-count', { count: num(clients.length) }), h('br'),
+      t('ui-users-accesses', { count: num(accesses.length + publics.length) }));
+    $('.phead', root).append(h('div', { class: 'df', style: 'margin-left: auto; gap: 8px' },
+      h('button', { type: 'button', class: 'btn', on: { click: newClient } }, t('ui-users-new-client')),
+      list.length ? h('button', { type: 'button', class: 'btn key', on: { click: () => newAccess(clients, list, false) } }, t('ui-users-new-access')) : null,
+      list.length ? h('button', { type: 'button', class: 'btn', on: { click: () => newAccess(clients, list, true) } }, t('ui-users-new-public')) : null));
+
+    const table = $('.tbl', root);
+    const head = $$('.th > div', table);
+    [t('ui-col-user'), t('ui-col-node'), t('ui-col-method'), t('ui-col-quota'), t('ui-col-expires'), t('ui-col-link')]
+      .forEach((label, index) => { if (head[index]) head[index].textContent = label; });
+
     const byClient = new Map(clients.map((client) => [client.id, []]));
-    for (const access of accesses) {
-      const own = byClient.get(access.client_id);
-      if (own) own.push(access);
-    }
-
+    for (const access of accesses) byClient.get(access.client_id)?.push(access);
     const rows = [];
-    clients.forEach((client) => {
-      const accesses = byClient.get(client.id) || [];
-      const userCell = () => h('td', null,
-        h('button', { type: 'button', class: 'btn ghost sm', style: 'padding-left:0', on: { click: () => clientModal(client) } }, h('b', null, client.label), ' ', stateChip('client', client.state)),
-        h('div', { class: 'sub' }, `${fmtQuota(client.quota_bytes)} · ${fmtDateShort(client.expires_at)}`));
-      if (!accesses.length) {
-        rows.push(h('tr', null, userCell(), h('td', { class: 'm3', colspan: '7' }, t('ui-empty'))));
-        return;
-      }
-      for (const access of accesses) {
-        const cells = accessCells(access, nodes);
-        const node = cells.pop();
-        rows.push(h('tr', null, userCell(), cells, h('td', { class: 'acts' }, accessActions(access, client.label, node))));
-      }
-    });
+    for (const client of clients) {
+      const own = byClient.get(client.id) || [];
+      if (!own.length) rows.push({ client, access: null, first: true });
+      own.forEach((access, index) => rows.push({ client, access, first: index === 0 }));
+    }
+    for (const access of publics) rows.push({ client: null, access, first: true });
 
-    const columns = [
-      { label: t('ui-col-user') }, { label: t('ui-col-node') }, { label: t('ui-col-state') },
-      { label: t('ui-col-quota'), right: true }, { label: t('ui-col-expires'), right: true },
-      { label: t('ui-col-devices'), right: true, opt: true }, { label: t('ui-col-issued'), opt: true }, { label: '' },
-    ];
-    const publicRows = publics.map((access) => {
-      const cells = accessCells(access, nodes);
-      const node = cells.pop();
-      return h('tr', null, h('td', { class: 'name' }, access.name || access.id.slice(0, 8)), cells, h('td', { class: 'acts' }, accessActions(access, access.name || access.id.slice(0, 8), node)));
-    });
-    const publicColumns = [
-      { label: t('ui-col-name') }, { label: t('ui-col-node') }, { label: t('ui-col-state') },
-      { label: t('ui-col-quota'), right: true }, { label: t('ui-col-expires'), right: true },
-      { label: t('ui-col-devices'), right: true, opt: true }, { label: t('ui-col-issued'), opt: true }, { label: '' },
-    ];
-
-    return h('div', { class: 'content' },
-      h('div', { class: 'phead' }, h('div'), h('div', { class: 'tools' },
-        h('button', { type: 'button', class: 'btn', on: { click: newClientModal } }, t('ui-users-new-client')),
-        nodes.length ? h('button', { type: 'button', class: 'btn primary', on: { click: () => newAccessModal(clients, nodes, false) } }, t('ui-users-new-access')) : null,
-        nodes.length ? h('button', { type: 'button', class: 'btn', on: { click: () => newAccessModal(clients, nodes, true) } }, t('ui-users-new-public')) : null)),
-      card('c12', t('ui-nav-users'), clients.length, rows.length ? table(columns, rows) : empty()),
-      seesAll ? card('c12', t('ui-users-public'), publics.length, publicRows.length ? table(publicColumns, publicRows) : empty()) : null,
-    );
+    const shape = $('.tr', table);
+    const header = $('.th', table);
+    table.replaceChildren(header, ...rows.map(({ client, access, first }) => {
+      const row = shape.cloneNode(true);
+      const node = access ? list.find((candidate) => candidate.id === access.node_id) : null;
+      const who = $('.who', row);
+      who.className = `who ${first ? '' : 'same'}`;
+      who.replaceChildren(client
+        ? h('button', { type: 'button', class: 'lnk', on: { click: () => clientCard(client) } }, first ? client.label : '')
+        : h('span', null, access.name || '—'));
+      const where = $('.node', row);
+      where.replaceChildren(h('span', { class: `sd ${node && standing(node) === 'ok' ? '' : 'w'}` }), node ? node.label : '—');
+      const cells = [...row.children];
+      if (cells[2]) cells[2].textContent = access ? t(`ui-method-${access.method}`) : t('ui-empty');
+      if (cells[3]) cells[3].textContent = access ? quota(access.quota_bytes) : '';
+      if (cells[4]) cells[4].textContent = access ? shortDate(access.expires_at) : '';
+      // The stand shows the link in this cell. A link is a secret, and the
+      // panel hands one out only through the endpoint that writes to the
+      // audit log — so the cell shows that a link exists and the button
+      // beside it is what asks for it.
+      const link = $('.lk', row);
+      if (link) {
+        const value = $('.v', link);
+        const ask = $('.cp', link);
+        if (!access || access.state === 'revoked') {
+          link.replaceChildren(h('span', { class: 'v m3' }, access ? t('ui-access-state-revoked') : ''));
+        } else {
+          if (value) value.textContent = t('ui-link-hidden');
+          if (ask) {
+            ask.replaceChildren(h('button', { type: 'button', class: 'btn', on: { click: () => linkFor(access, node) } }, t('ui-access-link')));
+          }
+          link.append(h('button', {
+            type: 'button',
+            class: 'btn',
+            on: { click: () => setAccess(access, access.state === 'active' ? 'disabled' : 'active') },
+          }, t(access.state === 'active' ? 'ui-access-disable' : 'ui-access-enable')));
+        }
+      }
+      return row;
+    }));
   }
 
-  // ── log ─────────────────────────────────────────────────────────────────
-
-  async function logView() {
+  async function log(root) {
     const entries = await api('GET', `/v1/audit?limit=${PAGE}`);
-    const filter = h('input', { type: 'search', class: 'search', placeholder: t('ui-log-filter') });
-    const body = h('tbody');
+    put(root, '.phead h1', t('ui-nav-log'));
+    $('.phead .pmeta', root)?.replaceChildren(t('ui-log-count', { count: num(entries.length) }));
+
+    const table = $('.tbl', root);
+    const head = $$('.th > div', table);
+    [t('ui-col-time'), t('ui-col-actor'), t('ui-col-action'), t('ui-col-target'), t('ui-col-details'), '']
+      .forEach((label, index) => { if (head[index]) head[index].textContent = label; });
+
+    // The filter the stand drew above the table.
+    const bar = $('.fbar', root);
+    let needle = '';
+    const shape = $('.tr', table);
+    const header = $('.th', table);
     function draw() {
-      const needle = filter.value.trim().toLowerCase();
-      body.replaceChildren(...entries
-        .filter((entry) => !needle || `${entry.action} ${entry.target || ''} ${entry.actor_id || ''} ${JSON.stringify(entry.details || {})}`.toLowerCase().includes(needle))
-        .map((entry) => h('tr', null,
-          h('td', { class: 'mono m2' }, fmtDateTime(entry.at)),
-          h('td', { class: 'mono' }, entry.actor_id ? entry.actor_id.slice(0, 8) : t('ui-none')),
-          h('td', null, entry.action),
-          h('td', { class: 'mono' }, entry.target || ''),
-          h('td', { class: 'mono m3', style: 'white-space:normal;overflow-wrap:anywhere' }, entry.details && Object.keys(entry.details).length ? JSON.stringify(entry.details) : ''))));
-      if (!body.childElementCount) body.append(h('tr', null, h('td', { colspan: '5', class: 'm3' }, t('ui-empty'))));
+      const shown = entries.filter((entry) => !needle
+        || `${entry.action} ${entry.target || ''} ${JSON.stringify(entry.details || {})}`.toLowerCase().includes(needle));
+      table.replaceChildren(header, ...shown.map((entry) => {
+        const row = shape.cloneNode(true);
+        row.className = 'tr';
+        row.removeAttribute('for');
+        const cells = [...row.children];
+        if (cells[0]) cells[0].textContent = clock(entry.at);
+        if (cells[1]) cells[1].textContent = entry.actor_id ? entry.actor_id.slice(0, 8) : t('ui-none');
+        if (cells[2]) { cells[2].textContent = entry.action; cells[2].className = 'ev'; }
+        if (cells[3]) cells[3].textContent = entry.target || '—';
+        if (cells[4]) cells[4].textContent = entry.details && Object.keys(entry.details).length ? JSON.stringify(entry.details) : '';
+        if (cells[5]) cells[5].textContent = stamp(entry.at).split(',')[0];
+        return row;
+      }));
+      if (!shown.length) table.append(h('div', { class: 'tr m3' }, t('ui-empty')));
     }
-    filter.addEventListener('input', draw);
+    if (bar) {
+      const search = h('input', { class: 'inp', type: 'search', placeholder: t('ui-log-filter'), style: 'max-width: 280px' });
+      search.addEventListener('input', () => { needle = search.value.trim().toLowerCase(); draw(); });
+      bar.replaceChildren(search);
+    }
     draw();
-    return h('div', { class: 'content' },
-      h('div', { class: 'phead' }, h('div'), h('div', { class: 'tools' }, filter)),
-      h('section', { class: 'card' }, h('div', { class: 'card-b' }, h('div', { class: 'scroll' }, h('table', { class: 'tbl' },
-        h('thead', null, h('tr', null, [t('ui-col-time'), t('ui-col-actor'), t('ui-col-action'), t('ui-col-target'), ''].map((label) => h('th', null, label)))), body)))),
-    );
+  }
+
+  // ── the things a screen can do ──────────────────────────────────────────
+
+  const reload = () => route();
+
+  async function setAccess(access, value) {
+    try { await api('POST', `/v1/accesses/${access.id}/state`, { state: value }); reload(); } catch (error) { refused(error); }
+  }
+
+  function linkFor(access, node) {
+    dialog('link', (box, close) => {
+      const fields = $$('.fld .inp', box);
+      const host = editable(fields[0], (node && node.address) || (node && node.domain) || '');
+      const pairs = $('.pair', box);
+      if (pairs) pairs.replaceChildren();
+      const shown = $('.link', box);
+      shown.replaceChildren(h('span', { class: 'm3' }, '—'));
+      let acknowledged = false;
+      const check = $('.chk', box);
+      if (check) {
+        $('.bx svg', check).style.opacity = '0';
+        check.addEventListener('click', () => {
+          acknowledged = !acknowledged;
+          $('.bx svg', check).style.opacity = acknowledged ? '1' : '0';
+          $('.bx', check).style.cssText = acknowledged ? 'background: var(--key); border-color: var(--key);' : '';
+        });
+      }
+      const buttons = $$('.df .btn', box);
+      buttons[0].addEventListener('click', close);
+      const get = buttons[1] || buttons[0];
+      get.addEventListener('click', async () => {
+        try {
+          const issued = await api('POST', `/v1/accesses/${access.id}/link`, { host: host.value.trim(), acknowledged });
+          const text = issued.link || `${issued.method}://${issued.user}:${issued.password}@${issued.host}:${issued.port}`;
+          shown.replaceChildren(text, h('span', { class: 'cp', on: { click: () => copy(text) } }, '⧉'));
+          if (pairs && !issued.link) {
+            pairs.replaceChildren(...[[t('ui-link-host'), issued.host], [t('ui-link-port'), issued.port],
+              [t('ui-link-user'), issued.user], [t('ui-link-password'), issued.password]]
+              .flatMap(([key, value]) => [h('span', { class: 'k' }, key), h('span', { class: 'v' }, value)]));
+          }
+        } catch (error) { refused(error); }
+      });
+    });
+  }
+
+  function newClient() {
+    dialog('user', (box, close) => {
+      const cards = $$('.dlg', box.parentElement);
+      const fields = $$('.fld .inp', box);
+      const label = editable(fields[0], '');
+      const quotaField = editable(fields[1], '');
+      const expires = editable(fields[2], '');
+      expires.type = 'date';
+      const buttons = $$('.df .btn', box);
+      buttons[0].addEventListener('click', close);
+      buttons[1].addEventListener('click', async () => {
+        try {
+          await api('POST', '/v1/clients', {
+            label: label.value.trim(), quota_bytes: gbToBytes(quotaField.value), expires_at: dayToExpiry(expires.value),
+          });
+          close();
+          reload();
+        } catch (error) { refused(error); }
+      });
+      cards.slice(1).forEach((card) => card.remove());
+    });
+  }
+
+  function newAccess(clients, nodes_, isPublic) {
+    dialog('user', (box, close) => {
+      const wrap = box.parentElement;
+      const cards = $$('.dlg', wrap);
+      const card = cards[1] || cards[0];
+      cards.filter((other) => other !== card).forEach((other) => other.remove());
+      const fields = $$('.fld .inp', card);
+      const who = fields[0];
+      const client = h('select', { class: 'inp' }, clients.filter((candidate) => candidate.state === 'active')
+        .map((candidate) => h('option', { value: candidate.id }, candidate.label)));
+      const name = h('input', { class: 'inp', type: 'text', maxlength: '64' });
+      who.replaceWith(isPublic ? name : client);
+      const node = h('select', { class: 'inp' }, nodes_.filter((candidate) => candidate.state !== 'burned')
+        .map((candidate) => h('option', { value: candidate.id }, `${candidate.label} · ${kindOf(candidate)}`)));
+      fields[1].replaceWith(node);
+      const quotaField = editable(fields[2], '');
+      const devices = editable(fields[3], '');
+      const expires = editable(fields[4], '');
+      expires.type = 'date';
+      const buttons = $$('.df .btn', card);
+      buttons[0].addEventListener('click', close);
+      buttons[1].addEventListener('click', async () => {
+        const body = {
+          node_id: node.value,
+          quota_bytes: gbToBytes(quotaField.value),
+          expires_at: dayToExpiry(expires.value),
+          max_devices: devices.value ? Number(devices.value) : null,
+        };
+        if (isPublic) body.name = name.value.trim(); else body.client_id = client.value;
+        try { await api('POST', '/v1/accesses', body); close(); reload(); } catch (error) { refused(error); }
+      });
+    });
+  }
+
+  function clientCard(client) {
+    dialog('user', (box, close) => {
+      const cards = $$('.dlg', box.parentElement);
+      cards.slice(1).forEach((card) => card.remove());
+      put(box, '.dh h2', client.label);
+      put(box, '.dh .note', t(`ui-client-state-${client.state}`));
+      $('.db', box).replaceChildren(h('div', { class: 'pair' },
+        h('span', { class: 'k' }, t('ui-col-quota')), h('span', { class: 'v' }, quota(client.quota_bytes)),
+        h('span', { class: 'k' }, t('ui-col-expires')), h('span', { class: 'v' }, date(client.expires_at)),
+        h('span', { class: 'k' }, t('ui-node-created')), h('span', { class: 'v' }, date(client.created_at))));
+      const buttons = $$('.df .btn', box);
+      buttons[0].textContent = t('ui-close');
+      buttons[0].addEventListener('click', close);
+      buttons[1].textContent = t(client.state === 'active' ? 'ui-client-suspend' : 'ui-client-resume');
+      buttons[1].classList.remove('key');
+      buttons[1].addEventListener('click', async () => {
+        try {
+          await api('POST', `/v1/clients/${client.id}/state`, { state: client.state === 'active' ? 'suspended' : 'active' });
+          close();
+          reload();
+        } catch (error) { refused(error); }
+      });
+    });
+  }
+
+  function newNode() {
+    dialog('node', (box, close) => {
+      const fields = $$('.fld .inp', box);
+      const label = editable(fields[0], '');
+      const kinds = $$('.tcard', box);
+      let kind = 'mtproto';
+      let masked = true;
+      const domainBox = fields[1] ? editable(fields[1], '') : null;
+      kinds.forEach((choice) => choice.addEventListener('click', () => {
+        kinds.forEach((other) => other.classList.remove('on'));
+        choice.classList.add('on');
+        kind = (choice.textContent.match(/mtproto|web|socks5|http/i) || ['mtproto'])[0].toLowerCase();
+      }));
+      const check = $('.chk', box);
+      if (check) check.addEventListener('click', () => { masked = !masked; $('.bx svg', check).style.opacity = masked ? '1' : '0'; });
+      const buttons = $$('.df .btn', box);
+      buttons[0].addEventListener('click', close);
+      buttons[buttons.length - 1].addEventListener('click', async () => {
+        const body = { label: label.value.trim(), kind };
+        if (kind === 'mtproto') body.masked = masked;
+        if (domainBox && domainBox.value.trim()) body.domain = domainBox.value.trim();
+        try {
+          const node = await api('POST', '/v1/nodes', body);
+          close();
+          enrol(node);
+        } catch (error) { refused(error); }
+      });
+    });
+  }
+
+  async function enrol(node) {
+    let issued;
+    try { issued = await api('POST', `/v1/nodes/${node.id}/enrollment`); } catch (error) { refused(error); return; }
+    const command = `anyproxy-agent enroll --panel <panel-host>:8443 --code ${issued.code} --fingerprint ${issued.panel_fingerprint}`;
+    dialog('link', (box, close) => {
+      put(box, '.dh h2', `${t('ui-enrol-title')} · ${node.label}`);
+      put(box, '.dh .note', t('ui-enrol-expires', { date: stamp(issued.expires_at) }));
+      const pairs = $('.pair', box);
+      if (pairs) {
+        pairs.replaceChildren(
+          h('span', { class: 'k' }, t('ui-enrol-code')), h('span', { class: 'v' }, issued.code),
+          h('span', { class: 'k' }, t('ui-enrol-fingerprint')), h('span', { class: 'v' }, issued.panel_fingerprint));
+      }
+      const fields = $$('.fld .inp', box);
+      if (fields[0]) fields[0].remove();
+      const shown = $('.link', box);
+      shown.replaceChildren(command, h('span', { class: 'cp', on: { click: () => copy(command) } }, '⧉'));
+      const check = $('.chk', box);
+      if (check) check.remove();
+      const buttons = $$('.df .btn', box);
+      buttons.forEach((button, index) => { if (index) button.remove(); });
+      buttons[0].textContent = t('ui-close');
+      buttons[0].addEventListener('click', () => { close(); reload(); });
+    });
+  }
+
+  function renameNode(node) {
+    dialog('user', (box, close) => {
+      $$('.dlg', box.parentElement).slice(1).forEach((card) => card.remove());
+      put(box, '.dh h2', `${t('ui-rename-title')} · ${node.label}`);
+      const fields = $$('.fld .inp', box);
+      const domain = editable(fields[0], node.domain || '');
+      $$('.fld', box).slice(1).forEach((field) => field.remove());
+      $('.two', box)?.remove();
+      const buttons = $$('.df .btn', box);
+      buttons[0].addEventListener('click', close);
+      buttons[1].textContent = t('ui-save');
+      buttons[1].addEventListener('click', async () => {
+        try { await api('POST', `/v1/nodes/${node.id}/names`, { domain: domain.value.trim() || null }); close(); reload(); } catch (error) { refused(error); }
+      });
+    });
+  }
+
+  function deleteNode(node) {
+    dialog('delete', (box, close) => {
+      put(box, '.dh h2', t('ui-node-delete-title', { label: node.label }));
+      const confirm = $('.confirm .inp, .lock .inp, .fld .inp', box) || $('.inp', box);
+      const typed = editable(confirm, '');
+      const buttons = $$('.df .btn', box);
+      const go = buttons[buttons.length - 1];
+      go.disabled = true;
+      typed.addEventListener('input', () => { go.disabled = typed.value.trim() !== node.label; });
+      buttons[0].addEventListener('click', close);
+      go.addEventListener('click', async () => {
+        try { await api('POST', `/v1/nodes/${node.id}/burn`); close(); reload(); } catch (error) { refused(error); }
+      });
+    });
+  }
+
+  // ── the command bar ─────────────────────────────────────────────────────
+
+  function palette() {
+    const items = [
+      ...[['dashboard', t('ui-nav-dashboard')], ['nodes', t('ui-nav-nodes')], ['users', t('ui-nav-users')], ['log', t('ui-nav-log')]]
+        .filter(([name]) => allowed(name))
+        .map(([name, label]) => ({ label, hint: t('ui-palette-screen'), go: () => { location.hash = `#/${name}`; } })),
+      ...state.known.nodes.map((node) => ({ label: node.label, hint: kindOf(node), go: () => { location.hash = '#/nodes'; } })),
+      ...state.known.clients.map((client) => ({ label: client.label, hint: t('ui-nav-users'), go: () => { location.hash = '#/users'; } })),
+    ];
+    let shown = items.slice(0, 12);
+    let picked = 0;
+    const line = h('input', { class: 'inp', type: 'text', placeholder: t('ui-command-hint') });
+    const list = h('div', { class: 'res' });
+    const box = h('div', { class: 'dlg' },
+      h('div', { class: 'dh' }, h('h2', null, t('ui-command-title')), h('span', { class: 'sp' }), h('span', { class: 'esc' }, h('span', { class: 'kbd' }, 'Esc'))),
+      h('div', { class: 'db' }, line, list));
+    const root = $('#modal-root');
+    function close() { root.replaceChildren(); document.removeEventListener('keydown', onKey); }
+    function onKey(event) { if (event.key === 'Escape') close(); }
+    function draw() {
+      const needle = line.value.trim().toLowerCase();
+      shown = (needle ? items.filter((item) => item.label.toLowerCase().includes(needle)) : items).slice(0, 12);
+      picked = Math.min(picked, Math.max(0, shown.length - 1));
+      list.replaceChildren(...shown.map((item, index) => h('div', {
+        class: `row ${index === picked ? 'on' : ''}`,
+        on: { click: () => { close(); item.go(); } },
+      }, h('span', { class: 'lbl' }, item.label), h('span', { class: 'hint' }, item.hint))));
+    }
+    line.addEventListener('input', () => { picked = 0; draw(); });
+    line.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown') { picked = Math.min(picked + 1, shown.length - 1); draw(); event.preventDefault(); }
+      if (event.key === 'ArrowUp') { picked = Math.max(picked - 1, 0); draw(); event.preventDefault(); }
+      if (event.key === 'Enter' && shown[picked]) { const go = shown[picked].go; close(); go(); }
+    });
+    root.replaceChildren(h('div', { class: 'scrim', on: { click: close } }), h('div', { class: 'dlgwrap' }, box));
+    document.addEventListener('keydown', onKey);
+    draw();
+    line.focus();
   }
 
   // ── routing ─────────────────────────────────────────────────────────────
 
-  const views = { dashboard: dashboardView, nodes: nodesView, users: usersView, log: logView };
+  const views = { dashboard, nodes, users, log };
 
   function allowed(name) {
-    if (name === 'nodes') return state.me.role !== 'reseller';
-    if (name === 'log') return state.me.role === 'superadmin';
+    if (name === 'nodes') return state.me && state.me.role !== 'reseller';
+    if (name === 'log') return state.me && state.me.role === 'superadmin';
     return true;
   }
 
-  async function show(main, name, quiet) {
-    if (!quiet) main.replaceChildren(topbar(name), h('div', { class: 'content' }, empty(t('ui-loading'))));
+  async function show(name, quiet) {
+    const root = screen(name);
+    $('#screen').className = `scr-${name}`;
     try {
-      const content = await views[name]();
-      main.replaceChildren(topbar(name), content);
+      await views[name](root);
+      applyStaticText(root);
+      $('#screen').replaceChildren(root);
     } catch (error) {
-      if (!quiet) main.replaceChildren(topbar(name), h('div', { class: 'content' }, empty(error.message)));
+      if (!quiet) $('#screen').replaceChildren(h('div', { class: 'content' }, h('div', { class: 'm3' }, error.message)));
       refused(error);
     }
   }
 
   async function route() {
     clearInterval(state.timer);
-    const main = $('#main');
     if (!state.me) {
-      main.replaceChildren(state.setupNeeded ? setupView() : loginView());
+      $('#screen').className = state.setupNeeded ? 'scr-first-run' : 'scr-login';
+      $('#screen').replaceChildren(state.setupNeeded ? setupView() : loginView());
       return;
     }
     let name = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/')[0];
     if (!views[name] || !allowed(name)) name = 'dashboard';
-    for (const link of $('#nav').querySelectorAll('a')) link.classList.toggle('on', link.dataset.view === name);
-    await show(main, name, false);
+    $$('.rail .nav a').forEach((link) => link.classList.toggle('on', link.dataset.view === name));
+    await show(name, false);
     if (name === 'dashboard' || name === 'nodes') {
       state.timer = setInterval(() => {
-        if (document.visibilityState === 'visible' && !$('#modal-root').childElementCount) show(main, name, true);
+        if (document.visibilityState === 'visible' && !$('#modal-root').childElementCount) show(name, true);
       }, REFRESH_MS);
     }
   }
 
   async function boot() {
     applyTheme();
-    applyLangButtons();
-    try {
-      await loadMessages();
-    } catch {
-      $('#main').replaceChildren(h('div', { class: 'content' }, h('div', { class: 'empty' }, 'anyProxy')));
-      return;
-    }
+    applyLang();
+    try { await loadMessages(); } catch { /* the page still stands without them */ }
     $('#lang').addEventListener('click', async (event) => {
-      const button = event.target.closest('button');
+      const button = event.target.closest('[data-lang]');
       if (!button || button.dataset.lang === state.lang) return;
       state.lang = button.dataset.lang;
       remember('localStorage', 'ap-lang', state.lang);
-      applyLangButtons();
+      applyLang();
       await loadMessages();
       showRail();
       route();
     });
     $('#theme').addEventListener('click', (event) => {
-      const button = event.target.closest('button');
+      const button = event.target.closest('[data-theme]');
       if (!button) return;
       state.theme = button.dataset.theme;
       remember('localStorage', 'ap-theme', state.theme);
       applyTheme();
     });
     $('#sign-out').addEventListener('click', signOut);
+    $('#cmdbar').addEventListener('click', palette);
+    document.addEventListener('keydown', (event) => {
+      if (!state.me) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); palette(); return; }
+      if (event.target.closest('input, select, textarea') || $('#modal-root').childElementCount) return;
+      const screens = ['dashboard', 'nodes', 'users', 'log'];
+      const index = Number(event.key) - 1;
+      if (index >= 0 && index < screens.length && allowed(screens[index])) location.hash = `#/${screens[index]}`;
+      // The tile on the nodes screen carries this key; it works from the
+      // screen, which is where the tile is.
+      if (event.key.toLowerCase() === 'n' && (event.ctrlKey || event.metaKey)
+        && state.me.role === 'superadmin' && location.hash.startsWith('#/nodes')) {
+        event.preventDefault();
+        newNode();
+      }
+    });
     window.addEventListener('hashchange', route);
     if (state.token) {
       try { state.me = await api('GET', '/v1/session'); } catch { state.me = null; }
     }
-    if (!state.me) {
-      // A panel nobody owns yet asks to be owned; one that is taken says so,
-      // and an answer that never came is treated as taken.
-      try { state.setupNeeded = (await api('GET', '/v1/setup')).needed === true; } catch { state.setupNeeded = false; }
-    }
+    try {
+      const panel = await api('GET', '/v1/setup');
+      state.setupNeeded = panel.needed === true;
+      state.secondFactor = panel.second_factor !== false;
+      state.version = panel.version || '';
+    } catch { state.setupNeeded = false; }
     showRail();
     route();
   }

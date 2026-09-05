@@ -272,6 +272,44 @@ pub struct MachineReport {
     pub file_limit: Option<u64>,
     /// One of calm, strained, critical.
     pub pressure: String,
+    /// Share of the processors the node's cgroup is using, in percent.
+    ///
+    /// Absent in the first report after a start: it is a rate, and there is
+    /// nothing yet to have measured it against (0064).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_percent: Option<f64>,
+    /// How long the agent has been running, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uptime_seconds: Option<u64>,
+    /// Connections established on the ports the node serves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connections: Option<u64>,
+    /// Bytes a second arriving on the node's interfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rx_bps: Option<u64>,
+    /// Bytes a second leaving them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_bps: Option<u64>,
+    /// One entry per process the agent knows by name: itself, and the engine
+    /// it started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub processes: Vec<ProcessReport>,
+}
+
+/// What one process on the node is doing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessReport {
+    /// The name the operator knows it by.
+    pub name: String,
+    /// Share of the processors it is using, in percent, when it has been
+    /// measured against an earlier reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_percent: Option<f64>,
+    /// Resident memory, in megabytes.
+    pub memory_mb: u64,
+    /// How many times the agent has had to start it again since the agent
+    /// itself started.
+    pub restarts: u32,
 }
 
 /// Agent reports traffic, device counts and health.

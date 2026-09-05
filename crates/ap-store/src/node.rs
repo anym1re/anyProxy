@@ -13,7 +13,9 @@ const COLUMNS: &str = "id, label, kind, domain, address, agent_version, last_see
                        health_engine, health_site, health_reach, cert_not_after, \
                        machine_pressure, machine_cpus, machine_memory_used_mb, \
                        machine_memory_limit_mb, machine_memory_stall, machine_cpu_stall, \
-                       machine_open_files, machine_file_limit";
+                       machine_open_files, machine_file_limit, machine_cpu_percent, \
+                       machine_uptime_seconds, machine_connections, machine_rx_bps, \
+                       machine_tx_bps";
 
 /// Reads and writes nodes.
 pub struct NodeRepo;
@@ -242,6 +244,11 @@ fn read_node(row: sqlx::postgres::PgRow) -> Result<Node, StoreError> {
                 cpu_stall: row.try_get("machine_cpu_stall")?,
                 open_files: row.try_get("machine_open_files")?,
                 file_limit: row.try_get("machine_file_limit")?,
+                cpu_percent: row.try_get("machine_cpu_percent")?,
+                uptime_seconds: row.try_get("machine_uptime_seconds")?,
+                connections: row.try_get("machine_connections")?,
+                rx_bps: row.try_get("machine_rx_bps")?,
+                tx_bps: row.try_get("machine_tx_bps")?,
             })
         })
         .transpose()?;

@@ -48,6 +48,113 @@ pub struct Reading {
     pub open_files: Option<u64>,
     /// Files it may hold open.
     pub file_limit: Option<u64>,
+    /// Processor time the cgroup has used since boot, in microseconds.
+    pub cpu_used_usec: Option<u64>,
+    /// Bytes seen on the interfaces since boot.
+    pub rx_bytes: Option<u64>,
+    /// Bytes sent on them.
+    pub tx_bytes: Option<u64>,
+    /// Connections established on the ports the node serves.
+    pub connections: Option<u64>,
+    /// Resident memory of the agent and of the engine, in bytes.
+    pub own_memory: Option<u64>,
+    pub engine_memory: Option<u64>,
+    /// Processor time each of them has used, in clock ticks.
+    pub own_ticks: Option<u64>,
+    pub engine_ticks: Option<u64>,
+}
+
+/// What the last reading said, so a rate can be worked out from the next.
+///
+/// Rates are counted here rather than in the panel: the panel sees only the
+/// message it was sent, and between two messages a node can restart, which
+/// would turn the difference of two counters into a speed that never
+/// happened (0064).
+#[derive(Debug, Clone, Default)]
+pub struct Rates {
+    at: Option<std::time::Instant>,
+    cpu_used_usec: Option<u64>,
+    rx_bytes: Option<u64>,
+    tx_bytes: Option<u64>,
+    own_ticks: Option<u64>,
+    engine_ticks: Option<u64>,
+    /// When the agent started, for its own uptime.
+    started: Option<std::time::Instant>,
+    /// How many times the engine has been started again.
+    pub restarts: u32,
+}
+
+impl Rates {
+    /// Starts counting from now.
+    pub fn new() -> Self {
+        Self {
+            started: Some(std::time::Instant::now()),
+            ..Self::default()
+        }
+    }
+
+    /// Notes that the engine had to be started again.
+    pub fn engine_restarted(&mut self) {
+        self.restarts = self.restarts.saturating_add(1);
+    }
+
+    /// How long the agent has been running.
+    pub fn uptime(&self) -> Option<u64> {
+        self.started.map(|at| at.elapsed().as_secs())
+    }
+
+    /// Turns two readings into rates, and remembers this one.
+    ///
+    /// A counter that went backwards means the thing it counted started over,
+    /// and nothing is reported for it this time rather than a negative speed.
+    pub fn advance(&mut self, reading: &Reading, cpus: u32) -> Speeds {
+        let now = std::time::Instant::now();
+        let seconds = self
+            .at
+            .map(|before| now.duration_since(before).as_secs_f64())
+            .filter(|seconds| *seconds > 0.5);
+
+        let rate = |before: Option<u64>, after: Option<u64>| -> Option<f64> {
+            let (before, after, seconds) = (before?, after?, seconds?);
+            after.checked_sub(before).map(|grew| grew as f64 / seconds)
+        };
+
+        let speeds = Speeds {
+            cpu_percent: rate(self.cpu_used_usec, reading.cpu_used_usec)
+                .map(|per_second| per_second / 10_000.0 / f64::from(cpus.max(1))),
+            rx_bps: rate(self.rx_bytes, reading.rx_bytes).map(|bytes| bytes as u64),
+            tx_bps: rate(self.tx_bytes, reading.tx_bytes).map(|bytes| bytes as u64),
+            own_cpu: rate(self.own_ticks, reading.own_ticks)
+                .map(|ticks| ticks * 100.0 / (ticks_per_second() * f64::from(cpus.max(1)))),
+            engine_cpu: rate(self.engine_ticks, reading.engine_ticks)
+                .map(|ticks| ticks * 100.0 / (ticks_per_second() * f64::from(cpus.max(1)))),
+        };
+
+        self.at = Some(now);
+        self.cpu_used_usec = reading.cpu_used_usec;
+        self.rx_bytes = reading.rx_bytes;
+        self.tx_bytes = reading.tx_bytes;
+        self.own_ticks = reading.own_ticks;
+        self.engine_ticks = reading.engine_ticks;
+        speeds
+    }
+}
+
+/// What a pair of readings amounts to.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Speeds {
+    pub cpu_percent: Option<f64>,
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+    pub own_cpu: Option<f64>,
+    pub engine_cpu: Option<f64>,
+}
+
+/// Clock ticks a second, which is what `/proc/<pid>/stat` counts in.
+fn ticks_per_second() -> f64 {
+    // Every Linux this runs on reports a hundred; the figure is not readable
+    // without libc, and being wrong here would only scale a percentage.
+    100.0
 }
 
 /// How short the machine is, in one word.
@@ -91,7 +198,25 @@ impl Reading {
     }
 
     /// What the panel is told.
-    pub fn report(&self) -> ap_proto::MachineReport {
+    pub fn report(&self, speeds: Speeds, rates: &Rates) -> ap_proto::MachineReport {
+        let megabytes = |bytes: Option<u64>| bytes.map(|bytes| bytes / (1024 * 1024));
+        let mut processes = Vec::new();
+        if let Some(memory) = megabytes(self.own_memory) {
+            processes.push(ap_proto::ProcessReport {
+                name: "anyproxy-agent".to_owned(),
+                cpu_percent: speeds.own_cpu,
+                memory_mb: memory,
+                restarts: 0,
+            });
+        }
+        if let Some(memory) = megabytes(self.engine_memory) {
+            processes.push(ap_proto::ProcessReport {
+                name: "telemt".to_owned(),
+                cpu_percent: speeds.engine_cpu,
+                memory_mb: memory,
+                restarts: rates.restarts,
+            });
+        }
         ap_proto::MachineReport {
             cpus: self.cpus,
             memory_used_mb: self.memory_used / (1024 * 1024),
@@ -101,6 +226,12 @@ impl Reading {
             open_files: self.open_files,
             file_limit: self.file_limit,
             pressure: self.pressure().as_reported().to_owned(),
+            cpu_percent: speeds.cpu_percent,
+            uptime_seconds: rates.uptime(),
+            connections: self.connections,
+            rx_bps: speeds.rx_bps,
+            tx_bps: speeds.tx_bps,
+            processes,
         }
     }
 }
@@ -136,7 +267,117 @@ pub fn observe(engine_pid: Option<u32>) -> Option<Reading> {
         cpu_stall,
         open_files,
         file_limit,
+        cpu_used_usec: cpu_used(&dir.join("cpu.stat")),
+        rx_bytes: traffic().map(|(rx, _)| rx),
+        tx_bytes: traffic().map(|(_, tx)| tx),
+        connections: connections(&SERVED_PORTS),
+        own_memory: resident_of(std::process::id()),
+        engine_memory: engine_pid.and_then(resident_of),
+        own_ticks: cpu_ticks_of(std::process::id()),
+        engine_ticks: engine_pid.and_then(cpu_ticks_of),
     })
+}
+
+/// The ports a node answers on. A connection on any of them is a client.
+const SERVED_PORTS: [u16; 4] = [443, 1080, 3128, 8443];
+
+/// Processor time the cgroup has used, from `cpu.stat`.
+fn cpu_used(path: &Path) -> Option<u64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    parse_cpu_used(&text)
+}
+
+/// Reads `usage_usec` out of a cgroup's `cpu.stat`.
+pub fn parse_cpu_used(text: &str) -> Option<u64> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("usage_usec "))
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// Bytes in and out on every interface but the loopback.
+fn traffic() -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string("/proc/net/dev").ok()?;
+    Some(parse_traffic(&text))
+}
+
+/// Sums `/proc/net/dev`, leaving the loopback out: what a node sends to
+/// itself is not what it carries.
+pub fn parse_traffic(text: &str) -> (u64, u64) {
+    let mut received = 0;
+    let mut sent = 0;
+    for line in text.lines().skip(2) {
+        let Some((name, figures)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim() == "lo" {
+            continue;
+        }
+        let numbers: Vec<u64> = figures
+            .split_whitespace()
+            .filter_map(|word| word.parse().ok())
+            .collect();
+        if numbers.len() >= 9 {
+            received += numbers[0];
+            sent += numbers[8];
+        }
+    }
+    (received, sent)
+}
+
+/// Established connections on the ports a node serves.
+fn connections(ports: &[u16]) -> Option<u64> {
+    let mut total = 0;
+    let mut seen = false;
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            seen = true;
+            total += parse_connections(&text, ports);
+        }
+    }
+    seen.then_some(total)
+}
+
+/// Counts rows of `/proc/net/tcp` in state 01 — established — whose local
+/// port is one the node serves.
+pub fn parse_connections(text: &str, ports: &[u16]) -> u64 {
+    text.lines()
+        .skip(1)
+        .filter(|line| {
+            let mut words = line.split_whitespace();
+            let local = words.nth(1).unwrap_or_default();
+            let state = words.nth(1).unwrap_or_default();
+            let port = local
+                .rsplit(':')
+                .next()
+                .and_then(|hex| u16::from_str_radix(hex, 16).ok());
+            state == "01" && port.is_some_and(|port| ports.contains(&port))
+        })
+        .count() as u64
+}
+
+/// Resident memory of a process, in bytes.
+fn resident_of(pid: u32) -> Option<u64> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
+    let pages: u64 = text.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * 4096)
+}
+
+/// Processor time a process has used, in clock ticks.
+fn cpu_ticks_of(pid: u32) -> Option<u64> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_cpu_ticks(&text)
+}
+
+/// Adds the user and system fields of `/proc/<pid>/stat`.
+///
+/// The name of the process sits in brackets and may hold spaces, so the
+/// fields are counted from the closing bracket rather than from the start.
+pub fn parse_cpu_ticks(text: &str) -> Option<u64> {
+    let rest = text.rsplit_once(')')?.1;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let user: u64 = fields.get(11)?.parse().ok()?;
+    let system: u64 = fields.get(12)?.parse().ok()?;
+    Some(user + system)
 }
 
 /// The word for these figures.
@@ -394,11 +635,32 @@ mod tests {
             cpu_stall: 0.0,
             open_files: Some(200),
             file_limit: Some(65536),
+            cpu_used_usec: None,
+            rx_bytes: None,
+            tx_bytes: None,
+            connections: Some(78),
+            own_memory: Some(34 * MIB),
+            engine_memory: Some(210 * MIB),
+            own_ticks: None,
+            engine_ticks: None,
         };
-        let report = reading.report();
+        let mut rates = Rates::new();
+        rates.engine_restarted();
+        let report = reading.report(Speeds::default(), &rates);
         assert_eq!(report.memory_used_mb, 440);
         assert_eq!(report.memory_limit_mb, Some(512));
         assert_eq!(report.pressure, "strained");
+        assert_eq!(report.connections, Some(78));
+        // One entry for the agent and one for the engine, and the engine's
+        // carries how many times it had to be started again.
+        assert_eq!(report.processes.len(), 2);
+        let engine = report
+            .processes
+            .iter()
+            .find(|process| process.name == "telemt")
+            .expect("the engine is reported");
+        assert_eq!(engine.memory_mb, 210);
+        assert_eq!(engine.restarts, 1);
     }
 
     #[test]
@@ -406,5 +668,89 @@ mod tests {
         assert!(!Pressure::Calm.eases_off());
         assert!(Pressure::Strained.eases_off());
         assert!(Pressure::Critical.eases_off());
+    }
+
+    #[test]
+    fn processor_time_is_read_out_of_the_cgroup() {
+        let stat = "usage_usec 123456789
+user_usec 90000000
+system_usec 33456789
+";
+        assert_eq!(parse_cpu_used(stat), Some(123_456_789));
+        assert_eq!(
+            parse_cpu_used(
+                "nr_periods 0
+"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_loopback_is_not_traffic_the_node_carries() {
+        let dev = "Inter-|   Receive                            |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets
+    lo: 5000 10 0 0 0 0 0 0 6000 10 0 0 0 0 0 0
+  eth0: 1000 20 0 0 0 0 0 0 2000 20 0 0 0 0 0 0
+  eth1: 300 3 0 0 0 0 0 0 400 3 0 0 0 0 0 0
+";
+        assert_eq!(parse_traffic(dev), (1300, 2400));
+    }
+
+    #[test]
+    fn only_established_connections_on_served_ports_are_counted() {
+        // Local address, then remote, then state: 01 is established, 0A is
+        // listening. 01BB is 443, 0438 is 1080, 1F90 is 8080.
+        let tcp = "  sl  local_address rem_address   st
+   0: 0100007F:01BB 00000000:0000 0A
+   1: 0100007F:01BB 0200007F:C001 01
+   2: 0100007F:0438 0200007F:C002 01
+   3: 0100007F:1F90 0200007F:C003 01
+";
+        assert_eq!(parse_connections(tcp, &[443, 1080]), 2);
+        assert_eq!(parse_connections(tcp, &[8080]), 1);
+    }
+
+    #[test]
+    fn a_process_name_with_spaces_does_not_move_the_figures() {
+        // The name sits in brackets and may hold anything, so the fields are
+        // counted from the closing bracket.
+        let stat = "42 (my engine) S 1 42 42 0 -1 4194560 100 0 0 0 700 300 0 0 20 0 8 0 99";
+        assert_eq!(parse_cpu_ticks(stat), Some(1000));
+    }
+
+    #[test]
+    fn the_first_reading_carries_no_speed_and_a_restart_none_either() {
+        let mut rates = Rates::new();
+        let reading = |cpu: u64, rx: u64| Reading {
+            cpus: 2,
+            memory_used: 1,
+            memory_limit: None,
+            memory_stall: 0.0,
+            cpu_stall: 0.0,
+            open_files: None,
+            file_limit: None,
+            cpu_used_usec: Some(cpu),
+            rx_bytes: Some(rx),
+            tx_bytes: Some(0),
+            connections: None,
+            own_memory: None,
+            engine_memory: None,
+            own_ticks: None,
+            engine_ticks: None,
+        };
+        // Nothing to measure against yet.
+        assert_eq!(rates.advance(&reading(0, 0), 2), Speeds::default());
+        // A counter that went backwards is a process that started over, and
+        // a speed is not invented for it.
+        let before = rates.advance(&reading(10, 10), 2);
+        assert_eq!(
+            before,
+            Speeds::default(),
+            "a second inside half a second is not a rate"
+        );
+        assert_eq!(rates.restarts, 0);
+        rates.engine_restarted();
+        assert_eq!(rates.restarts, 1);
     }
 }

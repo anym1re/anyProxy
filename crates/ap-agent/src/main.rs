@@ -136,6 +136,7 @@ async fn serve(paths: &Paths, panel: &str, through: Option<&Through>) -> Result<
     let mut attempt = 0u32;
     let mut meter = Meter::new();
     let mut relaunch = engine::Relaunch::new();
+    let mut rates = host::Rates::new();
 
     loop {
         if let Some(child) = engine_process.as_mut()
@@ -161,6 +162,7 @@ async fn serve(paths: &Paths, panel: &str, through: Option<&Through>) -> Result<
             &settings,
             &mut engine_process,
             &mut relaunch,
+            &mut rates,
             &inbound,
             &mut inbound_open,
             &mut cover_open,
@@ -195,6 +197,7 @@ async fn once(
     settings: &ap_engine::config::Settings,
     engine_process: &mut Option<std::process::Child>,
     relaunch: &mut engine::Relaunch,
+    rates: &mut host::Rates,
     inbound: &std::sync::Arc<Registry>,
     inbound_open: &mut bool,
     cover_open: &mut bool,
@@ -294,6 +297,7 @@ async fn once(
                     && relaunch.due(instant)
                 {
                     start_engine(paths, settings, running, engine_process, relaunch);
+                    rates.engine_restarted();
                 }
 
                 // The machine, read before anything is spent on probes: what
@@ -315,7 +319,15 @@ async fn once(
                 measure(control, metrics_port, meter, inbound, now).await;
                 let health =
                     state_of_health(control, &state.posture, pressure, &mut last_probe).await;
-                let machine = machine.as_ref().map(host::Reading::report);
+                // Speeds come from the difference between this reading and
+                // the last, counted here rather than in the panel (0064).
+                let speeds = machine
+                    .as_ref()
+                    .map(|reading| rates.advance(reading, reading.cpus))
+                    .unwrap_or_default();
+                let machine = machine
+                    .as_ref()
+                    .map(|reading| reading.report(speeds, rates));
                 match meter.delivery(health.clone(), now) {
                     Some(mut delivery) => {
                         delivery.machine = machine;

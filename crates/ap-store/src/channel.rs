@@ -240,7 +240,9 @@ impl PresenceRepo {
             "update node set machine_pressure = $2, machine_cpus = $3, \
              machine_memory_used_mb = $4, machine_memory_limit_mb = $5, \
              machine_memory_stall = $6, machine_cpu_stall = $7, \
-             machine_open_files = $8, machine_file_limit = $9 \
+             machine_open_files = $8, machine_file_limit = $9, \
+             machine_cpu_percent = $10, machine_uptime_seconds = $11, \
+             machine_connections = $12, machine_rx_bps = $13, machine_tx_bps = $14 \
              where id = $1 and state <> 'burned'",
         )
         .bind(node_id)
@@ -252,9 +254,76 @@ impl PresenceRepo {
         .bind(machine.cpu_stall)
         .bind(machine.open_files)
         .bind(machine.file_limit)
+        .bind(machine.cpu_percent)
+        .bind(machine.uptime_seconds)
+        .bind(machine.connections)
+        .bind(machine.rx_bps)
+        .bind(machine.tx_bps)
         .execute(pool)
         .await?;
         Ok(())
+    }
+
+    /// Records what is running on the node.
+    ///
+    /// Written whole: a process that has stopped being reported has stopped
+    /// running, and a row left behind would say otherwise.
+    pub async fn processes(
+        pool: &PgPool,
+        node_id: Uuid,
+        processes: &[ap_core::Process],
+    ) -> Result<(), StoreError> {
+        let mut transaction = pool.begin().await?;
+        sqlx::query("delete from node_process where node_id = $1")
+            .bind(node_id)
+            .execute(&mut *transaction)
+            .await?;
+        for process in processes {
+            sqlx::query(
+                "insert into node_process (node_id, name, cpu_percent, memory_mb, restarts) \
+                 values ($1, $2, $3, $4, $5) \
+                 on conflict (node_id, name) do update \
+                    set cpu_percent = excluded.cpu_percent, \
+                        memory_mb = excluded.memory_mb, \
+                        restarts = excluded.restarts",
+            )
+            .bind(node_id)
+            .bind(&process.name)
+            .bind(process.cpu_percent)
+            .bind(process.memory_mb)
+            .bind(process.restarts)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// What is running on the nodes an operator is looking at.
+    pub async fn processes_of(
+        pool: &PgPool,
+        nodes: &[Uuid],
+    ) -> Result<Vec<(Uuid, ap_core::Process)>, StoreError> {
+        let rows = sqlx::query(
+            "select node_id, name, cpu_percent, memory_mb, restarts from node_process \
+             where node_id = any($1) order by name",
+        )
+        .bind(nodes)
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok((
+                    row.try_get("node_id")?,
+                    ap_core::Process {
+                        name: row.try_get("name")?,
+                        cpu_percent: row.try_get("cpu_percent")?,
+                        memory_mb: row.try_get("memory_mb")?,
+                        restarts: row.try_get("restarts")?,
+                    },
+                ))
+            })
+            .collect()
     }
 
     /// Records how many devices used one access in a period.

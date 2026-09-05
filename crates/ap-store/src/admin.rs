@@ -90,6 +90,20 @@ impl AdminRepo {
         row.map(read_admin).transpose()
     }
 
+    /// Whether anybody here signs in with a second factor.
+    ///
+    /// About the panel, not about an account: it decides whether the sign-in
+    /// screen shows a box for a code at all (0063), and says nothing about
+    /// which login carries one.
+    pub async fn any_second_factor(pool: &PgPool) -> Result<bool, StoreError> {
+        let row = sqlx::query(
+            "select exists (select 1 from admin_user where totp_nonce is not null) as any",
+        )
+        .fetch_one(pool)
+        .await?;
+        Ok(row.try_get("any")?)
+    }
+
     /// How many administrators exist, to decide whether a first one is needed.
     pub async fn count(pool: &PgPool) -> Result<i64, StoreError> {
         let row = sqlx::query("select count(*)::bigint as total from admin_user")

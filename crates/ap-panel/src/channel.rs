@@ -516,8 +516,41 @@ async fn apply_telemetry(
             cpu_stall: Some(reported.cpu_stall as f32),
             open_files: reported.open_files.and_then(|n| i64::try_from(n).ok()),
             file_limit: reported.file_limit.and_then(|n| i64::try_from(n).ok()),
+            cpu_percent: reported.cpu_percent.map(|share| share as f32),
+            uptime_seconds: reported
+                .uptime_seconds
+                .and_then(|seconds| i64::try_from(seconds).ok()),
+            connections: reported.connections.and_then(|n| i64::try_from(n).ok()),
+            rx_bps: reported.rx_bps.and_then(|n| i64::try_from(n).ok()),
+            tx_bps: reported.tx_bps.and_then(|n| i64::try_from(n).ok()),
         };
         ap_store::PresenceRepo::machine(pool, node_id, &machine)
+            .await
+            .map_err(ApiError::from)?;
+
+        // What is running on it. A name the schema will not take is dropped
+        // rather than taking the rest of the report down with it.
+        let processes: Vec<ap_core::Process> = reported
+            .processes
+            .iter()
+            .filter(|process| {
+                !process.name.is_empty()
+                    && process.name.len() <= 32
+                    && process.name.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || byte == b'-'
+                            || byte == b'_'
+                    })
+            })
+            .map(|process| ap_core::Process {
+                name: process.name.clone(),
+                cpu_percent: process.cpu_percent.map(|share| share as f32),
+                memory_mb: i64::try_from(process.memory_mb).unwrap_or(i64::MAX),
+                restarts: i32::try_from(process.restarts).unwrap_or(i32::MAX),
+            })
+            .collect();
+        ap_store::PresenceRepo::processes(pool, node_id, &processes)
             .await
             .map_err(ApiError::from)?;
     }

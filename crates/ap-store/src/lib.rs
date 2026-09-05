@@ -102,6 +102,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0015_admin_totp_optional",
         include_str!("../../../migrations/0015_admin_totp_optional.sql"),
     ),
+    (
+        "0016_node_activity",
+        include_str!("../../../migrations/0016_node_activity.sql"),
+    ),
 ];
 
 /// The migrations this build carries, in the order they apply.

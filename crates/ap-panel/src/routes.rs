@@ -105,7 +105,16 @@ struct SignIn {
 /// and whoever can reach this port could try to become one anyway (0062).
 async fn setup_state(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
     let taken = ap_store::AdminRepo::count(state.pool()).await? > 0;
-    Ok(Json(serde_json::json!({ "needed": !taken })))
+    // Whether the sign-in screen shows a box for a code (0063). About the
+    // panel: no login is named here and none is asked about.
+    let second_factor = ap_store::AdminRepo::any_second_factor(state.pool()).await?;
+    Ok(Json(serde_json::json!({
+        "needed": !taken,
+        "second_factor": second_factor,
+        // Which build is answering. The interface prints it in the corner,
+        // which is where an operator looks when a fix is supposed to be in.
+        "version": env!("CARGO_PKG_VERSION"),
+    })))
 }
 
 #[derive(Deserialize)]
@@ -701,6 +710,11 @@ fn node_json(node: &Node) -> Result<serde_json::Value, ApiError> {
             "cpu_stall": machine.cpu_stall,
             "open_files": machine.open_files,
             "file_limit": machine.file_limit,
+            "cpu_percent": machine.cpu_percent,
+            "uptime_seconds": machine.uptime_seconds,
+            "connections": machine.connections,
+            "rx_bps": machine.rx_bps,
+            "tx_bps": machine.tx_bps,
         })
     });
     Ok(serde_json::json!({
@@ -731,7 +745,29 @@ async fn list_nodes(
         Some(label) => vec![guarded.node_by_label(&Label::try_from(label)?).await?],
         None => guarded.nodes().await?,
     };
-    let body: Result<Vec<_>, ApiError> = nodes.iter().map(node_json).collect();
+    // What runs on them comes in one query rather than one per node.
+    let ids: Vec<Uuid> = nodes.iter().map(Node::id).collect();
+    let running = guarded.processes(&ids).await.unwrap_or_default();
+    let body: Result<Vec<_>, ApiError> = nodes
+        .iter()
+        .map(|node| {
+            let mut shown = node_json(node)?;
+            let theirs: Vec<serde_json::Value> = running
+                .iter()
+                .filter(|(id, _)| *id == node.id())
+                .map(|(_, process)| {
+                    serde_json::json!({
+                        "name": process.name,
+                        "cpu_percent": process.cpu_percent,
+                        "memory_mb": process.memory_mb,
+                        "restarts": process.restarts,
+                    })
+                })
+                .collect();
+            shown["processes"] = serde_json::Value::Array(theirs);
+            Ok(shown)
+        })
+        .collect();
     Ok(Json(serde_json::json!(body?)))
 }
 
@@ -954,7 +990,11 @@ async fn interface() -> Response {
             ("cache-control", "no-cache"),
             (
                 "content-security-policy",
-                "default-src 'self'; frame-ancestors 'none'",
+                // Inline styles are allowed because the screens carry their
+                // own: a bar's width and a card's delay are per-row numbers
+                // written on the element. Scripts are not: those stay at
+                // 'self', which is what the directive is for.
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
             ),
             ("x-content-type-options", "nosniff"),
         ],

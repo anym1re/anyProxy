@@ -236,6 +236,28 @@ pub struct Machine {
     pub open_files: Option<i64>,
     /// Files it may have open.
     pub file_limit: Option<i64>,
+    /// Share of the processors the node is using, in percent.
+    pub cpu_percent: Option<f32>,
+    /// How long its agent has been running, in seconds.
+    pub uptime_seconds: Option<i64>,
+    /// Connections established on the ports it serves.
+    pub connections: Option<i64>,
+    /// Bytes a second on its interfaces, in and out.
+    pub rx_bps: Option<i64>,
+    pub tx_bps: Option<i64>,
+}
+
+/// One process on a node, as the agent last saw it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Process {
+    /// The name the operator knows it by.
+    pub name: String,
+    /// Share of the processors it is using, in percent.
+    pub cpu_percent: Option<f32>,
+    /// Resident memory, in megabytes.
+    pub memory_mb: i64,
+    /// How many times the agent has started it again.
+    pub restarts: i32,
 }
 
 /// The three words a node says about itself, and its certificate's life.
