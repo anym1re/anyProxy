@@ -11,6 +11,9 @@
   // The stand's four ranges. The series the panel keeps is by day, so the
   // shortest is a week rather than the stand's single day.
   const RANGES = [['Н', 7], ['М', 30], ['6М', 180], ['Г', 365]];
+  // The stand drew one series per range and gave each its own class; the
+  // panel keeps the one the range asks for, dressing and all.
+  const SERIES = ['d', 'w', 'm', 'y'];
 
   const recall = (store, key) => { try { return window[store].getItem(key); } catch { return null; } };
   const remember = (store, key, value) => { try { window[store].setItem(key, value); } catch { /* nothing to keep it in */ } };
@@ -24,6 +27,10 @@
     messages: {},
     me: null,
     version: '',
+    channel: '',
+    uptime: null,
+    // Which page of the journal is on screen, and what it is filtered to.
+    journal: { group: 'all', day: false, node: null, offset: 0, size: 12 },
     setupNeeded: false,
     secondFactor: true,
     lastLogin: '',
@@ -38,7 +45,9 @@
   // ── filling what the stand drew ─────────────────────────────────────────
 
   /** The screen as drawn, ready to be filled. */
-  const screen = (name) => $(`#screen-${name}`).content.cloneNode(true).firstElementChild;
+  // A screen is more than one element — what was drawn, and the bar of
+  // figures under it — so the whole of the template comes across.
+  const screen = (name) => $(`#screen-${name}`).content.cloneNode(true);
 
   /** Sets the text of one element inside a piece of drawn markup. */
   function put(root, selector, text) {
@@ -96,6 +105,44 @@
     if (text === undefined) return key;
     if (args) text = text.replace(/\{\s*\$([A-Za-z0-9_-]+)\s*\}/g, (_, name) => (args[name] == null ? '' : String(args[name])));
     return text;
+  }
+
+  /// Fills the bar along the foot of a screen: one figure per drawn slot,
+  /// each keeping the shape it was drawn in.
+  function statusbar(root, figures) {
+    const bar = $('.statusbar', root);
+    if (!bar) return;
+    const slots = $$('.sb', bar);
+    figures.forEach((figure, index) => {
+      const slot = slots[index];
+      if (!slot || !figure) return;
+      const [value, label] = figure;
+      const mono = $('.mono', slot) || h('span', { class: 'mono' });
+      mono.textContent = value;
+      // Drawn either as a figure and then a word, or a word and then a
+      // figure. Which it is shows in what comes first in the drawing.
+      const ahead = slot.firstChild && slot.firstChild.nodeType === 3
+        && slot.firstChild.textContent.trim();
+      slot.replaceChildren(...(ahead ? [`${label} `, mono] : [mono, ` ${label}`]));
+    });
+    slots.slice(figures.length).forEach((spare) => spare.remove());
+  }
+
+  /// The noun for a count, from the forms the catalogue keeps apart.
+  ///
+  /// Russian has three: one node, two nodes, five nodes. English has two and
+  /// says so by giving the same word twice. Fluent would choose for us, but
+  /// the browser has none, so the choosing is here and the forms are plain
+  /// text in the catalogue.
+  function counted(key, count) {
+    const forms = String(t(key)).split('|');
+    if (forms.length < 2) return forms[0] || '';
+    if (state.lang !== 'ru') return forms[Math.abs(count) === 1 ? 0 : 1];
+    const ten = Math.abs(count) % 10;
+    const hundred = Math.abs(count) % 100;
+    if (ten === 1 && hundred !== 11) return forms[0];
+    if (ten >= 2 && ten <= 4 && (hundred < 12 || hundred > 14)) return forms[1];
+    return forms[2] || forms[1];
   }
 
   const applyStaticText = (root) => $$('[data-t]', root || document).forEach((el) => { el.textContent = t(el.dataset.t); });
@@ -169,7 +216,11 @@
   const mbytes = (mb) => bytes(Number(mb || 0) * 1024 * 1024);
   const quota = (value) => (value == null ? t('ui-no-limit') : bytes(value));
 
-  const clock = (iso) => (iso ? new Intl.DateTimeFormat(locale(), { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }).format(new Date(iso)) : '—');
+  const clock = (iso, seconds) => (iso ? new Intl.DateTimeFormat(locale(), {
+    hour: '2-digit', minute: '2-digit', second: seconds ? '2-digit' : undefined, timeZone: 'UTC',
+  }).format(new Date(iso)) : '—');
+  // Every time in this interface is written in UTC, so that is what it says.
+  const timezone = () => 'UTC';
   const stamp = (iso) => (iso ? new Intl.DateTimeFormat(locale(), { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(new Date(iso)) : t('ui-never'));
   const date = (iso) => (iso ? new Intl.DateTimeFormat(locale(), { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(iso)) : t('ui-no-expiry'));
   const shortDate = (iso) => (iso ? new Intl.DateTimeFormat(locale(), { dateStyle: 'short', timeZone: 'UTC' }).format(new Date(iso)) : t('ui-no-expiry'));
@@ -294,16 +345,43 @@
     $$('#theme > *').forEach((el) => el.classList.toggle('on', el.dataset.theme === state.theme));
   }
 
-  const applyLang = () => $$('#lang > *').forEach((el) => el.classList.toggle('on', el.dataset.lang === state.lang));
+  /// The address an agent dials, as an operator would type it.
+  ///
+  /// The panel gives a bare `:port` when its channel listens on no particular
+  /// address; the host is then the one this page was opened on, which is the
+  /// right answer for a panel and a channel on one machine (0065).
+  function channelAddress() {
+    const given = state.channel || '';
+    if (!given) return '—';
+    return given.startsWith(':') ? `${location.hostname}${given}` : given;
+  }
+
+  function setTheme(name) {
+    state.theme = name;
+    remember('localStorage', 'ap-theme', name);
+    applyTheme();
+  }
+
+  async function setLang(code) {
+    state.lang = code;
+    remember('localStorage', 'ap-lang', code);
+    await loadMessages();
+    showRail();
+    route();
+  }
 
   function showRail() {
     $('.rail').hidden = !state.me;
     $('.barstrip').hidden = !state.me;
     if (!state.me) return;
-    put(document, '#me-login', state.me.login);
-    put(document, '#me-role', t(`ui-role-${state.me.role}`));
-    put(document, '#me-version', state.version || '—');
-    $$('#screen ~ *, .rail .nav a').forEach(() => {});
+    put(document, '#channel-address', channelAddress());
+    put(document, '#panel-address', location.host);
+    // Who is signed in and which build is answering. The rail was drawn with
+    // no room for either, so the row they belong to says them on hover.
+    const row = $('#panel-address').closest('.frow');
+    if (row) {
+      row.title = [state.me.login, t(`ui-role-${state.me.role}`), state.version].filter(Boolean).join(' · ');
+    }
     $$('.rail .nav a').forEach((link) => {
       const view = link.dataset.view;
       link.hidden = (view === 'nodes' && state.me.role === 'reseller') || (view === 'log' && state.me.role !== 'superadmin');
@@ -523,30 +601,40 @@
       tabindex: '0',
       on: { click: () => { state.range = days; remember('localStorage', 'ap-range', String(days)); route(); } },
     }, label)));
+    const shown = SERIES[Math.max(0, RANGES.findIndex(([, days]) => days === state.range))] || SERIES[0];
+    /// Keeps the drawn figure for this range, fills it, and drops the rest.
+    const only = (box, value) => {
+      if (!box) return null;
+      const all = $$('b', box);
+      const kept = all.find((one) => one.classList.contains(shown)) || all[0];
+      all.forEach((one) => { if (one !== kept) one.remove(); });
+      if (kept) kept.textContent = value;
+      return kept;
+    };
+    /// The same choice among elements that are the series themselves.
+    const pick = (all) => all.find((one) => one.classList.contains(shown)) || all[0];
+
     const [total, unit] = scale(drawn.total);
-    put(traffic, '.big .v', total);
-    put(traffic, '.big .u', unit);
+    only($('.big .v', traffic), total);
+    only($('.big .u', traffic), unit);
     const delta = $('.big .delta', traffic);
     if (change == null) {
       delta.remove();
     } else {
-      // The stand carried a figure per range in its own <b>; one range is
-      // drawn here, so the spares go with it.
-      $$('b', delta).slice(1).forEach((spare) => spare.remove());
-      put(delta, 'b', t(change < 0 ? 'ui-dash-down' : 'ui-dash-up', { percent: Math.abs(change) }));
+      only(delta, t(change < 0 ? 'ui-dash-down' : 'ui-dash-up', { percent: Math.abs(change) }));
     }
 
     const svg = $('.chart svg', traffic);
     const view = svg.getAttribute('viewBox').split(' ').map(Number);
     const { line, x, y } = curve(drawn.points, view[2], 8, 162);
     // The stand drew a curve per range; the panel draws the one it was asked
-    // for, so the spare fills and lines go — the first of each stays.
+    // for, and the spares go.
     const fills = $$('.fill', svg);
     const lines = $$('.line', svg);
-    fills.slice(1).forEach((path) => path.remove());
-    lines.slice(1).forEach((path) => path.remove());
-    const fill = fills[0];
-    const stroke = lines[0];
+    const fill = pick(fills);
+    const stroke = pick(lines);
+    fills.forEach((path) => { if (path !== fill) path.remove(); });
+    lines.forEach((path) => { if (path !== stroke) path.remove(); });
     fill.setAttribute('d', `${line} L ${view[2]} ${view[3]} L 0 ${view[3]} Z`);
     stroke.setAttribute('d', line);
     // The line is drawn by a dash the length of the path; the stand's was
@@ -559,23 +647,35 @@
     const top = drawn.points[drawn.peak];
     const peakX = x(drawn.peak).toFixed(1);
     const peakY = y(top.in + top.out).toFixed(1);
-    const vline = $('.vline', svg);
+    const vlines = $$('.vline', svg);
+    const vline = pick(vlines);
+    vlines.forEach((one) => { if (one !== vline) one.remove(); });
     vline.setAttribute('x1', peakX);
     vline.setAttribute('x2', peakX);
     vline.setAttribute('y1', peakY);
-    const mark = $('.pk', svg);
+    const marks = $$('.pk', svg);
+    const mark = pick(marks);
+    marks.forEach((one) => { if (one !== mark) one.remove(); });
     mark.setAttribute('cx', peakX);
     mark.setAttribute('cy', peakY);
-    const tip = $('.tip', traffic);
+    const tips = $$('.tip', traffic);
+    const tip = pick(tips);
+    tips.forEach((one) => { if (one !== tip) one.remove(); });
     tip.style.left = `${Math.min(88, Math.max(12, (drawn.peak / Math.max(1, drawn.points.length - 1)) * 100))}%`;
     put(tip, '.d', day(top.day));
     put(tip, '.n', bytes(top.in + top.out));
     put(tip, '.s', `${t('ui-dash-received')} ${bytes(top.in)} · ${t('ui-dash-sent')} ${bytes(top.out)}`);
     const axis = $$('.xax > span', traffic);
-    put(axis[0], null, day(drawn.points[0].day));
-    put(axis[1], null, day(drawn.points[drawn.points.length - 1].day));
+    only(axis[0], day(drawn.points[0].day));
+    only(axis[1], day(drawn.points[drawn.points.length - 1].day));
     const foot = $$('.tfoot > span', traffic);
-    const figure = (span, label, value) => span.replaceChildren(`${label} `, h('b', null, value));
+    const figure = (span, label, value) => {
+      const kept = only(span, value);
+      // Everything but the figure goes, the word included: the word may have
+      // been wrapped for translation and is no longer a bare piece of text.
+      [...span.childNodes].filter((node) => node !== kept).forEach((node) => node.remove());
+      if (kept) span.insertBefore(document.createTextNode(`${label} `), kept);
+    };
     figure(foot[0], t('ui-dash-received'), bytes(drawn.received));
     figure(foot[1], t('ui-dash-sent'), bytes(drawn.sent));
     figure(foot[2], t('ui-dash-peak'), bytes(top.in + top.out));
@@ -725,10 +825,21 @@
       }));
     }
 
+    // ── the foot, as drawn: what there is, and what is answering ──
+    const connections = live.reduce((sum, node) => sum
+      + (node.machine && node.machine.connections != null ? Number(node.machine.connections) : 0), 0);
+    statusbar(root, [
+      [num(live.length), counted('ui-count-nodes', live.length)],
+      [num(accesses.length), counted('ui-count-accesses', accesses.length)],
+      [num(connections), counted('ui-count-connections', connections)],
+      [state.version ? `v${state.version}` : '—', t('ui-rail-panel')],
+      [state.uptime == null ? '—' : uptime(state.uptime), t('ui-status-running')],
+    ]);
+
     // ── events ──
     if (!readsAudit) events.remove();
     else {
-      const audit = await api('GET', '/v1/audit?limit=6');
+      const audit = (await api('GET', '/v1/audit?limit=6')).entries || [];
       put(events, '.ch h2', t('ui-dash-events'));
       const all = $('.ch .lnk', events);
       if (all) { all.textContent = t('ui-dash-all-log'); all.setAttribute('href', '#/log'); }
@@ -736,7 +847,7 @@
         put(row, '.t', clock(entry.at));
         dot($('.sd', row), entry.action.includes('burn') || entry.action.includes('revoke') ? 'bad' : 'ok');
         const words = [...row.children].find((child) => !child.className);
-        if (words) words.textContent = `${entry.action}${entry.target ? ` · ${entry.target}` : ''}`;
+        if (words) words.textContent = `${eventWords(entry.action)}${entry.target ? ` · ${entry.target}` : ''}`;
         put(row, '.who', entry.actor_id ? entry.actor_id.slice(0, 8) : t('ui-none'));
       });
     }
@@ -746,22 +857,36 @@
   // ── nodes, users, log: the stand's own markup, filled ───────────────────
 
   async function nodes(root) {
-    const [list, accesses] = await Promise.all([
+    const [list, accesses, traffic] = await Promise.all([
       api('GET', '/v1/nodes'),
       api('GET', `/v1/accesses?limit=${PAGE}`),
+      api('GET', `/v1/traffic?days=${state.range}`),
     ]);
     state.known.nodes = list;
     const live = list.filter((node) => node.state !== 'burned');
     const shown = live.filter((node) => state.filter === 'all'
       || (state.filter === 'attention' ? standing(node) !== 'ok' : node.kind === state.filter));
+    // The order the note on the bar promises: whatever wants doing something
+    // about comes first, and the rest keep to their names.
+    const RANK = { bad: 0, none: 1, warn: 2, ok: 3 };
+    shown.sort((one, other) => (RANK[standing(one)] - RANK[standing(other)])
+      || one.label.localeCompare(other.label));
     const held = new Map();
     for (const access of accesses) held.set(access.node_id, (held.get(access.node_id) || 0) + 1);
 
     put(root, '.phead h1', t('ui-nav-nodes'));
     const well = live.filter((node) => standing(node) === 'ok').length;
-    $('.phead .pmeta', root)?.replaceChildren(
-      t('ui-nodes-well', { well: num(well), total: num(live.length) }), h('br'),
-      t('ui-nodes-wanting', { count: num(live.length - well) }));
+    const meta = $('.phead .pmeta', root);
+    if (meta) {
+      // Two lines, as drawn: how the fleet is answering, and what it carried
+      // over the range, in the figure the drawing keeps set apart.
+      const carried = $('.mono', meta) || h('span', { class: 'mono' });
+      carried.textContent = bytes(series(traffic, state.range).total);
+      meta.replaceChildren(
+        t('ui-nodes-well', { well: num(well), total: num(live.length) }),
+        ' · ', t('ui-nodes-wanting', { count: num(live.length - well) }), h('br'),
+        `${t('ui-nodes-carried', { days: num(state.range) })} `, carried);
+    }
 
     // The filters the stand drew, made to work.
     const kinds = [...new Set(live.map((node) => node.kind))];
@@ -773,7 +898,9 @@
     const bar = $('.fbar', root);
     if (bar) {
       const shape = bar.firstElementChild;
-      bar.replaceChildren(...filters.map(([value, label, count]) => {
+      const divider = $('.fsep', bar);
+      const note = $('.right', bar);
+      const chipFor = ([value, label, count]) => {
         const chip = shape.cloneNode(true);
         const badge = $('.n', chip);
         chip.replaceChildren(label, badge || '');
@@ -782,12 +909,25 @@
         chip.removeAttribute('for');
         chip.addEventListener('click', () => { state.filter = value; route(); });
         return chip;
-      }));
-      if (state.me.role === 'superadmin') {
-        bar.append(h('button', { type: 'button', class: 'btn key', style: 'margin-left: auto',
-          on: { click: newNode } }, t('ui-nodes-new')));
-      }
+      };
+      // As drawn: the kinds, a divider, then the filter that is not a kind,
+      // and on the right the order the cards are in.
+      const kindChips = filters.filter(([value]) => value !== 'attention').map(chipFor);
+      const attention = filters.filter(([value]) => value === 'attention').map(chipFor);
+      if (note) note.textContent = t('ui-nodes-order');
+      bar.replaceChildren(...kindChips, ...(divider ? [divider] : []), ...attention,
+        ...(note ? [note] : []));
     }
+
+    const masked = live.filter((node) => node.kind === 'hidden').length;
+    statusbar(root, [
+      [num(live.length), counted('ui-count-nodes', live.length)],
+      [num(masked), t('ui-status-masked')],
+      [num(live.length - well), t('ui-status-wanting')],
+      [num(accesses.length), counted('ui-count-accesses', accesses.length)],
+      [`${Math.round(REFRESH_MS / 1000)} ${t('ui-unit-seconds')}`, t('ui-status-checked-every')],
+      [clock(new Date().toISOString()), t('ui-status-refreshed')],
+    ]);
 
     // The stand drew a node in four conditions and a tile for adding one.
     // A node takes the card it was drawn in rather than the first one.
@@ -906,18 +1046,42 @@
     state.known = { nodes: list, clients };
 
     put(root, '.phead h1', t('ui-nav-users'));
-    $('.phead .pmeta', root)?.replaceChildren(
-      t('ui-users-count', { count: num(clients.length) }), h('br'),
-      t('ui-users-accesses', { count: num(accesses.length + publics.length) }));
-    $('.phead', root).append(h('div', { class: 'df', style: 'margin-left: auto; gap: 8px' },
-      h('button', { type: 'button', class: 'btn', on: { click: newClient } }, t('ui-users-new-client')),
-      list.length ? h('button', { type: 'button', class: 'btn key', on: { click: () => newAccess(clients, list, false) } }, t('ui-users-new-access')) : null,
-      list.length ? h('button', { type: 'button', class: 'btn', on: { click: () => newAccess(clients, list, true) } }, t('ui-users-new-public')) : null));
+    // Two lines, as drawn: how many of each thing there is, and what they
+    // carried over the range, in the figure the drawing sets apart.
+    const meta = $('.phead .pmeta', root);
+    if (meta) {
+      const total = [...accesses, ...publics]
+        .reduce((sum, access) => sum + Number(access.carried_bytes || 0), 0);
+      const carried = $('.mono', meta) || h('span', { class: 'mono' });
+      carried.textContent = bytes(total);
+      meta.replaceChildren(
+        `${num(clients.length)} ${counted('ui-count-clients', clients.length)} · `,
+        `${num(publics.length)} ${counted('ui-count-links', publics.length)}`, h('br'),
+        `${t('ui-nodes-carried', { days: num(30) })} `, carried);
+    }
 
-    const table = $('.tbl', root);
+    // The stand draws two tables here: what the users hold, and the links
+    // that belong to nobody.
+    const table = $('.t-acc', root);
+    const links = $('.t-link', root);
     const head = $$('.th > div', table);
-    [t('ui-col-user'), t('ui-col-node'), t('ui-col-method'), t('ui-col-quota'), t('ui-col-expires'), t('ui-col-link')]
+    [t('ui-col-user'), t('ui-col-node'), t('ui-col-granted'), t('ui-col-carried'),
+      t('ui-col-last-active'), t('ui-col-connection')]
       .forEach((label, index) => { if (head[index]) head[index].textContent = label; });
+    if (links) {
+      const linkHead = $$('.th > div', links);
+      [t('ui-col-link-name'), t('ui-col-node'), t('ui-col-issued'), t('ui-col-carried'), t('ui-col-connection')]
+        .forEach((label, index) => { if (linkHead[index]) linkHead[index].textContent = label; });
+    }
+    const heading = $('.shead h2', root);
+    if (heading) heading.textContent = t('ui-users-public');
+    const idle = clients.filter((client) => !accesses.some((one) => one.client_id === client.id)).length;
+    statusbar(root, [
+      [num(clients.length), counted('ui-count-clients', clients.length)],
+      [num(accesses.length), counted('ui-count-accesses', accesses.length)],
+      [num(publics.length), counted('ui-count-links', publics.length)],
+      [num(idle), counted('ui-count-without', idle)],
+    ]);
 
     const byClient = new Map(clients.map((client) => [client.id, []]));
     for (const access of accesses) byClient.get(access.client_id)?.push(access);
@@ -927,7 +1091,7 @@
       if (!own.length) rows.push({ client, access: null, first: true });
       own.forEach((access, index) => rows.push({ client, access, first: index === 0 }));
     }
-    for (const access of publics) rows.push({ client: null, access, first: true });
+
 
     const shape = $('.tr', table);
     const header = $('.th', table);
@@ -937,14 +1101,43 @@
       const who = $('.who', row);
       who.className = `who ${first ? '' : 'same'}`;
       who.replaceChildren(client
-        ? h('button', { type: 'button', class: 'lnk', on: { click: () => clientCard(client) } }, first ? client.label : '')
+        ? h('button', {
+          type: 'button',
+          class: 'lnk',
+          on: { click: () => clientCard(client, byClient.get(client.id) || [], list) },
+        }, first ? client.label : '')
         : h('span', null, access.name || '—'));
       const where = $('.node', row);
       where.replaceChildren(h('span', { class: `sd ${node && standing(node) === 'ok' ? '' : 'w'}` }), node ? node.label : '—');
       const cells = [...row.children];
-      if (cells[2]) cells[2].textContent = access ? t(`ui-method-${access.method}`) : t('ui-empty');
-      if (cells[3]) cells[3].textContent = access ? quota(access.quota_bytes) : '';
-      if (cells[4]) cells[4].textContent = access ? shortDate(access.expires_at) : '';
+      // As drawn: when it was granted, what it carried over the range, and
+      // when it was last busy. A row with nothing behind it says so and is
+      // muted, which is how the stand drew that case too.
+      if (cells[2]) {
+        cells[2].textContent = access ? shortDate(access.created_at) : t('ui-empty');
+        cells[2].className = access ? 'm2' : 'm3';
+      }
+      const carried = access ? Number(access.carried_bytes || 0) : null;
+      if (cells[3]) {
+        cells[3].textContent = carried == null ? t('ui-empty') : (carried ? bytes(carried) : '0');
+        cells[3].className = carried ? 'r mono' : 'r mono m3';
+      }
+      if (cells[4]) {
+        const sick = node && standing(node) !== 'ok';
+        if (!access) {
+          cells[4].textContent = t('ui-empty');
+          cells[4].className = 'r m3';
+        } else if (sick) {
+          cells[4].textContent = trouble(node);
+          cells[4].className = 'r warnline';
+        } else if (access.last_active_on) {
+          cells[4].textContent = shortDate(`${access.last_active_on}T00:00:00Z`);
+          cells[4].className = 'r mono m2';
+        } else {
+          cells[4].textContent = t('ui-never-connected');
+          cells[4].className = 'r m3';
+        }
+      }
       // The stand shows the link in this cell. A link is a secret, and the
       // panel hands one out only through the endpoint that writes to the
       // audit log — so the cell shows that a link exists and the button
@@ -953,63 +1146,324 @@
       if (link) {
         const value = $('.v', link);
         const ask = $('.cp', link);
-        if (!access || access.state === 'revoked') {
-          link.replaceChildren(h('span', { class: 'v m3' }, access ? t('ui-access-state-revoked') : ''));
+        if (!access) {
+          // The stand drew this row with one button in it: the way to give
+          // this person something to connect with.
+          link.replaceChildren(h('button', {
+            type: 'button',
+            class: 'btn sm key',
+            on: { click: () => newAccess(clients, list, false, client) },
+          }, t('ui-users-new-access')));
+        } else if (access.state === 'revoked') {
+          link.replaceChildren(h('span', { class: 'v m3' }, t('ui-access-state-revoked')));
         } else {
+          // The stand drew the link itself and a small button beside it. A
+          // link is a secret and is handed out only through the endpoint that
+          // writes to the journal, so the text says the link exists and the
+          // drawn button is what asks for it.
           if (value) value.textContent = t('ui-link-hidden');
           if (ask) {
-            ask.replaceChildren(h('button', { type: 'button', class: 'btn', on: { click: () => linkFor(access, node) } }, t('ui-access-link')));
+            ask.setAttribute('role', 'button');
+            ask.setAttribute('tabindex', '0');
+            ask.title = t('ui-access-link');
+            ask.onclick = () => linkFor(access, node);
           }
-          link.append(h('button', {
-            type: 'button',
-            class: 'btn',
-            on: { click: () => setAccess(access, access.state === 'active' ? 'disabled' : 'active') },
-          }, t(access.state === 'active' ? 'ui-access-disable' : 'ui-access-enable')));
         }
       }
       return row;
     }));
+
+    // The links that belong to nobody, in their own table.
+    if (links) {
+      const shapeLink = $('.tr', links);
+      const headRow = $('.th', links);
+      links.replaceChildren(headRow, ...publics.map((access) => {
+        const row = shapeLink.cloneNode(true);
+        const node = list.find((candidate) => candidate.id === access.node_id);
+        const cells = [...row.children];
+        cells[0].replaceChildren(access.name || access.id.slice(0, 8));
+        $('.node', row).replaceChildren(
+          h('span', { class: `sd ${node && standing(node) === 'ok' ? '' : 'w'}` }), node ? node.label : '—');
+        if (cells[2]) cells[2].textContent = shortDate(access.created_at);
+        const carried = Number(access.carried_bytes || 0);
+        if (cells[3]) {
+          cells[3].textContent = carried ? bytes(carried) : '0';
+          cells[3].className = carried ? 'r mono' : 'r mono m3';
+        }
+        const link = $('.lk', row);
+        if (link) {
+          const value = $('.v', link);
+          if (value) value.textContent = t('ui-link-hidden');
+          const ask = $('.cp', link);
+          if (ask) {
+            ask.setAttribute('role', 'button');
+            ask.setAttribute('tabindex', '0');
+            ask.title = t('ui-access-link');
+            ask.onclick = () => linkFor(access, node);
+          }
+        }
+        return row;
+      }));
+      if (!publics.length) links.replaceChildren(headRow, h('div', { class: 'tr m3' }, t('ui-empty')));
+    }
+  }
+
+  // ── the journal ─────────────────────────────────────────────────────────
+
+  /// The groups the filter bar was drawn with, and what falls in each.
+  const JOURNAL = [
+    ['all', 'ui-log-all', []],
+    ['nodes', 'ui-nav-nodes', ['node.']],
+    ['accesses', 'ui-log-accesses', ['access.', 'client.']],
+    ['sessions', 'ui-log-sessions', ['session.']],
+    ['removals', 'ui-log-removals', ['node.burned', 'access.state', 'client.state']],
+    ['faults', 'ui-log-faults', ['fault.']],
+  ];
+
+  /// Whether a record falls in a group. An empty group takes everything.
+  const inGroup = (action, starts) => !starts.length || starts.some((one) => action.startsWith(one));
+
+  /// What an entry is, in words. An action the catalogue has no phrase for is
+  /// shown as it is recorded rather than as a guess at what it means.
+  function eventWords(action) {
+    const key = `ui-event-${action.replace(/\./g, '-')}`;
+    const said = t(key);
+    return said === key ? action : said;
+  }
+
+  /// How an entry should read: what went wrong is red, what was taken away is
+  /// amber, what was made is green, and the rest is plain.
+  function eventTone(action) {
+    if (action.includes('fail') || action.includes('refus')) return 'bad';
+    if (action.endsWith('.burned') || action.endsWith('.state')) return 'warn';
+    if (action.endsWith('.created') || action.endsWith('.opened')) return 'ok';
+    return '';
   }
 
   async function log(root) {
-    const entries = await api('GET', `/v1/audit?limit=${PAGE}`);
-    put(root, '.phead h1', t('ui-nav-log'));
-    $('.phead .pmeta', root)?.replaceChildren(t('ui-log-count', { count: num(entries.length) }));
+    const page = state.journal;
+    const group = JOURNAL.find(([name]) => name === page.group) || JOURNAL[0];
+    const query = [`limit=${page.size}`, `offset=${page.offset}`];
+    if (page.day) query.push('days=1');
+    // The filter goes with the request: narrowing what has already arrived
+    // would leave the count beside the bar describing something else.
+    if (group[2].length) query.push(`prefix=${encodeURIComponent(group[2].join(','))}`);
+    const [answer, summary] = await Promise.all([
+      api('GET', `/v1/audit?${query.join('&')}`),
+      api('GET', `/v1/audit/summary?days=${page.day ? 1 : 3650}`),
+    ]);
+    const all = answer.entries || [];
+    const counts = summary.by_action || {};
+    // The bar counts what the journal holds; the table shows what is asked
+    // for. Filtering by group happens here because the grouping is the
+    // screen's, not the database's (0067).
+    const entries = page.node
+      ? all.filter((entry) => (entry.target || '').includes(page.node))
+      : all;
 
+    put(root, '.phead h1', t('ui-nav-log'));
+    const faults = Object.entries(counts)
+      .filter(([action]) => inGroup(action, JOURNAL[5][2]))
+      .reduce((sum, [, many]) => sum + Number(many), 0);
+    const meta = $('.phead .pmeta', root);
+    if (meta) {
+      const many = h('span', { class: 'mono' }, num(summary.total || 0));
+      const bad = h('span', { class: 'mono' }, num(faults));
+      const zone = h('span', { class: 'mono' }, timezone());
+      meta.replaceChildren(`${t('ui-log-in-day')} `, many, ` · ${t('ui-log-faults-of')} `, bad,
+        h('br'), `${t('ui-log-timezone')} `, zone);
+    }
+
+    // ── the bar, as drawn: the groups, a divider, the window and the node ──
+    const bar = $('.fbar', root);
+    if (bar) {
+      const shape = $('.chip', bar);
+      const divider = $('.fsep', bar);
+      const live = $('.live', bar);
+      const chip = (label, count, on, go) => {
+        const made = shape.cloneNode(true);
+        const badge = $('.n', made);
+        made.replaceChildren(label, count == null ? '' : (badge || h('span', { class: 'n' })));
+        const shownBadge = $('.n', made);
+        if (shownBadge && count != null) shownBadge.textContent = num(count);
+        made.classList.toggle('on', on);
+        made.removeAttribute('for');
+        made.addEventListener('click', go);
+        return made;
+      };
+      const groups = JOURNAL.map(([name, key, starts]) => chip(
+        t(key),
+        Object.entries(counts).filter(([action]) => inGroup(action, starts))
+          .reduce((sum, [, many]) => sum + Number(many), 0),
+        page.group === name,
+        () => { state.journal = { ...page, group: name, offset: 0 }; route(); },
+      ));
+      const window_ = chip(page.day ? t('ui-log-day') : t('ui-log-all-time'), null, page.day,
+        () => { state.journal = { ...page, day: !page.day, offset: 0 }; route(); });
+      const names = [null, ...state.known.nodes.map((node) => node.label)];
+      const nodeChip = chip(
+        page.node ? `${t('ui-col-node')}: ${page.node}` : t('ui-log-any-node'), null, !!page.node,
+        () => {
+          const at = names.indexOf(page.node || null);
+          state.journal = { ...page, node: names[(at + 1) % names.length], offset: 0 };
+          route();
+        },
+      );
+      bar.replaceChildren(...groups, ...(divider ? [divider] : []), window_, nodeChip,
+        ...(live ? [live] : []));
+      if (live) {
+        const word = [...live.childNodes].find((node) => node.nodeType === 3);
+        if (word) word.textContent = t('ui-log-live');
+      }
+    }
+
+    // ── the table, in the drawn columns ───────────────────────────────────
     const table = $('.tbl', root);
     const head = $$('.th > div', table);
-    [t('ui-col-time'), t('ui-col-actor'), t('ui-col-action'), t('ui-col-target'), t('ui-col-details'), '']
-      .forEach((label, index) => { if (head[index]) head[index].textContent = label; });
-
-    // The filter the stand drew above the table.
-    const bar = $('.fbar', root);
-    let needle = '';
-    const shape = $('.tr', table);
+    [t('ui-col-time'), t('ui-col-node'), t('ui-col-event'), t('ui-col-object'),
+      t('ui-col-detail'), t('ui-col-source')]
+      .forEach((label, index) => {
+        if (!head[index]) return;
+        const arrow = $('svg', head[index]);
+        head[index].replaceChildren(label, arrow || '');
+      });
+    const shape = [...table.children].find((child) => child.classList.contains('tr'));
+    const opened = [...table.children].find((child) => child.classList.contains('exp'));
     const header = $('.th', table);
-    function draw() {
-      const shown = entries.filter((entry) => !needle
-        || `${entry.action} ${entry.target || ''} ${JSON.stringify(entry.details || {})}`.toLowerCase().includes(needle));
-      table.replaceChildren(header, ...shown.map((entry) => {
-        const row = shape.cloneNode(true);
-        row.className = 'tr';
-        row.removeAttribute('for');
-        const cells = [...row.children];
-        if (cells[0]) cells[0].textContent = clock(entry.at);
-        if (cells[1]) cells[1].textContent = entry.actor_id ? entry.actor_id.slice(0, 8) : t('ui-none');
-        if (cells[2]) { cells[2].textContent = entry.action; cells[2].className = 'ev'; }
-        if (cells[3]) cells[3].textContent = entry.target || '—';
-        if (cells[4]) cells[4].textContent = entry.details && Object.keys(entry.details).length ? JSON.stringify(entry.details) : '';
-        if (cells[5]) cells[5].textContent = stamp(entry.at).split(',')[0];
+    const rows = [];
+    for (const entry of entries) {
+      const row = shape.cloneNode(true);
+      // The stand marks the newest record as just-arrived and lets the rest
+      // come in behind it, one after another. Keeping those classes keeps the
+      // motion that was drawn.
+      const at = rows.length;
+      row.className = at === 0 ? 'tr fresh' : 'tr streamed';
+      row.style.setProperty('--d', `${Math.min(at, 12) * 40}ms`);
+      row.removeAttribute('for');
+      const cells = [...row.children];
+      const facts = entry.details && typeof entry.details === 'object' ? entry.details : {};
+      if (cells[0]) cells[0].textContent = clock(entry.at, true);
+      if (cells[1]) cells[1].textContent = facts.node || facts.label || (entry.action.startsWith('node.') ? entry.target : '') || '—';
+      if (cells[2]) {
+        cells[2].textContent = eventWords(entry.action);
+        cells[2].className = `ev ${eventTone(entry.action)}`.trim();
+      }
+      if (cells[3]) cells[3].textContent = entry.target || '—';
+      if (cells[4]) {
+        const said = Object.entries(facts)
+          .filter(([, value]) => value != null && value !== '')
+          .map(([key, value]) => `${key}: ${value}`).join(' · ');
+        cells[4].textContent = said || '—';
+      }
+      if (cells[5]) cells[5].textContent = entry.actor_id ? t('ui-log-by-operator') : t('ui-log-by-panel');
+      rows.push(row);
+      if (opened) {
+        row.style.cursor = 'pointer';
+        row.addEventListener('click', () => {
+          const already = row.nextElementSibling;
+          if (already && already.classList.contains('exp')) { already.remove(); return; }
+          $$('.exp', table).forEach((one) => one.remove());
+          row.after(expanded(opened, entry, facts));
+        });
+      }
+    }
+    table.replaceChildren(header, ...rows);
+    if (!rows.length) table.append(h('div', { class: 'tr m3' }, t('ui-empty')));
+
+    // ── the footer, as drawn ──────────────────────────────────────────────
+    const pager = $('.pgbar', root);
+    if (pager) {
+      const buttons = $$('.pg', pager);
+      const [earlier, later, save] = [buttons[0], buttons[1], buttons[2]];
+      const first = answer.total ? page.offset + 1 : 0;
+      const last = Math.min(page.offset + all.length, answer.total || 0);
+      const step = (by) => { state.journal = { ...page, offset: Math.max(0, page.offset + by) }; route(); };
+      if (earlier) {
+        earlier.disabled = page.offset + all.length >= (answer.total || 0);
+        earlier.onclick = () => step(page.size);
+      }
+      if (later) {
+        later.disabled = page.offset === 0;
+        later.onclick = () => step(-page.size);
+      }
+      const said = $$('span', pager).find((span) => !span.classList.contains('push') && $('.mono', span));
+      if (said) {
+        said.replaceChildren(`${t('ui-log-records')} `, h('span', { class: 'mono' }, `${num(first)}–${num(last)}`),
+          ` ${t('ui-log-of')} `, h('span', { class: 'mono' }, num(answer.total || 0)));
+      }
+      const note = $('.push', pager);
+      if (note) note.textContent = t('ui-log-export-note');
+      if (save) {
+        const arrow = $('svg', save);
+        save.replaceChildren(arrow || '', ` ${t('ui-log-export')}`);
+        save.onclick = () => exportJournal(entries);
+      }
+    }
+
+    statusbar(root, [
+      [num(summary.total || 0), t('ui-log-in-day-foot')],
+      [num(faults), counted('ui-count-faults', faults)],
+      [num(Object.entries(counts).filter(([action]) => action.startsWith('session.')
+        || action.endsWith('.created')).reduce((sum, [, many]) => sum + Number(many), 0)),
+      t('ui-log-operator-actions')],
+      [page.node || t('ui-log-any-node'), t('ui-log-scope')],
+      [num(entries.length), counted('ui-count-records', entries.length)],
+    ]);
+  }
+
+  /// The drawn block that opens under a row, filled with what the entry holds.
+  function expanded(shape, entry, facts) {
+    const box = shape.cloneNode(true);
+    box.className = 'exp';
+    put(box, '.et', `${eventWords(entry.action)} — ${entry.target || t('ui-none')}`);
+    const summary = $('.ex', box);
+    if (summary) summary.textContent = t('ui-log-recorded-at', { at: stamp(entry.at) });
+    const pairs = (list, into) => {
+      if (!into) return;
+      const shapeRow = into.firstElementChild;
+      into.replaceChildren(...list.map(([key, value, muted]) => {
+        const row = shapeRow ? shapeRow.cloneNode(true) : h('div', null, h('dt'), h('dd'));
+        put(row, 'dt', key);
+        const said = $('dd', row);
+        if (said) {
+          said.textContent = value;
+          said.className = muted ? 'm3' : (said.classList.contains('mono') ? 'mono' : '');
+        }
         return row;
       }));
-      if (!shown.length) table.append(h('div', { class: 'tr m3' }, t('ui-empty')));
+    };
+    const [left, right] = $$('.dl', box);
+    pairs(Object.entries(facts).map(([key, value]) => [key, String(value), false]).concat(
+      [[t('ui-col-action'), entry.action, false]],
+    ), left);
+    pairs([
+      [t('ui-col-time'), stamp(entry.at), false],
+      [t('ui-col-source'), entry.actor_id ? t('ui-log-by-operator') : t('ui-log-by-panel'), false],
+      [t('ui-col-object'), entry.target || t('ui-none'), !entry.target],
+      ['id', entry.id, false],
+    ], right);
+    const note = $('.pnote', box);
+    if (note) note.textContent = t('ui-log-keeps-note');
+    const acts = $$('.act', box);
+    acts.forEach((act) => act.remove());
+    return box;
+  }
+
+  /// Hands the operator the rows on screen as a comma-separated file.
+  function exportJournal(entries) {
+    const cell = (value) => `"${String(value == null ? '' : value).replace(/"/g, '""')}"`;
+    const lines = [['at', 'action', 'target', 'actor', 'details'].join(',')];
+    for (const entry of entries) {
+      lines.push([entry.at, entry.action, entry.target || '', entry.actor_id || '',
+        JSON.stringify(entry.details || {})].map(cell).join(','));
     }
-    if (bar) {
-      const search = h('input', { class: 'inp', type: 'search', placeholder: t('ui-log-filter'), style: 'max-width: 280px' });
-      search.addEventListener('input', () => { needle = search.value.trim().toLowerCase(); draw(); });
-      bar.replaceChildren(search);
-    }
-    draw();
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = h('a', { href: url, download: `anyproxy-journal-${new Date().toISOString().slice(0, 10)}.csv` });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   }
 
   // ── the things a screen can do ──────────────────────────────────────────
@@ -1079,7 +1533,7 @@
     });
   }
 
-  function newAccess(clients, nodes_, isPublic) {
+  function newAccess(clients, nodes_, isPublic, forClient) {
     dialog('user', (box, close) => {
       const wrap = box.parentElement;
       const cards = $$('.dlg', wrap);
@@ -1091,6 +1545,8 @@
         .map((candidate) => h('option', { value: candidate.id }, candidate.label)));
       const name = h('input', { class: 'inp', type: 'text', maxlength: '64' });
       who.replaceWith(isPublic ? name : client);
+      // Opened from a person's own row, it opens on that person.
+      if (forClient) client.value = forClient.id;
       const node = h('select', { class: 'inp' }, nodes_.filter((candidate) => candidate.state !== 'burned')
         .map((candidate) => h('option', { value: candidate.id }, `${candidate.label} · ${kindOf(candidate)}`)));
       fields[1].replaceWith(node);
@@ -1113,16 +1569,36 @@
     });
   }
 
-  function clientCard(client) {
+  function clientCard(client, held, nodes_) {
     dialog('user', (box, close) => {
       const cards = $$('.dlg', box.parentElement);
       cards.slice(1).forEach((card) => card.remove());
       put(box, '.dh h2', client.label);
       put(box, '.dh .note', t(`ui-client-state-${client.state}`));
-      $('.db', box).replaceChildren(h('div', { class: 'pair' },
-        h('span', { class: 'k' }, t('ui-col-quota')), h('span', { class: 'v' }, quota(client.quota_bytes)),
-        h('span', { class: 'k' }, t('ui-col-expires')), h('span', { class: 'v' }, date(client.expires_at)),
-        h('span', { class: 'k' }, t('ui-node-created')), h('span', { class: 'v' }, date(client.created_at))));
+      const nodeOf = (access) => (nodes_ || []).find((one) => one.id === access.node_id);
+      $('.db', box).replaceChildren(
+        h('div', { class: 'pair' },
+          h('span', { class: 'k' }, t('ui-col-quota')), h('span', { class: 'v' }, quota(client.quota_bytes)),
+          h('span', { class: 'k' }, t('ui-col-expires')), h('span', { class: 'v' }, date(client.expires_at)),
+          h('span', { class: 'k' }, t('ui-node-created')), h('span', { class: 'v' }, date(client.created_at))),
+        // What this person holds, and the way to take one back. The users
+        // screen was drawn without such a control; this is where the access
+        // being turned off can be named.
+        ...(held && held.length ? [h('div', { class: 'lst' }, ...held.map((access) => {
+          const node = nodeOf(access);
+          return h('div', { class: 'lk' },
+            h('span', { class: 'v' }, `${node ? node.label : t('ui-none')} · ${t(`ui-method-${access.method}`)}`),
+            h('button', {
+              type: 'button',
+              class: 'btn',
+              on: {
+                click: async () => {
+                  await setAccess(access, access.state === 'active' ? 'disabled' : 'active');
+                  close();
+                },
+              },
+            }, t(access.state === 'active' ? 'ui-access-disable' : 'ui-access-enable')));
+        }))] : []));
       const buttons = $$('.df .btn', box);
       buttons[0].textContent = t('ui-close');
       buttons[0].addEventListener('click', close);
@@ -1171,7 +1647,7 @@
   async function enrol(node) {
     let issued;
     try { issued = await api('POST', `/v1/nodes/${node.id}/enrollment`); } catch (error) { refused(error); return; }
-    const command = `anyproxy-agent enroll --panel <panel-host>:8443 --code ${issued.code} --fingerprint ${issued.panel_fingerprint}`;
+    const command = `anyproxy-agent enroll --panel ${channelAddress()} --code ${issued.code} --fingerprint ${issued.panel_fingerprint}`;
     dialog('link', (box, close) => {
       put(box, '.dh h2', `${t('ui-enrol-title')} · ${node.label}`);
       put(box, '.dh .note', t('ui-enrol-expires', { date: stamp(issued.expires_at) }));
@@ -1234,6 +1710,30 @@
       ...[['dashboard', t('ui-nav-dashboard')], ['nodes', t('ui-nav-nodes')], ['users', t('ui-nav-users')], ['log', t('ui-nav-log')]]
         .filter(([name]) => allowed(name))
         .map(([name, label]) => ({ label, hint: t('ui-palette-screen'), go: () => { location.hash = `#/${name}`; } })),
+      // The stand drew no way out and no language switch on the rail, and a
+      // panel needs both: the command bar it did draw is where they live.
+      { label: t('ui-users-new-client'), hint: t('ui-palette-command'), go: newClient },
+      ...(state.known.nodes.length ? [
+        { label: t('ui-users-new-access'),
+          hint: t('ui-palette-command'),
+          go: () => newAccess(state.known.clients, state.known.nodes, false) },
+        { label: t('ui-users-new-public'),
+          hint: t('ui-palette-command'),
+          go: () => newAccess(state.known.clients, state.known.nodes, true) },
+      ] : []),
+      ...(state.me.role === 'superadmin'
+        ? [{ label: t('ui-nodes-new'), hint: t('ui-palette-command'), go: newNode }] : []),
+      { label: t('ui-sign-out'), hint: t('ui-palette-command'), go: signOut },
+      ...['ru', 'en'].filter((code) => code !== state.lang).map((code) => ({
+        label: t('ui-palette-language', { name: code.toUpperCase() }),
+        hint: t('ui-palette-command'),
+        go: () => setLang(code),
+      })),
+      ...['dark', 'light'].filter((name) => name !== state.theme).map((name) => ({
+        label: t(`ui-palette-theme-${name}`),
+        hint: t('ui-palette-command'),
+        go: () => setTheme(name),
+      })),
       ...state.known.nodes.map((node) => ({ label: node.label, hint: kindOf(node), go: () => { location.hash = '#/nodes'; } })),
       ...state.known.clients.map((client) => ({ label: client.label, hint: t('ui-nav-users'), go: () => { location.hash = '#/users'; } })),
     ];
@@ -1278,15 +1778,39 @@
     return true;
   }
 
+  /// Dresses the whole page as the named screen was drawn.
+  ///
+  /// The rail and the strip were drawn differently on each of the stand's
+  /// screens, so the scope goes on the root, above them, and not on the box
+  /// the screen is rendered into.
+  function wear(name) {
+    document.querySelector('.root').className = `root scr-${name}`;
+  }
+
+  /// Which screen was asked for last. A screen that takes a while to gather
+  /// its figures must not land on top of one the operator has since moved to.
+  let asked = 0;
+
   async function show(name, quiet) {
+    const target = $('#screen');
+    const ticket = (asked += 1);
+    // The screen it is about to be is worn straight away, and with it a word:
+    // the one before it, wearing the wrong sheet, is what a wait used to look
+    // like.
+    if (!quiet) {
+      wear(name);
+      target.replaceChildren(h('div', { class: 'content' }, h('div', { class: 'm3' }, t('ui-loading'))));
+    }
     const root = screen(name);
-    $('#screen').className = `scr-${name}`;
     try {
       await views[name](root);
+      if (ticket !== asked) return;
       applyStaticText(root);
-      $('#screen').replaceChildren(root);
+      wear(name);
+      target.replaceChildren(root);
     } catch (error) {
-      if (!quiet) $('#screen').replaceChildren(h('div', { class: 'content' }, h('div', { class: 'm3' }, error.message)));
+      if (ticket !== asked) return;
+      if (!quiet) target.replaceChildren(h('div', { class: 'content' }, h('div', { class: 'm3' }, error.message)));
       refused(error);
     }
   }
@@ -1294,7 +1818,7 @@
   async function route() {
     clearInterval(state.timer);
     if (!state.me) {
-      $('#screen').className = state.setupNeeded ? 'scr-first-run' : 'scr-login';
+      wear(state.setupNeeded ? 'first-run' : 'login');
       $('#screen').replaceChildren(state.setupNeeded ? setupView() : loginView());
       return;
     }
@@ -1311,26 +1835,11 @@
 
   async function boot() {
     applyTheme();
-    applyLang();
     try { await loadMessages(); } catch { /* the page still stands without them */ }
-    $('#lang').addEventListener('click', async (event) => {
-      const button = event.target.closest('[data-lang]');
-      if (!button || button.dataset.lang === state.lang) return;
-      state.lang = button.dataset.lang;
-      remember('localStorage', 'ap-lang', state.lang);
-      applyLang();
-      await loadMessages();
-      showRail();
-      route();
-    });
     $('#theme').addEventListener('click', (event) => {
       const button = event.target.closest('[data-theme]');
-      if (!button) return;
-      state.theme = button.dataset.theme;
-      remember('localStorage', 'ap-theme', state.theme);
-      applyTheme();
+      if (button) setTheme(button.dataset.theme);
     });
-    $('#sign-out').addEventListener('click', signOut);
     $('#cmdbar').addEventListener('click', palette);
     document.addEventListener('keydown', (event) => {
       if (!state.me) return;
@@ -1356,6 +1865,8 @@
       state.setupNeeded = panel.needed === true;
       state.secondFactor = panel.second_factor !== false;
       state.version = panel.version || '';
+      state.channel = panel.channel_address || '';
+      state.uptime = panel.uptime_seconds == null ? null : Number(panel.uptime_seconds);
     } catch { state.setupNeeded = false; }
     showRail();
     route();

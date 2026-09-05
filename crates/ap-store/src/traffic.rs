@@ -136,6 +136,42 @@ impl TrafficRepo {
             .collect()
     }
 
+    /// What each access carried over a window, and the last day it carried
+    /// anything at all.
+    ///
+    /// The window bounds the sum only: an access quiet for a year still says
+    /// when it was last busy, which is what the screen asks (0066).
+    pub async fn by_access(
+        pool: &PgPool,
+        since: Date,
+        owner: Option<Uuid>,
+    ) -> Result<Vec<(Uuid, i64, Date)>, StoreError> {
+        let rows = sqlx::query(
+            "select t.access_id, \
+             coalesce(sum(t.bytes_in + t.bytes_out) \
+                      filter (where t.day >= $1), 0)::bigint as bytes, \
+             max(t.day) as last_day \
+             from traffic_daily t \
+             join access a on a.id = t.access_id \
+             left join client c on c.id = a.client_id \
+             where $2::uuid is null or c.owner_id = $2 \
+             group by t.access_id",
+        )
+        .bind(since)
+        .bind(owner)
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok((
+                    row.try_get("access_id")?,
+                    row.try_get("bytes")?,
+                    row.try_get("last_day")?,
+                ))
+            })
+            .collect()
+    }
+
     /// What a client has spent across every access it holds.
     pub async fn for_client(pool: &PgPool, client_id: Uuid) -> Result<TrafficTotals, StoreError> {
         let row = sqlx::query(

@@ -28,12 +28,26 @@ fn main() {
         key_file: std::env::var("ANYPROXY_KEY_FILE")
             .map(PathBuf::from)
             .unwrap_or_default(),
+        channel_address: String::new(),
     };
 
-    let channel_bind = std::env::var("ANYPROXY_CHANNEL_BIND")
+    let channel_bind: std::net::SocketAddr = std::env::var("ANYPROXY_CHANNEL_BIND")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| ([0, 0, 0, 0], 8443).into());
+
+    // What an operator should type to reach the channel. Told outright where
+    // the listening address is not one a node could dial (0065).
+    let config = ap_panel::Config {
+        channel_address: std::env::var("ANYPROXY_CHANNEL_ADDRESS").unwrap_or_else(|_| {
+            if channel_bind.ip().is_unspecified() {
+                format!(":{}", channel_bind.port())
+            } else {
+                channel_bind.to_string()
+            }
+        }),
+        ..config
+    };
 
     if let Err(reason) = runtime.block_on(run(config, channel_bind)) {
         eprintln!("{reason}");

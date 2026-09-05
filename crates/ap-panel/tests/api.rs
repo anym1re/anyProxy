@@ -441,8 +441,9 @@ async fn rendering_a_link_is_recorded() {
         None,
     )
     .await;
+    // The journal answers with a page and a count of what matches (0067).
     let entries = audit.json();
-    let found = entries
+    let found = entries["entries"]
         .as_array()
         .unwrap()
         .iter()

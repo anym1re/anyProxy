@@ -31,6 +31,12 @@ pub struct Config {
     pub database_url: String,
     /// File holding the key that seals secrets.
     pub key_file: std::path::PathBuf,
+    /// The address agents dial, as an operator should type it (0065).
+    ///
+    /// Empty, or a bare `:port`, when the channel listens on no particular
+    /// address: the interface then reads the host from the panel it is
+    /// already looking at.
+    pub channel_address: String,
 }
 
 impl Config {
@@ -40,6 +46,7 @@ impl Config {
             bind: SocketAddr::from(([127, 0, 0, 1], port)),
             database_url,
             key_file,
+            channel_address: String::new(),
         }
     }
 }
@@ -55,6 +62,10 @@ pub struct AppState {
     key: Arc<KeyStore>,
     authority: Arc<ca::Authority>,
     attempts: Arc<auth::Attempts>,
+    channel_address: Arc<str>,
+    /// When this process started answering, for the figure the foot of the
+    /// dashboard was drawn with.
+    started: std::time::Instant,
 }
 
 impl AppState {
@@ -77,6 +88,8 @@ impl AppState {
             key: Arc::new(key),
             authority: Arc::new(authority),
             attempts: Arc::new(auth::Attempts::default()),
+            channel_address: Arc::from(config.channel_address.as_str()),
+            started: std::time::Instant::now(),
         })
     }
 
@@ -101,6 +114,16 @@ impl AppState {
     /// The authority, shared, for the agent channel.
     pub fn authority_handle(&self) -> Arc<ca::Authority> {
         Arc::clone(&self.authority)
+    }
+
+    /// The address agents dial, as the operator should type it (0065).
+    pub(crate) fn channel_address(&self) -> &str {
+        &self.channel_address
+    }
+
+    /// How long this process has been answering, in seconds.
+    pub(crate) fn uptime_seconds(&self) -> u64 {
+        self.started.elapsed().as_secs()
     }
 
     pub(crate) fn attempts(&self) -> &auth::Attempts {

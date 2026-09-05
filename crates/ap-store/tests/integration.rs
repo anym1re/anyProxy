@@ -691,3 +691,109 @@ async fn only_the_first_administrator_is_let_in_that_way() {
         "the row was written after all"
     );
 }
+
+#[tokio::test]
+async fn an_access_says_what_it_carried_and_when_it_was_last_busy() {
+    // The users screen was drawn with a column for each (0066). The window
+    // bounds the sum only: an access quiet for a month still says when it was
+    // last busy, or the column would go blank the moment it went quiet.
+    let pool = db!();
+    let client = a_client(&pool).await;
+    let node = an_open_node(&pool).await;
+    let (access, _) = an_access(&pool, &client, &node).await;
+    let id = access.common().id();
+    let today = OffsetDateTime::now_utc().date();
+    let long_ago = today - time::Duration::days(90);
+
+    for (day, bytes_in, bytes_out) in [(today, 10, 5), (long_ago, 1000, 1000)] {
+        assert!(
+            TrafficRepo::apply_delta(
+                &pool,
+                Uuid::now_v7(),
+                id,
+                day,
+                bytes_in,
+                bytes_out,
+                OffsetDateTime::UNIX_EPOCH
+            )
+            .await
+            .unwrap()
+        );
+    }
+
+    let since = today - time::Duration::days(29);
+    let rows = TrafficRepo::by_access(&pool, since, None).await.unwrap();
+    let (_, carried, last_day) = rows
+        .into_iter()
+        .find(|(access_id, _, _)| *access_id == id)
+        .expect("the access is listed");
+    assert_eq!(carried, 15, "only the days inside the window are summed");
+    assert_eq!(last_day, today, "the last busy day is not bounded by it");
+
+    // A reseller is told about their own clients and no one else's.
+    let stranger = Uuid::now_v7();
+    let theirs = TrafficRepo::by_access(&pool, since, Some(stranger))
+        .await
+        .unwrap();
+    assert!(!theirs.iter().any(|(access_id, _, _)| *access_id == id));
+}
+
+#[tokio::test]
+async fn the_journal_is_read_a_page_at_a_time_and_counted() {
+    // The journal screen has a bar of counted filters and a footer saying
+    // which page of how many, and neither can be built from a bare list
+    // (0067).
+    let pool = db!();
+    let actor = Uuid::now_v7();
+    let mark = unique("kind");
+    let at = OffsetDateTime::now_utc();
+    for (action, target) in [
+        (format!("{mark}.created"), "first"),
+        (format!("{mark}.created"), "second"),
+        (format!("{mark}.burned"), "third"),
+    ] {
+        AuditRepo::record(
+            &pool,
+            Some(actor),
+            &action,
+            Some(target),
+            at,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    }
+
+    let starts = [format!("{mark}.")];
+    let (page, total) = AuditRepo::page(&pool, 2, 0, Some(&starts), None)
+        .await
+        .unwrap();
+    assert_eq!(total, 3, "the count is of what matches, not of the page");
+    assert_eq!(page.len(), 2);
+    let (rest, _) = AuditRepo::page(&pool, 2, 2, Some(&starts), None)
+        .await
+        .unwrap();
+    assert_eq!(rest.len(), 1, "the second page holds what the first left");
+
+    // A group on the screen can be more than one kind of record.
+    let both = [format!("{mark}.created"), format!("{mark}.burned")];
+    let (_, matching) = AuditRepo::page(&pool, 10, 0, Some(&both), None)
+        .await
+        .unwrap();
+    assert_eq!(matching, 3);
+
+    let counted = AuditRepo::counts(&pool, at - time::Duration::hours(1))
+        .await
+        .unwrap();
+    let created = counted
+        .iter()
+        .find(|(action, _)| *action == format!("{mark}.created"))
+        .map(|(_, many)| *many);
+    assert_eq!(created, Some(2));
+
+    // Nothing was recorded before the beginning of time this test cares about.
+    let later = AuditRepo::counts(&pool, at + time::Duration::hours(1))
+        .await
+        .unwrap();
+    assert!(!later.iter().any(|(action, _)| action.starts_with(&mark)));
+}

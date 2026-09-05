@@ -39,10 +39,11 @@
           <span class="s-d" data-theme="dark" role="button" tabindex="0"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M20 14.6A8.6 8.6 0 0 1 9.4 4 8.6 8.6 0 1 0 20 14.6Z"/></svg></span>
         </span>
       </div>
-      <div class="frow"><span class="k"><span data-t="ui-language">Язык</span></span><span class="theme" id="lang"><span data-lang="ru" role="button" tabindex="0">RU</span><span data-lang="en" role="button" tabindex="0">EN</span></span></div>
-      <div class="frow"><span class="k mono" id="me-login"></span><span class="v" id="me-role"></span></div>
-      <div class="frow"><span class="k"><span data-t="ui-nav-dashboard">Панель</span></span><span class="v mono" id="me-version"></span></div>
-      <button type="button" class="btn" id="sign-out"><span data-t="ui-sign-out">Выйти</span></button>
+      <div class="frow"><span class="k"><span data-t="ui-rail-channel">Канал</span></span><span class="v mono" id="channel-address"></span></div>
+      <div class="frow">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        <span class="k"><span data-t="ui-rail-panel">Панель</span></span><span class="v mono" id="panel-address"></span>
+      </div>
     </div>
   </div>
   <div class="main">
@@ -200,7 +201,7 @@
             <span class="note">телеметрия агентов, сейчас</span>
           </div>
           <div class="cb t-host" style="padding: 12px 0 0">
-            <div class="th"><div><span data-t="ui-col-node">Нода</span></div><div>CPU</div><div><span data-t="ui-col-memory">Память</span></div><div>Сеть ↓/↑, Мбит/с</div><div>Соединений</div><div>Аптайм</div></div>
+            <div class="th"><div><span data-t="ui-col-node">Нода</span></div><div>CPU</div><div><span data-t="ui-col-memory">Память</span></div><div><span data-t="ui-col-network">Сеть ↓/↑, Мбит/с</span></div><div><span data-t="ui-col-connections">Соединений</span></div><div><span data-t="ui-col-uptime">Аптайм</span></div></div>
             <div class="tr">
               <div class="nmdot"><span class="sd"></span>websvc</div>
               <div class="cell"><span class="pct">34 %</span><span class="bar"><i style="--p:0.34;--d:0ms"></i></span></div>
@@ -250,7 +251,7 @@
             <span class="note">сводно по всем хостам</span>
           </div>
           <div class="cb t-proc" style="padding: 12px 0 0">
-            <div class="th"><div>Процесс</div><div><span data-t="ui-dash-hosts">Хосты</span></div><div class="r">CPU</div><div class="r"><span data-t="ui-col-memory">Память</span></div><div class="r">Перезапуски</div></div>
+            <div class="th"><div><span data-t="ui-col-process">Процесс</span></div><div><span data-t="ui-dash-hosts">Хосты</span></div><div class="r">CPU</div><div class="r"><span data-t="ui-col-memory">Память</span></div><div class="r"><span data-t="ui-col-restarts">Перезапуски</span></div></div>
             <div class="tr">
               <div class="nmdot"><span class="sd"></span><span class="mono">telemt</span></div>
               <div class="m2">5 нод</div>
@@ -274,14 +275,14 @@
             </div>
             <div class="tr">
               <div class="nmdot"><span class="sd"></span><span class="mono">ap-panel</span></div>
-              <div class="m2">панель</div>
+              <div class="m2"><span data-t="ui-proc-panel">панель</span></div>
               <div class="r mono">4 %</div>
               <div class="r mono">96 МБ</div>
               <div class="r mono m3">0 за 30 сут</div>
             </div>
             <div class="tr">
               <div class="nmdot"><span class="sd"></span><span class="mono">postgres</span></div>
-              <div class="m2">панель</div>
+              <div class="m2"><span data-t="ui-proc-panel">панель</span></div>
               <div class="r mono">9 %</div>
               <div class="r mono">480 МБ</div>
               <div class="r mono m3">0 за 30 сут</div>
@@ -328,6 +329,13 @@
           </div>
         </div>
       </div>
+    </div>
+<div class="statusbar">
+      <span class="sb"><span class="mono">5</span> нод</span>
+      <span class="sb"><span class="mono">117</span> доступов</span>
+      <span class="sb"><span class="mono">213</span> подключений сейчас</span>
+      <span class="sb push"><span data-t="ui-nav-dashboard">Панель</span><span class="mono">v0.1.0</span></span>
+      <span class="sb">Работает <span class="mono">27 суток</span></span>
     </div>
 </template>
 <template id="screen-nodes">
@@ -500,6 +508,14 @@
         </a>
       </div>
     </div>
+<div class="statusbar">
+        <span class="sb"><span class="mono">5</span> нод</span>
+        <span class="sb"><span class="mono">3</span> маскируются</span>
+        <span class="sb"><span class="mono">3</span> требуют внимания</span>
+        <span class="sb"><span class="mono">117</span> доступов</span>
+        <span class="sb push">Проверка связи — каждые <span class="mono">30 с</span></span>
+      <span class="sb"><span data-t="ui-dash-updated">Обновлено</span><span class="mono">20:14</span></span>
+    </div>
 </template>
 <template id="screen-users">
 <div class="content">
@@ -580,6 +596,12 @@
       </div>
 
     </div>
+<div class="statusbar">
+      <span class="sb"><span class="mono">3</span> пользователя</span>
+      <span class="sb"><span class="mono">3</span> доступа</span>
+      <span class="sb"><span class="mono">2</span> публичные ссылки</span>
+      <span class="sb"><span class="mono">1</span> пользователь без доступов</span>
+    </div>
 </template>
 <template id="screen-log">
 <div class="content">
@@ -625,7 +647,7 @@
           <div class="ev warn">Нода перестала выходить на связь</div>
           <div class="mono m2">связь с нодой</div>
           <div class="m2">Порог молчания 5 минут превышен</div>
-          <div class="r src mono">панель</div>
+          <div class="r src mono"><span data-t="ui-proc-panel">панель</span></div>
         </label>
         <div class="exp e2"><div class="in">
           <div class="expbody">
@@ -767,6 +789,13 @@
           Выгрузить CSV
         </button>
       </div>
+    </div>
+<div class="statusbar">
+      <span class="sb"><span class="mono">312</span> записей за сутки</span>
+      <span class="sb"><span class="mono">4</span> ошибки</span>
+      <span class="sb"><span class="mono">3</span> операции оператора</span>
+      <span class="sb push">Выбрана запись <span class="mono">20:06:41</span></span>
+      <span class="sb">Хранение <span class="mono">90</span> суток</span>
     </div>
 </template>
 <template id="gate-login">

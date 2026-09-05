@@ -176,6 +176,22 @@ impl<'a> Guarded<'a> {
         }
     }
 
+    /// What every access this actor may see has carried over a window, and
+    /// the last day each was busy (0066).
+    pub async fn carried(
+        &self,
+        days: i64,
+    ) -> Result<std::collections::HashMap<Uuid, (i64, String)>, ApiError> {
+        let days = days.clamp(1, 400);
+        let since = time::OffsetDateTime::now_utc().date() - time::Duration::days(days - 1);
+        let owner = (!self.actor.role().reaches_every_client()).then(|| self.actor.id());
+        let rows = ap_store::TrafficRepo::by_access(self.pool, since, owner).await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, bytes, last_day)| (id, (bytes, last_day.to_string())))
+            .collect())
+    }
+
     /// One access, if this actor may see its client.
     pub async fn access(&self, id: Uuid) -> Result<AnyAccess, ApiError> {
         let found = AccessRepo::by_id(self.pool, id)
@@ -369,9 +385,32 @@ impl<'a> Guarded<'a> {
 
     /// The audit log.
     pub async fn audit(&self, limit: Option<i64>) -> Result<Vec<ap_store::AuditEntry>, ApiError> {
+        Ok(self.audit_page(limit, 0, None, None).await?.0)
+    }
+
+    /// A page of the journal and how many entries the filter matches (0067).
+    pub async fn audit_page(
+        &self,
+        limit: Option<i64>,
+        offset: i64,
+        prefixes: Option<&[String]>,
+        days: Option<i64>,
+    ) -> Result<(Vec<ap_store::AuditEntry>, i64), ApiError> {
         if !self.actor.role().reads_audit() {
             return Err(ApiError::NotFound);
         }
-        Ok(AuditRepo::recent(self.pool, Self::page(limit)).await?)
+        let since = days.map(|days| {
+            time::OffsetDateTime::now_utc() - time::Duration::days(days.clamp(1, 3650))
+        });
+        Ok(AuditRepo::page(self.pool, Self::page(limit), offset.max(0), prefixes, since).await?)
+    }
+
+    /// How many entries of each action there have been lately (0067).
+    pub async fn audit_counts(&self, days: i64) -> Result<Vec<(String, i64)>, ApiError> {
+        if !self.actor.role().reads_audit() {
+            return Err(ApiError::NotFound);
+        }
+        let since = time::OffsetDateTime::now_utc() - time::Duration::days(days.clamp(1, 3650));
+        Ok(AuditRepo::counts(self.pool, since).await?)
     }
 }

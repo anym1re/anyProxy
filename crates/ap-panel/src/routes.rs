@@ -54,6 +54,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/nodes/{id}/sponsorship", post(sponsor_node))
         .route("/v1/nodes/{id}/enrollment", post(issue_enrollment))
         .route("/v1/audit", get(read_audit))
+        .route("/v1/audit/summary", get(audit_summary))
         .route("/v1/traffic", get(traffic))
         .route("/v1/i18n", get(interface_text))
         .route("/", get(interface))
@@ -114,6 +115,12 @@ async fn setup_state(State(state): State<AppState>) -> Result<Json<serde_json::V
         // Which build is answering. The interface prints it in the corner,
         // which is where an operator looks when a fix is supposed to be in.
         "version": env!("CARGO_PKG_VERSION"),
+        // Where nodes dial in. The interface shows it and puts it in the
+        // enrolment command, so the address is never typed from memory (0065).
+        "channel_address": state.channel_address(),
+        // How long this process has been answering, which the foot of the
+        // dashboard was drawn to show.
+        "uptime_seconds": state.uptime_seconds(),
     })))
 }
 
@@ -406,8 +413,21 @@ async fn list_all_accesses(
     Query(page): Query<Page>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let accesses = state.guarded(&actor).all_accesses(page.limit).await?;
-    let body: Result<Vec<_>, ApiError> = accesses.iter().map(access_json).collect();
-    Ok(Json(serde_json::json!(body?)))
+    // What each of them carried lately and when it was last busy: the screen
+    // was drawn with a column for each, and one query answers for all (0066).
+    let carried = state.guarded(&actor).carried(30).await?;
+    let mut body = Vec::with_capacity(accesses.len());
+    for access in &accesses {
+        let mut one = access_json(access)?;
+        if let Some((bytes, last_day)) = carried.get(&access.common().id())
+            && let Some(map) = one.as_object_mut()
+        {
+            map.insert("carried_bytes".to_owned(), serde_json::json!(bytes));
+            map.insert("last_active_on".to_owned(), serde_json::json!(last_day));
+        }
+        body.push(one);
+    }
+    Ok(Json(serde_json::json!(body)))
 }
 
 async fn list_accesses(
@@ -916,13 +936,37 @@ async fn rename_node(
 
 // ── audit ────────────────────────────────────────────────────────────────
 
+/// What the journal screen asks for: a page, of one kind, over a window.
+#[derive(Deserialize)]
+struct Journal {
+    limit: Option<i64>,
+    #[serde(default)]
+    offset: i64,
+    /// Beginnings of action names, separated by commas, such as
+    /// `access.,client.`. An entry matches if it starts with any of them.
+    prefix: Option<String>,
+    /// How far back to look, in days.
+    days: Option<i64>,
+}
+
 async fn read_audit(
     State(state): State<AppState>,
     actor: Actor,
-    Query(page): Query<Page>,
+    Query(page): Query<Journal>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let entries = state.guarded(&actor).audit(page.limit).await?;
-    let body: Result<Vec<_>, ApiError> = entries
+    let prefixes: Option<Vec<String>> = page.prefix.as_deref().map(|given| {
+        given
+            .split(',')
+            .map(str::trim)
+            .filter(|one| !one.is_empty())
+            .map(str::to_owned)
+            .collect()
+    });
+    let (entries, total) = state
+        .guarded(&actor)
+        .audit_page(page.limit, page.offset, prefixes.as_deref(), page.days)
+        .await?;
+    let rows: Result<Vec<_>, ApiError> = entries
         .iter()
         .map(|entry| {
             Ok(serde_json::json!({
@@ -935,7 +979,29 @@ async fn read_audit(
             }))
         })
         .collect();
-    Ok(Json(serde_json::json!(body?)))
+    Ok(Json(
+        serde_json::json!({ "total": total, "entries": rows? }),
+    ))
+}
+
+/// How many entries of each action there have been lately (0067).
+async fn audit_summary(
+    State(state): State<AppState>,
+    actor: Actor,
+    Query(page): Query<Journal>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let counts = state
+        .guarded(&actor)
+        .audit_counts(page.days.unwrap_or(1))
+        .await?;
+    let by_action: serde_json::Map<String, serde_json::Value> = counts
+        .iter()
+        .map(|(action, many)| (action.clone(), serde_json::json!(many)))
+        .collect();
+    let total: i64 = counts.iter().map(|(_, many)| many).sum();
+    Ok(Json(
+        serde_json::json!({ "total": total, "by_action": by_action }),
+    ))
 }
 
 // ── traffic ──────────────────────────────────────────────────────────────
