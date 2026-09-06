@@ -76,10 +76,11 @@ handler_without_actor() {
     [ -f "$path" ] || return 0
 
     # Open on purpose: two say whether the process is alive, one is how a
-    # session begins, and four are the interface itself and its words — a
-    # page and a catalogue hold no data (0058). Adding another should be
-    # somebody's decision rather than an omission nobody sees.
-    local open_on_purpose="health|ready|sign_in|setup_state|set_up|interface|interface_style|interface_script|interface_text"
+    # session begins, and five are the interface itself, its words and the
+    # faces it is drawn with — a page, a catalogue and a typeface hold no
+    # data (0058, 0068). Adding another should be somebody's decision rather
+    # than an omission nobody sees.
+    local open_on_purpose="health|ready|sign_in|setup_state|set_up|interface|interface_style|interface_script|interface_text|interface_font"
     local handler
 
     for handler in $(grep -oE "(get|post|delete|put|patch)\([a-z_]+\)" "$path"         | sed -E "s/^[a-z]+\(//; s/\)$//" | sort -u); do

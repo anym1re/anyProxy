@@ -59,6 +59,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/i18n", get(interface_text))
         .route("/", get(interface))
         .route("/ui/app.css", get(interface_style))
+        .route("/ui/fonts/{name}", get(interface_font))
         .route("/ui/app.js", get(interface_script))
         .with_state(state)
 }
@@ -1060,11 +1061,56 @@ async fn interface() -> Response {
                 // own: a bar's width and a card's delay are per-row numbers
                 // written on the element. Scripts are not: those stay at
                 // 'self', which is what the directive is for.
-                "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; \
+                 font-src 'self'; frame-ancestors 'none'",
             ),
             ("x-content-type-options", "nosniff"),
         ],
         INTERFACE_PAGE,
+    )
+        .into_response()
+}
+
+/// One of the faces the interface is drawn with (0068).
+///
+/// Named one by one rather than read from a directory: the panel serves what
+/// was built into it, and a path from the request never reaches a file system.
+async fn interface_font(Path(name): Path<String>) -> Response {
+    let face: &'static [u8] = match name.as_str() {
+        "plex-mono-400-cyrillic.woff2" => {
+            include_bytes!("../../../ui/fonts/plex-mono-400-cyrillic.woff2").as_slice()
+        }
+        "plex-mono-400-latin.woff2" => {
+            include_bytes!("../../../ui/fonts/plex-mono-400-latin.woff2").as_slice()
+        }
+        "plex-mono-500-cyrillic.woff2" => {
+            include_bytes!("../../../ui/fonts/plex-mono-500-cyrillic.woff2").as_slice()
+        }
+        "plex-mono-500-latin.woff2" => {
+            include_bytes!("../../../ui/fonts/plex-mono-500-latin.woff2").as_slice()
+        }
+        "plex-mono-600-cyrillic.woff2" => {
+            include_bytes!("../../../ui/fonts/plex-mono-600-cyrillic.woff2").as_slice()
+        }
+        "plex-mono-600-latin.woff2" => {
+            include_bytes!("../../../ui/fonts/plex-mono-600-latin.woff2").as_slice()
+        }
+        "plex-sans-400-600-cyrillic.woff2" => {
+            include_bytes!("../../../ui/fonts/plex-sans-400-600-cyrillic.woff2").as_slice()
+        }
+        "plex-sans-400-600-latin.woff2" => {
+            include_bytes!("../../../ui/fonts/plex-sans-400-600-latin.woff2").as_slice()
+        }
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    (
+        [
+            ("content-type", "font/woff2"),
+            // The faces change only when the panel does, and the panel is
+            // asked for afresh every time.
+            ("cache-control", "public, max-age=604800, immutable"),
+        ],
+        face,
     )
         .into_response()
 }
