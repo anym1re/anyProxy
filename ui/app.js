@@ -120,9 +120,11 @@
       const mono = $('.mono', slot) || h('span', { class: 'mono' });
       mono.textContent = value;
       // Drawn either as a figure and then a word, or a word and then a
-      // figure. Which it is shows in what comes first in the drawing.
-      const ahead = slot.firstChild && slot.firstChild.nodeType === 3
-        && slot.firstChild.textContent.trim();
+      // figure. Which it is shows in what comes first in the drawing — and
+      // the word may itself be wrapped for translation, so an element that is
+      // not the figure counts as the word.
+      const ahead = (slot.firstElementChild && slot.firstElementChild !== mono)
+        || (slot.firstChild && slot.firstChild.nodeType === 3 && slot.firstChild.textContent.trim());
       slot.replaceChildren(...(ahead ? [`${label} `, mono] : [mono, ` ${label}`]));
     });
     slots.slice(figures.length).forEach((spare) => spare.remove());
@@ -237,6 +239,19 @@
     if (minutes < 60) return rel.format(-minutes, 'minute');
     if (minutes < 60 * 24) return rel.format(-Math.round(minutes / 60), 'hour');
     return rel.format(-Math.round(minutes / 1440), 'day');
+  }
+
+  /// How long it has been since, as a length of time and not as a moment.
+  ///
+  /// The stand writes «6 минут» beside a node that stopped answering, which
+  /// is how long the trouble has lasted; «6 минут назад» would be when it was
+  /// last well, and reads as the opposite.
+  function lasting(iso) {
+    if (!iso) return t('ui-never');
+    const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+    if (minutes < 60) return t('ui-lasting-minutes', { count: minutes });
+    if (minutes < 60 * 24) return t('ui-lasting-hours', { count: Math.round(minutes / 60) });
+    return t('ui-lasting-days', { count: Math.round(minutes / 1440) });
   }
 
   /// Days, hours or minutes — whichever says it in one figure.
@@ -557,8 +572,10 @@
     put(root, '.phead h1', t('ui-nav-dashboard'));
     // Two figures, as drawn: when it was refreshed, and how often it is.
     $('.pmeta', root).replaceChildren(
-      `${t('ui-dash-updated')} `, h('span', { class: 'mono' }, clock(new Date().toISOString())),
-      h('br'), `${t('ui-dash-every-prefix')} `, h('span', { class: 'mono' }, t('ui-dash-every-value', { seconds: REFRESH_MS / 1000 })));
+      `${t('ui-dash-updated')} `,
+      h('span', { class: 'mono' }, clock(new Date().toISOString(), true)),
+      h('br'), `${t('ui-dash-every-prefix')} `,
+      h('span', { class: 'mono' }, t('ui-dash-every-value', { seconds: REFRESH_MS / 1000 })));
 
     const cards = $$('.g > .card', root);
     const [attention, traffic, fleet, strip, hosts, processes, events] = cards;
@@ -573,9 +590,14 @@
         dot($('.sd', row), standing(node));
         $('.nm', row).lastChild.textContent = node.label;
         put(row, '.what', trouble(node));
-        put(row, '.since', ago(node.last_seen_at));
+        // The stand says how long it has been like this, not when it last
+        // was well: a duration, without the word «ago».
+        put(row, '.since', lasting(node.last_seen_at));
         const act = $('.act .btn', row);
-        act.textContent = t('ui-dash-open-node');
+        // Drawn two ways: a node out of contact is asked to answer, and one
+        // that answers but is unwell is opened.
+        const silent = standing(node) === 'bad' || standing(node) === 'none';
+        act.textContent = t(silent ? 'ui-dash-check' : 'ui-dash-open-node');
         act.setAttribute('href', '#/nodes');
         // The stand marks the row that needs doing something about first.
         act.classList.toggle('key', standing(node) === 'bad');
@@ -621,7 +643,10 @@
     if (change == null) {
       delta.remove();
     } else {
-      only(delta, t(change < 0 ? 'ui-dash-down' : 'ui-dash-up', { percent: Math.abs(change) }));
+      // The stand names the range being compared with, not «the previous
+      // period»: «18 % к прошлому месяцу».
+      const against = t(`ui-dash-against-${shown}`);
+      only(delta, `${t(change < 0 ? 'ui-dash-down' : 'ui-dash-up', { percent: Math.abs(change) })} ${against}`);
     }
 
     const svg = $('.chart svg', traffic);
@@ -679,7 +704,7 @@
     figure(foot[0], t('ui-dash-received'), bytes(drawn.received));
     figure(foot[1], t('ui-dash-sent'), bytes(drawn.sent));
     figure(foot[2], t('ui-dash-peak'), bytes(top.in + top.out));
-    figure(foot[3], t('ui-dash-average'), bytes(drawn.total / state.range));
+    figure(foot[3], t('ui-dash-average'), t('ui-dash-per-day', { bytes: bytes(drawn.total / state.range) }));
 
     // ── the fleet ──
     if (!seesNodes) fleet.remove();
@@ -717,11 +742,28 @@
       put(cells[index], '.k', label);
       $('.v', cells[index]).replaceChildren(...value);
     };
-    cell(0, t('ui-strip-panel'), h('span', { class: 'mono' }, state.version || '—'));
-    cell(1, t('ui-strip-agents'), h('span', { class: 'mono' }, versions.length ? versions.join(' · ') : '—'));
+    cell(0, t('ui-strip-panel'),
+      h('span', { class: 'mono' }, state.version ? `v${state.version}` : '—'),
+      state.uptime == null ? '' : h('span', { class: 'm3' },
+        ` ${t('ui-dash-panel-running', { uptime: uptime(state.uptime) })}`));
+    // As drawn: how many agents are running which build. Two builds at once
+    // is worth seeing, so each is counted.
+    const byVersion = new Map();
+    for (const node of seen) {
+      const said = node.agent_version || '—';
+      byVersion.set(said, (byVersion.get(said) || 0) + 1);
+    }
+    cell(1, t('ui-strip-agents'), h('span', { class: 'mono' }, byVersion.size
+      ? [...byVersion].map(([said, many]) => t('ui-dash-agents-of', { count: num(many), version: said })).join(' · ')
+      : '—'));
     cell(2, t('ui-strip-channel'), h('span', { class: `sd ${seen.length === live.length ? '' : 'w'}` }), t('ui-dash-in-touch-of', { seen: num(seen.length), total: num(live.length) }));
-    cell(3, t('ui-strip-accesses'), h('span', { class: 'sd' }), h('span', { class: 'mono' }, num(accesses.filter((access) => access.state === 'active').length)),
-      h('span', { class: 'm3' }, ` · ${t('ui-strip-of-clients', { count: num(clients.length) })}`));
+    // The stand counted what is connected through the nodes right now. The
+    // peak it also drew is not kept anywhere, so it is not claimed.
+    const connectedNow = live.reduce((sum, node) => sum
+      + (node.machine && node.machine.connections != null ? Number(node.machine.connections) : 0), 0);
+    cell(3, t('ui-dash-connections'),
+      h('span', { class: `sd ${connectedNow ? '' : 'n'}` }),
+      h('span', { class: 'mono' }, num(connectedNow)));
 
     // ── hosts ──
     if (!seesNodes) hosts.remove();
@@ -798,7 +840,7 @@
       }
       const rows = [...gathered.values()].map((row) => ({
         name: row.name,
-        hosts: t('ui-proc-of-nodes', { count: num(row.hosts), total: num(live.length) }),
+        hosts: `${num(row.hosts)} ${counted('ui-count-nodes', row.hosts)}`,
         cpu: `${(row.cpu / Math.max(1, row.hosts)).toFixed(1)} %`,
         memory: mbytes(row.memory),
         restarts: row.restarts,
@@ -846,9 +888,16 @@
       repeat($('.cb', events), audit, (row, entry) => {
         put(row, '.t', clock(entry.at));
         dot($('.sd', row), entry.action.includes('burn') || entry.action.includes('revoke') ? 'bad' : 'ok');
+        // The stand writes the event and nothing else here: what it was done
+        // to is the column beside it.
         const words = [...row.children].find((child) => !child.className);
-        if (words) words.textContent = `${eventWords(entry.action)}${entry.target ? ` · ${entry.target}` : ''}`;
-        put(row, '.who', entry.actor_id ? entry.actor_id.slice(0, 8) : t('ui-none'));
+        if (words) words.textContent = eventWords(entry.action);
+        // The stand names the node an event happened on, which is what an
+        // operator looks for; who did it is in the journal itself.
+        const facts = entry.details && typeof entry.details === 'object' ? entry.details : {};
+        const where = facts.node || facts.label
+          || (entry.action.startsWith('node.') ? entry.target : '') || entry.target;
+        put(row, '.who', where || t('ui-none'));
       });
     }
 

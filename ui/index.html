@@ -18,7 +18,7 @@
     <nav class="nav">
       <a href="#/dashboard" data-view="dashboard">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="4" rx="1.5"/><rect x="13" y="10" width="7" height="10" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/></svg>
-        Дашборд<span class="kbd">1</span>
+        <span data-t="ui-nav-dashboard">Дашборд</span><span class="kbd">1</span>
       </a>
       <a href="#/nodes" data-view="nodes">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M6.5 7h.01M6.5 17h.01"/></svg><span data-t="ui-nav-nodes">Ноды</span><span class="kbd">2</span>
@@ -63,15 +63,15 @@
 <div class="content">
       <div class="phead">
         <div>
-          <h1>Дашборд</h1>
+          <h1><span data-t="ui-nav-dashboard">Дашборд</span></h1>
         </div>
-        <div class="pmeta"><span data-t="ui-dash-updated">Обновлено</span><span class="mono">20:14:31</span><br>Связь проверяется каждые <span class="mono">30 с</span></div>
+        <div class="pmeta"><span data-t="ui-dash-updated">Обновлено</span><span class="mono">20:14:31</span><br><span data-t="ui-dash-every-prefix">Связь проверяется каждые</span><span class="mono">30 с</span></div>
       </div>
 
       <div class="g">
         <div class="card att" style="grid-column: span 12; --d:0ms">
           <div class="ch">
-            <h2>Требуют внимания</h2><span class="cnt">3</span>
+            <h2><span data-t="ui-dash-attention">Требуют внимания</span></h2><span class="cnt">3</span>
             <a href="nodes.html" class="lnk"><span data-t="ui-dash-all-nodes">Все ноды →</span></a>
           </div>
           <div class="cb" style="padding-top: 6px">
@@ -79,7 +79,7 @@
               <span class="nm"><span class="sd b"></span>gateway</span>
               <span class="what"><span data-t="ui-trouble-reach">Нет связи с Telegram</span></span>
               <span class="since">6 минут</span>
-              <span class="act"><a href="nodes.html" class="btn key">Проверить связь</a></span>
+              <span class="act"><a href="nodes.html" class="btn key"><span data-t="ui-dash-check">Проверить связь</span></a></span>
             </div>
             <div class="prow">
               <span class="nm"><span class="sd"></span>edge-fra</span>
@@ -91,7 +91,7 @@
               <span class="nm"><span class="sd n"></span>httpgate</span>
               <span class="what"><span data-t="ui-trouble-silent">Не выходит на связь</span></span>
               <span class="since">8 минут</span>
-              <span class="act"><a href="nodes.html" class="btn">Проверить связь</a></span>
+              <span class="act"><a href="nodes.html" class="btn"><span data-t="ui-dash-check">Проверить связь</span></a></span>
             </div>
           </div>
         </div>
@@ -141,10 +141,10 @@
               <span class="push"><b class="d">23:00</b><b class="w">3 сентября</b><b class="m">3 сентября</b><b class="y">3 сентября</b></span>
             </div>
             <div class="tfoot">
-              <span>К клиентам <b class="d">8,4 ГБ</b><b class="w">498 ГБ</b><b class="m">2,13 ТБ</b><b class="y">10,2 ТБ</b></span>
-              <span>От клиентов <b class="d">1,4 ГБ</b><b class="w">83 ГБ</b><b class="m">0,35 ТБ</b><b class="y">1,7 ТБ</b></span>
+              <span><span data-t="ui-dash-received">К клиентам</span><b class="d">8,4 ГБ</b><b class="w">498 ГБ</b><b class="m">2,13 ТБ</b><b class="y">10,2 ТБ</b></span>
+              <span><span data-t="ui-dash-sent">От клиентов</span><b class="d">1,4 ГБ</b><b class="w">83 ГБ</b><b class="m">0,35 ТБ</b><b class="y">1,7 ТБ</b></span>
               <span><span data-t="ui-dash-peak">Пик</span><b class="d">9,8 ГБ/ч</b><b class="w">96 ГБ</b><b class="m">118,4 ГБ</b><b class="y">690 ГБ</b></span>
-              <span class="push">В среднем <b class="d">5,5 ГБ/ч</b><b class="w">83 ГБ в сутки</b><b class="m">84,6 ГБ в сутки</b><b class="y">493 ГБ в неделю</b></span>
+              <span class="push"><span data-t="ui-dash-average">В среднем</span><b class="d">5,5 ГБ/ч</b><b class="w">83 ГБ в сутки</b><b class="m">84,6 ГБ в сутки</b><b class="y">493 ГБ в неделю</b></span>
             </div>
           </div>
         </div>
@@ -177,7 +177,7 @@
         <div class="card" style="grid-column: span 12; --d:190ms">
           <div class="strip4">
             <div>
-              <div class="k"><span data-t="ui-nav-dashboard">Панель</span></div>
+              <div class="k"><span data-t="ui-panel-version">Панель</span></div>
               <div class="v"><span class="mono">v0.1.0</span> <span class="m3">· работает 27 суток</span></div>
             </div>
             <div>
@@ -189,7 +189,7 @@
               <div class="v"><span class="sd w"></span>4 из 5 на связи</div>
             </div>
             <div>
-              <div class="k">Подключений сейчас</div>
+              <div class="k"><span data-t="ui-dash-connections">Подключений сейчас</span></div>
               <div class="v"><span class="sd"></span><span class="mono">213</span> <span class="m3">· пик за сутки 342</span></div>
             </div>
           </div>
@@ -198,7 +198,7 @@
         <div class="card" style="grid-column: span 12; --d:240ms">
           <div class="ch">
             <h2><span data-t="ui-dash-hosts">Хосты</span></h2>
-            <span class="note">телеметрия агентов, сейчас</span>
+            <span class="note"><span data-t="ui-dash-hosts-note">телеметрия агентов, сейчас</span></span>
           </div>
           <div class="cb t-host" style="padding: 12px 0 0">
             <div class="th"><div><span data-t="ui-col-node">Нода</span></div><div>CPU</div><div><span data-t="ui-col-memory">Память</span></div><div><span data-t="ui-col-network">Сеть ↓/↑, Мбит/с</span></div><div><span data-t="ui-col-connections">Соединений</span></div><div><span data-t="ui-col-uptime">Аптайм</span></div></div>
@@ -292,8 +292,8 @@
 
         <div class="card" style="grid-column: span 6; --d:390ms">
           <div class="ch">
-            <h2>Последние события</h2>
-            <a href="log.html" class="lnk">Журнал →</a>
+            <h2><span data-t="ui-dash-events">Последние события</span></h2>
+            <a href="log.html" class="lnk"><span data-t="ui-dash-all-log">Журнал →</span></a>
           </div>
           <div class="cb" style="padding-top: 6px">
             <div class="ev" style="grid-template-columns: 56px 18px minmax(0, 1fr) 118px">
@@ -334,8 +334,8 @@
       <span class="sb"><span class="mono">5</span> нод</span>
       <span class="sb"><span class="mono">117</span> доступов</span>
       <span class="sb"><span class="mono">213</span> подключений сейчас</span>
-      <span class="sb push"><span data-t="ui-nav-dashboard">Панель</span><span class="mono">v0.1.0</span></span>
-      <span class="sb">Работает <span class="mono">27 суток</span></span>
+      <span class="sb push"><span data-t="ui-panel-version">Панель</span><span class="mono">v0.1.0</span></span>
+      <span class="sb"><span data-t="ui-status-running">Работает</span><span class="mono">27 суток</span></span>
     </div>
 </template>
 <template id="screen-nodes">
@@ -352,7 +352,7 @@
         <label class="chip" for="n-hid">Маскируются <span class="n">3</span></label>
         <label class="chip" for="n-open">Открытые <span class="n">2</span></label>
         <span class="fsep"></span>
-        <label class="chip" for="n-attn">Требуют внимания <span class="n">3</span></label>
+        <label class="chip" for="n-attn"><span data-t="ui-dash-attention">Требуют внимания</span><span class="n">3</span></label>
         <span class="right">Порядок: по трафику за 30 суток</span>
       </div>
 
@@ -367,7 +367,7 @@
           <div class="hw mono">2 CPU · 2 ГБ</div>
           <div class="stats">
             <div class="stat"><div class="k">Трафик 30д</div><div class="v">812 <span><span data-t="ui-unit-gb">ГБ</span></span></div></div>
-            <div class="stat"><div class="k">Доступы</div><div class="v">34</div></div>
+            <div class="stat"><div class="k"><span data-t="ui-log-accesses">Доступы</span></div><div class="v">34</div></div>
             <div class="stat"><div class="k">Доступность</div><div class="v">99,98 <span>%</span></div></div>
           </div>
           <div class="health">
@@ -396,7 +396,7 @@
           <div class="hw mono">1 CPU · 1 ГБ</div>
           <div class="stats">
             <div class="stat"><div class="k">Трафик 30д</div><div class="v">566 <span><span data-t="ui-unit-gb">ГБ</span></span></div></div>
-            <div class="stat"><div class="k">Доступы</div><div class="v">28</div></div>
+            <div class="stat"><div class="k"><span data-t="ui-log-accesses">Доступы</span></div><div class="v">28</div></div>
             <div class="stat"><div class="k">Доступность</div><div class="v">99,95 <span>%</span></div></div>
           </div>
           <div class="health">
@@ -424,7 +424,7 @@
           <div class="hw mono">1 CPU · 512 МБ</div>
           <div class="stats">
             <div class="stat"><div class="k">Трафик 30д</div><div class="v">231 <span><span data-t="ui-unit-gb">ГБ</span></span></div></div>
-            <div class="stat"><div class="k">Доступы</div><div class="v">19</div></div>
+            <div class="stat"><div class="k"><span data-t="ui-log-accesses">Доступы</span></div><div class="v">19</div></div>
             <div class="stat"><div class="k">Доступность</div><div class="v warn">97,10 <span>%</span></div></div>
           </div>
           <div class="health">
@@ -452,7 +452,7 @@
           <div class="hw mono">1 CPU · 512 МБ</div>
           <div class="stats">
             <div class="stat"><div class="k">Трафик 30д</div><div class="v">402 <span><span data-t="ui-unit-gb">ГБ</span></span></div></div>
-            <div class="stat"><div class="k">Доступы</div><div class="v">31</div></div>
+            <div class="stat"><div class="k"><span data-t="ui-log-accesses">Доступы</span></div><div class="v">31</div></div>
             <div class="stat"><div class="k">Доступность</div><div class="v">99,99 <span>%</span></div></div>
           </div>
           <div class="health">
@@ -466,7 +466,7 @@
           <div class="striplbl"><span>30 суток</span><span class="push bad">связи нет сейчас</span></div>
           <div class="cfoot">
             <span class="mono">v0.1.0 · связь 41 с назад</span>
-            <span class="a"><a href="nodes.html" class="act-now">Проверить связь</a><a href="delete.html" class="risk"><span data-t="ui-node-delete">Удалить</span></a></span>
+            <span class="a"><a href="nodes.html" class="act-now"><span data-t="ui-dash-check">Проверить связь</span></a><a href="delete.html" class="risk"><span data-t="ui-node-delete">Удалить</span></a></span>
           </div>
         </div>
 
@@ -480,7 +480,7 @@
           <div class="hw mono">1 CPU · 512 МБ</div>
           <div class="stats">
             <div class="stat"><div class="k">Трафик 30д</div><div class="v m3">0</div></div>
-            <div class="stat"><div class="k">Доступы</div><div class="v">5</div></div>
+            <div class="stat"><div class="k"><span data-t="ui-log-accesses">Доступы</span></div><div class="v">5</div></div>
             <div class="stat"><div class="k"><span data-t="ui-node-agent">Агент</span></div><div class="v m3">—</div></div>
           </div>
           <div class="health">
@@ -494,7 +494,7 @@
           <div class="striplbl"><span>30 суток</span><span class="push m3">нет данных 8 суток</span></div>
           <div class="cfoot">
             <span class="mono">последняя связь 20:06</span>
-            <span class="a"><a href="nodes.html">Проверить связь</a><a href="delete.html" class="risk"><span data-t="ui-node-delete">Удалить</span></a></span>
+            <span class="a"><a href="nodes.html"><span data-t="ui-dash-check">Проверить связь</span></a><a href="delete.html" class="risk"><span data-t="ui-node-delete">Удалить</span></a></span>
           </div>
         </div>
 
@@ -510,10 +510,10 @@
     </div>
 <div class="statusbar">
         <span class="sb"><span class="mono">5</span> нод</span>
-        <span class="sb"><span class="mono">3</span> маскируются</span>
-        <span class="sb"><span class="mono">3</span> требуют внимания</span>
+        <span class="sb"><span class="mono">3</span><span data-t="ui-status-masked">маскируются</span></span>
+        <span class="sb"><span class="mono">3</span><span data-t="ui-status-wanting">требуют внимания</span></span>
         <span class="sb"><span class="mono">117</span> доступов</span>
-        <span class="sb push">Проверка связи — каждые <span class="mono">30 с</span></span>
+        <span class="sb push"><span data-t="ui-status-checked-every">Проверка связи — каждые</span><span class="mono">30 с</span></span>
       <span class="sb"><span data-t="ui-dash-updated">Обновлено</span><span class="mono">20:14</span></span>
     </div>
 </template>
@@ -528,8 +528,8 @@
 
       <div class="tbl t-acc" style="--d:0ms">
         <div class="th">
-          <div><span data-t="ui-col-user">Пользователь</span></div><div><span data-t="ui-col-node">Нода</span></div><div>Доступ выдан</div>
-          <div class="r">Трафик 30 суток</div><div class="r">Последнее подключение</div>
+          <div><span data-t="ui-col-user">Пользователь</span></div><div><span data-t="ui-col-node">Нода</span></div><div><span data-t="ui-col-granted">Доступ выдан</span></div>
+          <div class="r"><span data-t="ui-col-carried">Трафик 30 суток</span></div><div class="r">Последнее подключение</div>
           <div><span data-t="ui-link-title">Ссылка для подключения</span></div>
         </div>
 
@@ -547,7 +547,7 @@
           <div class="node"><span class="sd"></span>masked</div>
           <div class="m2">вчера</div>
           <div class="r mono m3">0</div>
-          <div class="r m3">не подключался</div>
+          <div class="r m3"><span data-t="ui-never-connected">не подключался</span></div>
           <div class="lk"><span class="v">https://ya.ru/t/4d8f10b6ca93a71e…</span><span class="cp"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></svg></span></div>
         </div>
 
@@ -576,7 +576,7 @@
 
       <div class="tbl t-link" style="--d:120ms">
         <div class="th">
-          <div><span data-t="ui-access-link">Ссылка</span></div><div><span data-t="ui-col-node">Нода</span></div><div>Выпущена</div>
+          <div><span data-t="ui-access-link">Ссылка</span></div><div><span data-t="ui-col-node">Нода</span></div><div><span data-t="ui-col-issued">Выпущена</span></div>
           <div class="r">Подключений</div><div><span data-t="ui-node-address">Адрес</span></div>
         </div>
         <div class="tr">
@@ -609,19 +609,19 @@
         <div>
           <h1><span data-t="ui-nav-log">Журнал</span></h1>
         </div>
-        <div class="pmeta">Записей за сутки <span class="mono">312</span> · ошибок <span class="mono">4</span><br>Часовой пояс <span class="mono">UTC+03</span></div>
+        <div class="pmeta">Записей за сутки <span class="mono">312</span> · ошибок <span class="mono">4</span><br><span data-t="ui-log-timezone">Часовой пояс</span><span class="mono">UTC+03</span></div>
       </div>
 
       <div class="fbar">
         <span class="chip on"><span data-t="ui-all">Все</span><span class="n">312</span></span>
         <span class="chip"><span data-t="ui-nav-nodes">Ноды</span><span class="n">184</span></span>
-        <span class="chip">Доступы <span class="n">61</span></span>
+        <span class="chip"><span data-t="ui-log-accesses">Доступы</span><span class="n">61</span></span>
         <span class="chip"><span data-t="ui-enrol-title">Регистрация</span><span class="n">39</span></span>
-        <span class="chip">Удаление <span class="n">3</span></span>
-        <span class="chip">Ошибки <span class="n">4</span></span>
+        <span class="chip"><span data-t="ui-log-removals">Удаление</span><span class="n">3</span></span>
+        <span class="chip"><span data-t="ui-log-faults">Ошибки</span><span class="n">4</span></span>
         <span class="fsep"></span>
-        <span class="chip">Сутки</span>
-        <span class="chip">Нода: все</span>
+        <span class="chip"><span data-t="ui-log-day">Сутки</span></span>
+        <span class="chip"><span data-t="ui-log-any-node">Нода: все</span></span>
         <span class="live"><span class="dot beat"></span>Поток активен</span>
       </div>
 
@@ -629,7 +629,7 @@
         <div class="th">
           <div class="sortable"><span data-t="ui-col-time">Время</span><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5 5 5-5"/></svg>
           </div>
-          <div><span data-t="ui-col-node">Нода</span></div><div>Событие</div><div><span data-t="ui-col-target">Объект</span></div><div>Подробность</div><div class="r">Источник</div>
+          <div><span data-t="ui-col-node">Нода</span></div><div><span data-t="ui-col-event">Событие</span></div><div><span data-t="ui-col-target">Объект</span></div><div><span data-t="ui-col-detail">Подробность</span></div><div class="r"><span data-t="ui-col-source">Источник</span></div>
         </div>
 
         <label class="tr fresh" for="r1">
@@ -666,9 +666,7 @@
               </dl>
               <div class="acts">
                 <a href="#" class="act">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></svg>
-                  Проверить связь
-                </a>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></svg><span data-t="ui-dash-check">Проверить связь</span></a>
                 <a href="#" class="act">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/></svg><span data-t="ui-dash-open-node">Открыть ноду</span></a>
                 <a href="#" class="act">
@@ -721,7 +719,7 @@
         <div class="tr">
           <div class="mono">19:06:22</div>
           <div class="nd">websvc</div>
-          <div class="ev">Настройки доставлены</div>
+          <div class="ev"><span data-t="ui-event-node-applied">Настройки доставлены</span></div>
           <div class="mono m2">версия настроек 4</div>
           <div class="m2">Подтверждена когда нода выходит на связь</div>
           <div class="r src mono">агент</div>
@@ -766,7 +764,7 @@
         <div class="tr">
           <div class="mono">17:58:19</div>
           <div class="nd">analyst</div>
-          <div class="ev">Доступ выдан</div>
+          <div class="ev"><span data-t="ui-col-granted">Доступ выдан</span></div>
           <div class="mono m2">masked, gateway</div>
           <div class="m2">Два доступа одной операцией</div>
           <div class="r src mono">operator</div>
@@ -782,12 +780,10 @@
           Позже
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 7l5 5-5 5"/></svg>
         </button>
-        <span>Записи <span class="mono">1–12</span> из <span class="mono">312</span></span>
-        <span class="push">Выгрузка сохраняет применённые фильтры</span>
+        <span><span data-t="ui-log-records">Записи</span><span class="mono">1–12</span><span data-t="ui-log-of">из</span><span class="mono">312</span></span>
+        <span class="push"><span data-t="ui-log-export-note">Выгрузка сохраняет применённые фильтры</span></span>
         <button class="pg" type="button">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M8 11l4 4 4-4"/><path d="M5 19h14"/></svg>
-          Выгрузить CSV
-        </button>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M8 11l4 4 4-4"/><path d="M5 19h14"/></svg><span data-t="ui-log-export">Выгрузить CSV</span></button>
       </div>
     </div>
 <div class="statusbar">
@@ -1035,7 +1031,7 @@
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
                 не меняется</dd></div>
               <div><dt><span data-t="ui-health-site">Сайт-прикрытие</span></dt><dd>меняется в любой момент</dd></div>
-              <div><dt>Доступы</dt><dd class="m3">выдаются отдельно</dd></div>
+              <div><dt><span data-t="ui-log-accesses">Доступы</span></dt><dd class="m3">выдаются отдельно</dd></div>
             </dl>
           </div>
         </div>
