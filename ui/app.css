@@ -3064,10 +3064,17 @@ body { margin: 0; background: #080A0D; }
 #screen > .content, #screen > .gate { flex: 1; }
 /* A field on the stand was drawn; here it is typed into, and a browser dresses
    its own controls in its own font unless it is told not to. */
-button, input, select, textarea { font: inherit; line-height: inherit;
-                                  color: inherit; }
-/* Drawn as a label, built as a button: it reads from the left, as drawn. */
-.cmdbar { text-align: inherit; }
+button, input, select, textarea { font-family: inherit; font-size: inherit;
+                                  font-weight: inherit; font-style: inherit;
+                                  letter-spacing: inherit; color: inherit; }
+/* Drawn as a label, built as a button: it reads from the left and sets its
+   lines the way the page does, as drawn. A field drawn as a field keeps the
+   line box a browser gives its own controls. */
+.cmdbar { text-align: inherit; line-height: inherit; }
+/* The same where a box drawn to be read from became a box to type into: the
+   stand set its lines from the page, and a real field would not. Where the
+   stand drew a field to begin with, its lines are the browser's. */
+input.inp, select.inp, textarea.inp { line-height: inherit; }
 select.inp { appearance: none; }
 /* A line that says nothing takes no room. */
 #screen .hint:empty, #modal-root .hint:empty { display: none; }
