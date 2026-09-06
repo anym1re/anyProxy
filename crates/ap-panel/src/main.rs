@@ -70,9 +70,13 @@ async fn run(config: ap_panel::Config, channel_bind: std::net::SocketAddr) -> Re
             let listener = tokio::net::TcpListener::bind(bind)
                 .await
                 .map_err(|error| format!("bind {bind}: {error}"))?;
-            axum::serve(listener, ap_panel::router(state))
-                .await
-                .map_err(|error| format!("serve: {error}"))
+            axum::serve(
+                listener,
+                ap_panel::router(state)
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .map_err(|error| format!("serve: {error}"))
         }
     };
 

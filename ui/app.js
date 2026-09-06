@@ -399,7 +399,8 @@
     }
     $$('.rail .nav a').forEach((link) => {
       const view = link.dataset.view;
-      link.hidden = (view === 'nodes' && state.me.role === 'reseller') || (view === 'log' && state.me.role !== 'superadmin');
+      link.hidden = (view === 'nodes' && state.me.role === 'reseller')
+        || ((view === 'log' || view === 'settings') && state.me.role !== 'superadmin');
     });
   }
 
@@ -1515,6 +1516,173 @@
     URL.revokeObjectURL(url);
   }
 
+
+  // ── settings ────────────────────────────────────────────────────────────
+
+  /// The groups the stand drew, holding the settings the panel really has.
+  ///
+  /// Three of the nine drawn settings are about updating the engine on the
+  /// nodes, and there is no mechanism to update it with; a control that
+  /// changes nothing is worse than one that is not there (0069).
+  const SETTING_GROUPS = [
+    { title: 'ui-set-panel', scope: 'ui-set-scope-panel', column: 0,
+      names: ['channel_address', 'loopback_only', 'session_hours'] },
+    { title: 'ui-set-checks', scope: 'ui-set-scope-nodes', column: 1,
+      names: ['heartbeat_secs', 'silence_minutes'] },
+    { title: 'ui-set-sponsor', scope: 'ui-set-scope-new', column: 1,
+      names: ['default_ad_tag'] },
+  ];
+
+  /// Which of them the nodes are told about, for the figure in the head.
+  const DELIVERED = ['heartbeat_secs', 'default_ad_tag'];
+
+  /// How a setting's value reads on screen. A number is a number of
+  /// something, and the something is the setting's own.
+  function settingWords(name, value) {
+    if (name === 'loopback_only') return t(value === 'on' ? 'ui-set-on' : 'ui-set-off');
+    if (name === 'session_hours') return t('ui-lasting-hours', { count: value });
+    if (name === 'heartbeat_secs') return t('ui-set-every-seconds', { count: value });
+    if (name === 'silence_minutes') return t('ui-lasting-minutes', { count: value });
+    return value;
+  }
+
+  async function settings(root) {
+    const answer = await api('GET', '/v1/settings');
+    const known = new Map((answer.settings || []).map((one) => [one.name, one]));
+    // What the operator has changed and not yet saved.
+    const edited = new Map();
+
+    put(root, '.phead h1', t('ui-nav-settings'));
+    const cols = $$('.cols > div', root);
+    const shapes = {
+      head: $('.shead', root),
+      card: $('.card', root),
+      row: {
+        text: $$('.card .row', root).find((row) => $('input[type=text]', row)),
+        toggle: $$('.card .row', root).find((row) => $('.tog', row)),
+        select: $$('.card .row', root).find((row) => $('select', row)),
+      },
+    };
+    const savebar = $('.savebar', root);
+
+    /// Draws one setting into the row it was drawn as.
+    function drawRow(name) {
+      const one = known.get(name) || { name, value: '', choices: [] };
+      const choices = one.choices || [];
+      // Drawn as a switch where there are two ways to be, as a list where
+      // there are more, and as a box to type in where there is no list.
+      const kind = name === 'loopback_only' ? 'toggle' : (choices.length ? 'select' : 'text');
+      const row = shapes.row[kind].cloneNode(true);
+      put(row, '.k', t(`ui-set-${name.replace(/_/g, '-')}`));
+      const now = () => (edited.has(name) ? edited.get(name) : one.value);
+      const touch = (value) => {
+        if (value === one.value) edited.delete(name); else edited.set(name, value);
+        row.classList.toggle('dirty', edited.has(name));
+        put(row, '.when', edited.has(name) ? t('ui-set-unsaved') : stampedAt(one));
+        drawSaveBar();
+      };
+      if (kind === 'select') {
+        const field = h('select', { class: 'fld' }, choices.map((value) => h('option', {
+          value, ...(value === now() ? { selected: '' } : {}),
+        }, settingWords(name, value))));
+        field.addEventListener('change', () => touch(field.value));
+        $('select', row).replaceWith(field);
+      } else if (kind === 'toggle') {
+        const box = $('input[type=checkbox]', row);
+        box.checked = now() === 'on';
+        box.addEventListener('change', () => {
+          touch(box.checked ? 'on' : 'off');
+          put(row, '.tog .lab', settingWords(name, box.checked ? 'on' : 'off'));
+        });
+        put(row, '.tog .lab', settingWords(name, now()));
+      } else {
+        const field = $('input[type=text]', row);
+        field.value = now();
+        field.placeholder = t(`ui-set-${name.replace(/_/g, '-')}-hint`);
+        field.addEventListener('input', () => touch(field.value.trim()));
+      }
+      put(row, '.when', stampedAt(one));
+      return row;
+    }
+
+    const stampedAt = (one) => (one.changed_at ? shortDate(one.changed_at) : '—');
+
+    // Each column holds the groups drawn in it, and nothing is left over.
+    const built = [[], []];
+    for (const group of SETTING_GROUPS) {
+      const head = shapes.head.cloneNode(true);
+      head.classList.toggle('gap', built[group.column].length > 0);
+      put(head, 'h2', t(group.title));
+      put(head, '.cnt', num(group.names.length));
+      put(head, '.note', t(group.scope));
+      const card = shapes.card.cloneNode(true);
+      card.replaceChildren(...group.names.map(drawRow));
+      built[group.column].push(head, card);
+    }
+    cols.forEach((column, index) => column.replaceChildren(...(built[index] || [])));
+
+    // Two lines, as drawn: how many settings there are and how many reach the
+    // nodes, and when one of them was last changed.
+    const meta = $('.phead .pmeta', root);
+    if (meta) {
+      const changed = [...known.values()].map((one) => one.changed_at).filter(Boolean).sort();
+      const last = h('span', { class: 'mono' },
+        changed.length ? stamp(changed[changed.length - 1]) : '—');
+      meta.replaceChildren(
+        t('ui-set-count', { count: num(known.size), delivered: num(DELIVERED.length) }),
+        h('br'), `${t('ui-set-last-change')} `, last);
+    }
+
+    function drawSaveBar() {
+      if (!savebar) return;
+      savebar.hidden = edited.size === 0;
+      put(savebar, '.t', t('ui-set-changed', { count: num(edited.size) }));
+      const [first] = [...edited.keys()];
+      put(savebar, '.x', first
+        ? t('ui-set-was-now', {
+          name: t(`ui-set-${first.replace(/_/g, '-')}`),
+          was: settingWords(first, (known.get(first) || {}).value || t('ui-empty')),
+          now: settingWords(first, edited.get(first) || t('ui-empty')),
+        })
+        : '');
+    }
+
+    if (savebar) {
+      const buttons = $$('.btn', savebar);
+      if (buttons[0]) {
+        buttons[0].textContent = t('ui-set-cancel');
+        buttons[0].onclick = () => { edited.clear(); route(); };
+      }
+      if (buttons[1]) {
+        const key = $('.kbd', buttons[1]);
+        buttons[1].replaceChildren(t('ui-set-save'), key || '');
+        buttons[1].onclick = save;
+      }
+      drawSaveBar();
+    }
+
+    async function save() {
+      if (!edited.size) return;
+      try {
+        await api('PUT', '/v1/settings', { values: Object.fromEntries(edited) });
+        edited.clear();
+        toast(t('ui-set-saved'));
+        route();
+      } catch (error) { refused(error); }
+    }
+    root.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        save();
+      }
+    });
+
+    statusbar(root, [
+      [num(known.size), counted('ui-count-settings', known.size)],
+      [num(DELIVERED.length), t('ui-set-delivered')],
+    ]);
+  }
+
   // ── the things a screen can do ──────────────────────────────────────────
 
   const reload = () => route();
@@ -1756,7 +1924,8 @@
 
   function palette() {
     const items = [
-      ...[['dashboard', t('ui-nav-dashboard')], ['nodes', t('ui-nav-nodes')], ['users', t('ui-nav-users')], ['log', t('ui-nav-log')]]
+      ...[['dashboard', t('ui-nav-dashboard')], ['nodes', t('ui-nav-nodes')], ['users', t('ui-nav-users')],
+        ['log', t('ui-nav-log')], ['settings', t('ui-nav-settings')]]
         .filter(([name]) => allowed(name))
         .map(([name, label]) => ({ label, hint: t('ui-palette-screen'), go: () => { location.hash = `#/${name}`; } })),
       // The stand drew no way out and no language switch on the rail, and a
@@ -1819,11 +1988,11 @@
 
   // ── routing ─────────────────────────────────────────────────────────────
 
-  const views = { dashboard, nodes, users, log };
+  const views = { dashboard, nodes, users, log, settings };
 
   function allowed(name) {
     if (name === 'nodes') return state.me && state.me.role !== 'reseller';
-    if (name === 'log') return state.me && state.me.role === 'superadmin';
+    if (name === 'log' || name === 'settings') return state.me && state.me.role === 'superadmin';
     return true;
   }
 
@@ -1894,7 +2063,7 @@
       if (!state.me) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); palette(); return; }
       if (event.target.closest('input, select, textarea') || $('#modal-root').childElementCount) return;
-      const screens = ['dashboard', 'nodes', 'users', 'log'];
+      const screens = ['dashboard', 'nodes', 'users', 'log', 'settings'];
       const index = Number(event.key) - 1;
       if (index >= 0 && index < screens.length && allowed(screens[index])) location.hash = `#/${screens[index]}`;
       // The tile on the nodes screen carries this key; it works from the

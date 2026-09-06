@@ -11,7 +11,9 @@ use ap_core::{
     Encrypted, Holder, KeyStore, Label, Node, NodeKind, NodeState, OpenMethod, Stealth,
     StealthMethod, Tag, TagName,
 };
-use ap_store::{AccessRepo, AuditRepo, ClientRepo, NodeRepo, StoreError, TagRepo, TrafficRepo};
+use ap_store::{
+    AccessRepo, AuditRepo, ClientRepo, NodeRepo, SettingRepo, StoreError, TagRepo, TrafficRepo,
+};
 use sqlx::{PgPool, Row};
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
@@ -796,4 +798,48 @@ async fn the_journal_is_read_a_page_at_a_time_and_counted() {
         .await
         .unwrap();
     assert!(!later.iter().any(|(action, _)| action.starts_with(&mark)));
+}
+
+#[tokio::test]
+async fn a_setting_keeps_what_it_was_set_to_and_who_set_it() {
+    // The panel's settings used to be constants; the screen that changes them
+    // has to be able to read back what it wrote, and the journal beside it has
+    // to be able to say who wrote it (0069).
+    let pool = db!();
+    let name = unique("probe").replace('-', "_").to_lowercase();
+    let at = OffsetDateTime::now_utc();
+
+    SettingRepo::put(&pool, &name, "first", None, at)
+        .await
+        .unwrap();
+    let found = SettingRepo::all(&pool).await.unwrap();
+    let one = found
+        .iter()
+        .find(|setting| setting.name == name)
+        .expect("the setting is there");
+    assert_eq!(one.value, "first");
+    assert_eq!(one.changed_by, None);
+
+    // Setting it again replaces the value rather than adding a second row,
+    // and the time and the hand move with it.
+    let later = at + time::Duration::minutes(5);
+    SettingRepo::put(&pool, &name, "second", None, later)
+        .await
+        .unwrap();
+    let found = SettingRepo::all(&pool).await.unwrap();
+    let mine: Vec<_> = found
+        .iter()
+        .filter(|setting| setting.name == name)
+        .collect();
+    assert_eq!(mine.len(), 1, "one row per setting");
+    assert_eq!(mine[0].value, "second");
+    assert!(mine[0].changed_at > at);
+
+    // A name the panel would never use is refused by the database rather than
+    // stored and puzzled over later.
+    assert!(
+        SettingRepo::put(&pool, "Not A Name", "x", None, at)
+            .await
+            .is_err()
+    );
 }

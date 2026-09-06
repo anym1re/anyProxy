@@ -29,6 +29,9 @@
       <a href="#/log" data-view="log">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14v16H5z"/><path d="M8.5 9h7M8.5 13h7M8.5 16.5h4"/></svg><span data-t="ui-nav-log">Журнал</span><span class="kbd">4</span>
       </a>
+      <a href="#/settings" data-view="settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 7h9M18 7h2M4 17h5M13 17h7"/><circle cx="15.5" cy="7" r="2.2"/><circle cx="11" cy="17" r="2.2"/></svg><span data-t="ui-nav-settings">Настройки</span><span class="kbd">5</span>
+      </a>
     </nav>
     <div class="grow"></div>
     <div class="rfoot">
@@ -681,7 +684,7 @@
                 <div><dt><span data-t="ui-col-node">Нода</span></dt><dd class="mono">httpgate</dd></div>
                 <div><dt><span data-t="ui-new-node-kind">Транспорт</span></dt><dd>http</dd></div>
                 <div><dt><span data-t="ui-col-accesses">Доступов</span></dt><dd class="mono">0</dd></div>
-                <div><dt>Настройки</dt><dd class="m3">не подтверждена</dd></div>
+                <div><dt><span data-t="ui-nav-settings">Настройки</span></dt><dd class="m3">не подтверждена</dd></div>
                 <div><dt>Молчит</dt><dd class="warn">8 минут</dd></div>
               </dl>
               <div class="pnote">Доставка конфигурации — когда нода выходит на связь. Пока нода молчит, изменения ждут в очереди панели.</div>
@@ -792,6 +795,122 @@
       <span class="sb"><span class="mono">3</span> операции оператора</span>
       <span class="sb push">Выбрана запись <span class="mono">20:06:41</span></span>
       <span class="sb">Хранение <span class="mono">90</span> суток</span>
+    </div>
+</template>
+<template id="screen-settings">
+<div class="content">
+      <div class="phead">
+        <div><h1><span data-t="ui-nav-settings">Настройки</span></h1></div>
+        <div class="pmeta">Параметров 9 · доставляется на ноды 4<br><span data-t="ui-set-last-change">Последнее изменение</span><span class="mono">3 сен, 18:42</span></div>
+      </div>
+
+      <div class="cols">
+        <div>
+          <div class="shead">
+            <h2><span data-t="ui-panel-version">Панель</span></h2><span class="cnt">3</span>
+            <span class="note"><span data-t="ui-set-scope-panel">Область: панель</span></span>
+          </div>
+          <div class="card" style="--d:0ms">
+            <div class="row">
+              <span class="k"><span data-t="ui-set-channel-address">Адрес панели</span></span>
+              <input class="fld" type="text" value="panel.local:8443" spellcheck="false">
+              <span class="when">12 авг</span>
+            </div>
+            <div class="row">
+              <span class="k"><span data-t="ui-set-loopback-only">Вход только через туннель</span></span>
+              <label class="tog"><input type="checkbox" checked><span class="track"></span><span class="lab"><span data-t="ui-set-on">включён</span></span></label>
+              <span class="when">12 авг</span>
+            </div>
+            <div class="row">
+              <span class="k"><span data-t="ui-set-session-hours">Срок сессии оператора</span></span>
+              <select class="fld">
+                <option>4 часа</option>
+                <option selected>12 часов</option>
+                <option>24 часа</option>
+              </select>
+              <span class="when">3 сен</span>
+            </div>
+          </div>
+
+        </div>
+
+        <div>
+          <div class="shead">
+            <h2>Обновления</h2><span class="cnt">3</span>
+            <span class="note">Область: все ноды</span>
+          </div>
+          <div class="card" style="--d:120ms">
+            <div class="row">
+              <span class="k">Версия движка на нодах</span>
+              <select class="fld">
+                <option>telemt 3.5.1</option>
+                <option>telemt 3.5.2</option>
+                <option selected>telemt 3.5.3</option>
+              </select>
+              <span class="when">1 сен</span>
+            </div>
+            <div class="row">
+              <span class="k">Обновлять ноды автоматически</span>
+              <label class="tog"><input type="checkbox" checked><span class="track"></span><span class="lab">включено</span></label>
+              <span class="when">12 авг</span>
+            </div>
+            <div class="row">
+              <span class="k">Проверка подписи обновления</span>
+              <label class="tog"><input type="checkbox" checked><span class="track"></span><span class="lab">включена</span></label>
+              <span class="when">12 авг</span>
+            </div>
+          </div>
+
+          <div class="shead gap">
+            <h2><span data-t="ui-set-checks">Проверки</span></h2><span class="cnt">2</span>
+            <span class="note"><span data-t="ui-set-scope-nodes">Область: ноды</span></span>
+          </div>
+          <div class="card" style="--d:180ms">
+            <div class="row">
+              <span class="k"><span data-t="ui-health-reach">Связь с Telegram</span></span>
+              <select class="fld">
+                <option>каждые 10 секунд</option>
+                <option selected>каждые 30 секунд</option>
+                <option>каждую минуту</option>
+              </select>
+              <span class="when">2 сен</span>
+            </div>
+            <div class="row dirty">
+              <span class="k"><span data-t="ui-set-silence-minutes">Порог молчания ноды</span></span>
+              <select class="fld">
+                <option>2 минуты</option>
+                <option>5 минут</option>
+                <option selected>15 минут</option>
+              </select>
+              <span class="when"><span data-t="ui-set-unsaved">не сохранено</span></span>
+            </div>
+          </div>
+
+          <div class="shead gap">
+            <h2><span data-t="ui-node-sponsor">Спонсорство</span></h2><span class="cnt">1</span>
+            <span class="note"><span data-t="ui-set-scope-new">Область: новые ноды</span></span>
+          </div>
+          <div class="card" style="--d:240ms">
+            <div class="row">
+              <span class="k"><span data-t="ui-set-default-ad-tag">Спонсорский тег по умолчанию</span></span>
+              <input class="fld" type="text" value="" placeholder="32 hex, от @MTProxybot" spellcheck="false">
+              <span class="when">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="savebar">
+        <span class="t">Изменён 1 параметр</span>
+        <span class="x">Порог молчания ноды: было 5 минут, стало 15 минут</span>
+        <span class="sp"></span>
+        <button class="btn" type="button">Отменить</button>
+        <button class="btn key" type="button"><span data-t="ui-save">Сохранить</span><span class="kbd" style="margin-left:4px">Ctrl S</span></button>
+      </div>
+    </div>
+<div class="statusbar">
+      <span class="sb"><span class="mono">9</span> параметров</span>
+      <span class="sb"><span class="mono">4</span><span data-t="ui-set-delivered">доставляются на ноды</span></span>
     </div>
 </template>
 <template id="gate-login">

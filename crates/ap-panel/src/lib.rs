@@ -11,6 +11,7 @@ pub mod enrollment;
 mod error;
 mod guard;
 mod routes;
+pub mod settings;
 
 pub use error::ApiError;
 pub use guard::{Actor, DEFAULT_PAGE, Guarded, MAX_PAGE};
@@ -142,9 +143,12 @@ pub async fn serve(config: Config) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(config.bind)
         .await
         .map_err(|error| format!("bind {}: {error}", config.bind))?;
-    axum::serve(listener, router(state))
-        .await
-        .map_err(|error| format!("serve: {error}"))
+    axum::serve(
+        listener,
+        router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .map_err(|error| format!("serve: {error}"))
 }
 
 /// What became of an attempt to set the panel up.

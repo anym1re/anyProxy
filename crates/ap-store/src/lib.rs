@@ -11,6 +11,7 @@ mod channel;
 mod client;
 mod error;
 mod node;
+mod setting;
 mod tag;
 mod traffic;
 
@@ -21,6 +22,7 @@ pub use channel::{EnrollmentRepo, PanelIdentity, PanelIdentityRepo, PresenceRepo
 pub use client::ClientRepo;
 pub use error::StoreError;
 pub use node::NodeRepo;
+pub use setting::{Setting, SettingRepo};
 pub use tag::TagRepo;
 pub use traffic::{DailyTraffic, TrafficRepo, TrafficTotals};
 
@@ -105,6 +107,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0016_node_activity",
         include_str!("../../../migrations/0016_node_activity.sql"),
+    ),
+    (
+        "0017_settings",
+        include_str!("../../../migrations/0017_settings.sql"),
     ),
 ];
 

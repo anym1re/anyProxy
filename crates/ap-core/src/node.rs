@@ -310,6 +310,13 @@ impl Node {
         }
     }
 
+    /// The same node, carrying a sponsorship tag.
+    #[must_use]
+    pub fn with_ad_tag(mut self, ad_tag: Option<AdTag>) -> Self {
+        self.ad_tag = ad_tag;
+        self
+    }
+
     /// Rebuilds a node from a stored row.
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(

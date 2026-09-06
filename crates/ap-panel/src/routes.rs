@@ -20,9 +20,6 @@ use crate::auth::{
 };
 use crate::{Actor, ApiError, AppState};
 
-/// How long a session lives.
-const SESSION_HOURS: i64 = 12;
-
 /// Shortest password the panel will accept for its own owner.
 ///
 /// A length and nothing else: rules about characters push people towards one
@@ -53,6 +50,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/nodes/{id}/names", post(rename_node))
         .route("/v1/nodes/{id}/sponsorship", post(sponsor_node))
         .route("/v1/nodes/{id}/enrollment", post(issue_enrollment))
+        .route("/v1/settings", get(read_settings).put(write_settings))
         .route("/v1/audit", get(read_audit))
         .route("/v1/audit/summary", get(audit_summary))
         .route("/v1/traffic", get(traffic))
@@ -107,6 +105,7 @@ struct SignIn {
 /// and whoever can reach this port could try to become one anyway (0062).
 async fn setup_state(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
     let taken = ap_store::AdminRepo::count(state.pool()).await? > 0;
+    let settings = crate::settings::Settings::read(state.pool()).await?;
     // Whether the sign-in screen shows a box for a code (0063). About the
     // panel: no login is named here and none is asked about.
     let second_factor = ap_store::AdminRepo::any_second_factor(state.pool()).await?;
@@ -118,7 +117,12 @@ async fn setup_state(State(state): State<AppState>) -> Result<Json<serde_json::V
         "version": env!("CARGO_PKG_VERSION"),
         // Where nodes dial in. The interface shows it and puts it in the
         // enrolment command, so the address is never typed from memory (0065).
-        "channel_address": state.channel_address(),
+        // Whatever the operator set, or the address this process was started
+        // with (0069).
+        "channel_address": match settings.text("channel_address") {
+            "" => state.channel_address(),
+            said => said,
+        },
         // How long this process has been answering, which the foot of the
         // dashboard was drawn to show.
         "uptime_seconds": state.uptime_seconds(),
@@ -168,8 +172,32 @@ async fn set_up(
 /// missing login still runs a password verification and a code check against
 /// stand-in values, because the difference in time would otherwise say which
 /// logins exist.
+/// The address a request came from, when the listener knows it.
+///
+/// Never a refusal: a router called directly, as a test calls it, has no
+/// address behind the request, and a handler that took one would be a handler
+/// no test could reach.
+struct Peer(Option<std::net::IpAddr>);
+
+impl<S: Send + Sync> FromRequestParts<S> for Peer {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|peer| peer.0.ip()),
+        ))
+    }
+}
+
 async fn sign_in(
     State(state): State<AppState>,
+    peer: Peer,
     Json(body): Json<SignIn>,
 ) -> Result<Response, ApiError> {
     if let Some(wait) = state.attempts().record(&body.login) {
@@ -215,6 +243,14 @@ async fn sign_in(
 
     state.attempts().forget(&body.login);
 
+    let settings = crate::settings::Settings::read(state.pool()).await?;
+    // Told to take operators only through the tunnel, the panel takes them
+    // only from the loopback, and says no more than it says to a wrong
+    // password (0069). A request with no address behind it is one the router
+    // was called with directly, which happens only in a test.
+    if settings.on("loopback_only") && peer.0.is_some_and(|from| !from.is_loopback()) {
+        return Err(ApiError::InvalidCredentials);
+    }
     let token = new_token();
     let now = OffsetDateTime::now_utc();
     ap_store::SessionRepo::open(
@@ -222,7 +258,7 @@ async fn sign_in(
         admin.id(),
         &token_digest(&token),
         now,
-        now + time::Duration::hours(SESSION_HOURS),
+        now + time::Duration::hours(settings.number("session_hours")),
     )
     .await?;
 
@@ -706,6 +742,15 @@ async fn create_tag(
 // ── nodes ────────────────────────────────────────────────────────────────
 
 fn node_json(node: &Node) -> Result<serde_json::Value, ApiError> {
+    node_json_with(node, 0)
+}
+
+/// The same, knowing how long a node may stay quiet before that is a fault.
+///
+/// A node reports itself well and then stops speaking; nothing it said was
+/// wrong, so nothing looked wrong. How long counts as too long is the
+/// operator's to say (0069).
+fn node_json_with(node: &Node, silence_minutes: i64) -> Result<serde_json::Value, ApiError> {
     // Everything the panel knows about the node goes out. The three words of
     // health and the machine's word are what an operator looks at first; a
     // listing that showed only the state was a listing that hid every node
@@ -738,6 +783,15 @@ fn node_json(node: &Node) -> Result<serde_json::Value, ApiError> {
             "tx_bps": machine.tx_bps,
         })
     });
+    // Quiet for longer than allowed, or never heard from at all once it was
+    // supposed to have been.
+    let silent = silence_minutes > 0
+        && match node.last_seen_at() {
+            Some(seen) => {
+                OffsetDateTime::now_utc() - seen > time::Duration::minutes(silence_minutes)
+            }
+            None => node.state() != ap_core::NodeState::Pending,
+        };
     Ok(serde_json::json!({
         "id": node.id(),
         "label": node.label().as_str(),
@@ -751,7 +805,8 @@ fn node_json(node: &Node) -> Result<serde_json::Value, ApiError> {
         "last_seen_at": node.last_seen_at().map(format_rfc3339).transpose()?,
         "health": health,
         "machine": machine,
-        "wants_attention": node.wants_attention(),
+        "wants_attention": node.wants_attention() || silent,
+        "silent": silent,
         "created_at": format_rfc3339(node.created_at())?,
     }))
 }
@@ -769,10 +824,14 @@ async fn list_nodes(
     // What runs on them comes in one query rather than one per node.
     let ids: Vec<Uuid> = nodes.iter().map(Node::id).collect();
     let running = guarded.processes(&ids).await.unwrap_or_default();
+    // How long a node may stay quiet before that is a fault (0069).
+    let quiet = crate::settings::Settings::read(state.pool())
+        .await?
+        .number("silence_minutes");
     let body: Result<Vec<_>, ApiError> = nodes
         .iter()
         .map(|node| {
-            let mut shown = node_json(node)?;
+            let mut shown = node_json_with(node, quiet)?;
             let theirs: Vec<serde_json::Value> = running
                 .iter()
                 .filter(|(id, _)| *id == node.id())
@@ -814,7 +873,12 @@ async fn create_node(
     let tag = NodeKindTag::from_chosen(&body.kind, body.masked)?;
     let domain = body.domain.as_deref().map(Domain::try_from).transpose()?;
     let kind = NodeKind::from_parts(tag, domain)?;
-    let node = Node::new(label.clone(), kind, OffsetDateTime::now_utc());
+    let mut node = Node::new(label.clone(), kind, OffsetDateTime::now_utc());
+    // A node made without a tag takes the one set as the default (0069).
+    let settings = crate::settings::Settings::read(state.pool()).await?;
+    if let Ok(tag) = ap_core::AdTag::try_from(settings.text("default_ad_tag")) {
+        node = node.with_ad_tag(Some(tag));
+    }
 
     let guarded = state.guarded(&actor);
     guarded.create_node(&node).await?;
@@ -930,6 +994,78 @@ async fn rename_node(
             "node.renamed",
             Some(&id.to_string()),
             serde_json::json!({ "domain": body.domain }),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ── settings ─────────────────────────────────────────────────────────────
+
+/// What the panel is set to, and what each setting may be set to (0069).
+///
+/// The choices come with the values: the screen draws a list of them, and
+/// which lists there are is the panel's business, not the screen's.
+async fn read_settings(
+    State(state): State<AppState>,
+    actor: Actor,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !actor.role().reads_audit() {
+        return Err(ApiError::NotFound);
+    }
+    let stored = ap_store::SettingRepo::all(state.pool()).await?;
+    let changed: std::collections::HashMap<&str, &ap_store::Setting> =
+        stored.iter().map(|one| (one.name.as_str(), one)).collect();
+    let settings = crate::settings::Settings::read(state.pool()).await?;
+    let mut said = Vec::with_capacity(crate::settings::KNOWN.len());
+    for known in crate::settings::KNOWN {
+        let touched = changed.get(known.name);
+        said.push(serde_json::json!({
+            "name": known.name,
+            "value": settings.text(known.name),
+            "choices": known.choices,
+            "changed_at": touched
+                .map(|one| format_rfc3339(one.changed_at))
+                .transpose()?,
+        }));
+    }
+    Ok(Json(serde_json::json!({ "settings": said })))
+}
+
+/// Changes settings, one call for however many the operator changed.
+///
+/// All or none: the screen shows a save bar and saves what it has, and half
+/// of it landing would leave the panel in a state nobody chose.
+#[derive(Deserialize)]
+struct NewSettings {
+    values: std::collections::HashMap<String, String>,
+}
+
+async fn write_settings(
+    State(state): State<AppState>,
+    actor: Actor,
+    Json(body): Json<NewSettings>,
+) -> Result<StatusCode, ApiError> {
+    if !actor.role().reads_audit() {
+        return Err(ApiError::NotFound);
+    }
+    for (name, value) in &body.values {
+        if !crate::settings::acceptable(name, value) {
+            return Err(ApiError::Unprocessable("setting_value"));
+        }
+    }
+    let now = OffsetDateTime::now_utc();
+    for (name, value) in &body.values {
+        ap_store::SettingRepo::put(state.pool(), name, value, Some(actor.id()), now).await?;
+    }
+    // The name is recorded and the value is not: a value can be an address or
+    // a sponsorship tag, and the journal has no use for either.
+    let names: Vec<&str> = body.values.keys().map(String::as_str).collect();
+    state
+        .guarded(&actor)
+        .record(
+            "setting.changed",
+            Some(&names.join(", ")),
+            serde_json::json!({ "count": names.len() }),
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)

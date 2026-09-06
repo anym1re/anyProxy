@@ -203,10 +203,18 @@ async fn handle(
             )
             .await
             .map_err(ApiError::from)?;
+            // How often the node should speak up and check what it can
+            // reach, as the operator set it (0069).
+            let heartbeat = u32::try_from(
+                crate::settings::Settings::read(state.pool())
+                    .await?
+                    .number("heartbeat_secs"),
+            )
+            .unwrap_or(HEARTBEAT_SECS);
             let welcome = Message::Welcome(Welcome {
                 proto: PROTOCOL_VERSION,
                 cache_key: hex::encode(cache_key()),
-                heartbeat_secs: HEARTBEAT_SECS,
+                heartbeat_secs: heartbeat,
                 cache_ttl_secs: CACHE_TTL_SECS,
             });
             let config = issue_config(state, node_id).await?;
