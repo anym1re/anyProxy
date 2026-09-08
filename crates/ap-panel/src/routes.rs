@@ -658,11 +658,18 @@ async fn create_access(
     };
 
     guarded.create_access(&access, &credential).await?;
+    // Whose the link is, by name where it has one: making a link public is
+    // the act that puts it on the site, and the journal names things (0074,
+    // 0092).
+    let (holder, name) = match access.common().holder() {
+        Holder::Client(_) => ("client", None),
+        Holder::Public(name) => ("public", Some(name.as_str())),
+    };
     guarded
         .record(
             "access.created",
             Some(&access.common().id().to_string()),
-            serde_json::json!({ "method": body.method }),
+            serde_json::json!({ "method": body.method, "holder": holder, "name": name }),
         )
         .await?;
 
