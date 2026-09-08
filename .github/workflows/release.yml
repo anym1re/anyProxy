@@ -30,13 +30,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: rustup target add ${{ matrix.target }}
       - run: cargo install cross --locked --version 0.2.5
-      - run: cross build --release --locked --target ${{ matrix.target }} -p ap-agent -p ap-panel -p ap-cli
+      - run: cross build --release --locked --target ${{ matrix.target }} -p ap-agent -p ap-panel -p ap-cli -p ap-site
 
       - name: name the artefacts
         run: |
           mkdir -p out
           cp target/${{ matrix.target }}/release/anyproxy-agent out/anyproxy-agent-${{ matrix.name }}
           cp target/${{ matrix.target }}/release/anyproxy-panel out/anyproxy-panel-${{ matrix.name }}
+          cp target/${{ matrix.target }}/release/anyproxy-site out/anyproxy-site-${{ matrix.name }}
           cp target/${{ matrix.target }}/release/anyproxy out/anyproxy-${{ matrix.name }}
           cd out && sha256sum * > SHA256SUMS-${{ matrix.name }}
 

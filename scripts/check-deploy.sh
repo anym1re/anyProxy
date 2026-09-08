@@ -100,6 +100,30 @@ else
     report "the panel installer would install beside a node"
 fi
 
+# The site installer carries the same guards, and refuses both other
+# machines: the panel's and a node's (0096).
+site="${root}/scripts/install-site.sh"
+if grep -q 'id -u.*= 0' "${site}"; then
+    echo "  the site installer requires root"
+else
+    report "the site installer does not check that it can install"
+fi
+if grep -q 'verify-release.sh' "${site}"; then
+    echo "  the site installer verifies before it installs"
+else
+    report "the site installer installs without verifying"
+fi
+if grep -q 'runs the panel or a node' "${site}"; then
+    echo "  the site installer refuses the panel's and a node's machine"
+else
+    report "the site installer would install beside the panel or a node"
+fi
+if grep -q 'access_log off' "${site}"; then
+    echo "  the site's front keeps no access log"
+else
+    report "the site's front would log who looked"
+fi
+
 # ── the node is told how it reaches its panel ────────────────────────────
 #
 # Each of these is run for real rather than read out of the file. The checks
