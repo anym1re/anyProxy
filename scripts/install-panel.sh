@@ -167,6 +167,9 @@ DATABASE_URL=postgres://${db_role}:${db_password}@127.0.0.1/${db_name}
 ANYPROXY_KEY_FILE=${key_file}
 ANYPROXY_PANEL_BIND=127.0.0.1:8080
 ANYPROXY_CHANNEL_BIND=0.0.0.0:8443
+# The feed the public links site reads (0091). Bind it to the tunnel
+# address the site's machine reaches, never to a public one:
+# ANYPROXY_FEED_BIND=10.0.0.1:8090
 ENV
     chown root:"${service_user}" "${env_file}"
     chmod 640 "${env_file}"

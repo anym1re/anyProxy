@@ -10,6 +10,7 @@ pub mod ca;
 pub mod channel;
 pub mod enrollment;
 mod error;
+pub mod feed;
 mod guard;
 pub mod handout;
 mod own;
@@ -159,6 +160,13 @@ impl AppState {
 /// Builds the router.
 pub fn router(state: AppState) -> axum::Router {
     routes::router(state)
+}
+
+/// Builds the router of the feed the public site reads (0091).
+///
+/// Served on a listener of its own, never on the one [`router`] is served on.
+pub fn feed_router(state: AppState) -> axum::Router {
+    feed::router(state)
 }
 
 /// Serves until the process is stopped.

@@ -50,23 +50,49 @@ fn main() {
         ..config
     };
 
-    if let Err(reason) = runtime.block_on(run(config, channel_bind)) {
+    // The feed the public site reads (0091). Absent, no listener: a panel
+    // without a site has nothing to feed.
+    let feed_bind: Option<std::net::SocketAddr> = std::env::var("ANYPROXY_FEED_BIND")
+        .ok()
+        .and_then(|value| value.parse().ok());
+
+    if let Err(reason) = runtime.block_on(run(config, channel_bind, feed_bind)) {
         eprintln!("{reason}");
         std::process::exit(1);
     }
 }
 
-/// Serves the operator interface and the agent channel side by side, with
-/// the bot for the users beside them.
+/// Serves the operator interface, the agent channel and, when asked, the
+/// site feed side by side, with the bot for the users beside them.
 ///
 /// They are separate listeners on purpose: the first binds to loopback and
-/// holds every secret, the second faces the nodes and must be reachable. The
+/// holds every secret, the second faces the nodes and must be reachable, and
+/// the third faces one machine over a tunnel and answers one question. The
 /// bot listens on nothing: it dials out to Telegram when it is switched on
 /// (0080).
-async fn run(config: ap_panel::Config, channel_bind: std::net::SocketAddr) -> Result<(), String> {
+async fn run(
+    config: ap_panel::Config,
+    channel_bind: std::net::SocketAddr,
+    feed_bind: Option<std::net::SocketAddr>,
+) -> Result<(), String> {
     let state = ap_panel::AppState::build(&config).await?;
     let authority = state.authority_handle();
     tokio::spawn(ap_panel::bot::serve(state.clone()));
+
+    let feed = {
+        let state = state.clone();
+        async move {
+            let Some(bind) = feed_bind else {
+                return std::future::pending::<Result<(), String>>().await;
+            };
+            let listener = tokio::net::TcpListener::bind(bind)
+                .await
+                .map_err(|error| format!("bind {bind}: {error}"))?;
+            axum::serve(listener, ap_panel::feed_router(state))
+                .await
+                .map_err(|error| format!("serve: {error}"))
+        }
+    };
 
     let rest = {
         let state = state.clone();
@@ -95,5 +121,6 @@ async fn run(config: ap_panel::Config, channel_bind: std::net::SocketAddr) -> Re
     tokio::select! {
         outcome = rest => outcome,
         outcome = channel => outcome,
+        outcome = feed => outcome,
     }
 }

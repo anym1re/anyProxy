@@ -92,12 +92,25 @@ handler_without_actor() {
     done
 }
 
+# The feed the public site reads lives on a listener of its own (0091).
+#
+# Whoever can reach the feed must not thereby reach the sign-in or the setup
+# form, so its route is built in feed.rs and served apart. A `public-links`
+# route in routes.rs would put it beside them, and nothing in the type system
+# would notice.
+feed_on_the_rest_listener() {
+    local path="${root}/crates/ap-panel/src"
+    [ -d "$path" ] || return 0
+    grep -rnE --include='*.rs' 'public-links' "$path" | grep -vE '(^|/)feed\.rs:'
+}
+
 collect user-facing-literal user_facing_literal "${root}/crates/ap-cli"
 collect user-facing-literal user_facing_literal "${root}/crates/ap-panel"
 collect secret-exposed secret_exposed
 collect timestamp-string-op timestamp_string_op
 collect sql-concatenation sql_concatenation
 collect handler-without-actor handler_without_actor
+collect feed-on-the-rest-listener feed_on_the_rest_listener
 
 if [ "$found" -ne 0 ]; then
     echo "convention check failed" >&2
