@@ -535,14 +535,19 @@
     return { line, x, y };
   }
 
-  /// A day of hours: twenty-four points ending on the hour just past.
+  /// A day of hours: twenty-four points ending on the last finished hour.
+  ///
+  /// The hour still running is not one of them: at twenty past it holds twenty
+  /// minutes of traffic against sixty in every hour beside it, and drawn as a
+  /// point it is a cliff at the end of every day (0079).
   ///
   /// Every hour is drawn, including the quiet ones, so a gap in the traffic
   /// reads as a quiet hour and not as a hole in the record.
   function hours(rows, many) {
     const byHour = new Map(rows.map((point) => [point.hour.slice(0, 13), point]));
     const now = new Date();
-    const top = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours());
+    const top = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours())
+      - 3600000;
     const points = [];
     for (let back = many - 1; back >= 0; back -= 1) {
       const at = new Date(top - back * 3600000);
@@ -561,10 +566,11 @@
     return { points, received, sent, peak, total: received + sent, byHour: true };
   }
 
+  /// A range of days ending yesterday: today is still being written (0079).
   function series(rows, days) {
     const byDay = new Map(rows.map((point) => [point.day, point]));
     const now = new Date();
-    const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - 86400000;
     const points = [];
     for (let back = days - 1; back >= 0; back -= 1) {
       const key = new Date(today - back * 86400000).toISOString().slice(0, 10);
@@ -584,8 +590,10 @@
       seesNodes ? api('GET', '/v1/nodes') : Promise.resolve([]),
       api('GET', `/v1/clients?limit=${PAGE}`),
       api('GET', `/v1/accesses?limit=${PAGE}`),
-      api('GET', state.range === 1 ? '/v1/traffic?hours=24' : `/v1/traffic?days=${state.range}`),
-      api('GET', state.range === 1 ? '/v1/traffic?hours=48' : `/v1/traffic?days=${state.range * 2}`),
+      // One period more than is drawn: the drawn ones are the finished ones,
+      // and the window has to reach back past the one still running (0079).
+      api('GET', state.range === 1 ? '/v1/traffic?hours=24' : `/v1/traffic?days=${state.range + 1}`),
+      api('GET', state.range === 1 ? '/v1/traffic?hours=48' : `/v1/traffic?days=${state.range * 2 + 1}`),
     ]);
     state.known = { nodes, clients };
 
@@ -713,7 +721,7 @@
       const body = $('.t-host', hosts);
       const rows = [...body.children].filter((child) => child.classList.contains('tr'));
       const shape = rows[0];
-      body.replaceChildren($('.th', body), ...shown.map((node) => {
+      body.replaceChildren($('.th', body), ...shown.map((node, place) => {
         const row = shape.cloneNode(true);
         const machine = node.machine;
         dot($('.nmdot .sd', row), standing(node));
@@ -724,7 +732,14 @@
           $('.pct', box).classList.toggle('warn', part != null && part >= 0.85);
           const bar = $('.bar i', box);
           if (part == null) $('.bar', box).remove();
-          else { bar.style.setProperty('--p', part.toFixed(2)); bar.classList.toggle('hot', part >= 0.85); }
+          else {
+            bar.style.setProperty('--p', part.toFixed(2));
+            // The bars come in one after another, row by row and left to
+            // right, as the stand staggers them. Cloned from one row they all
+            // carried that row's delays and arrived together.
+            bar.style.setProperty('--d', `${place * 60 + index * 40}ms`);
+            bar.classList.toggle('hot', part >= 0.85);
+          }
         };
         const share = (used, limit) => (limit ? Math.min(1, Number(used) / Number(limit)) : null);
         const percent = (part) => (part == null ? '—' : `${Math.round(part * 100)} %`);
@@ -859,7 +874,7 @@
     const [list, accesses, traffic] = await Promise.all([
       api('GET', '/v1/nodes'),
       api('GET', `/v1/accesses?limit=${PAGE}`),
-      api('GET', `/v1/traffic?days=${state.range}`),
+      api('GET', `/v1/traffic?days=${state.range + 1}`),
     ]);
     state.known.nodes = list;
     const live = list.filter((node) => node.state !== 'burned');
@@ -1772,7 +1787,10 @@
     /// The note says the figures in the unit of the point, not of the range:
     /// the stand writes «118,4 ГБ» over «к клиентам 104,3 · от клиентов 14,1»,
     /// with the unit said once.
+    const chart = $('.chart', traffic);
+    let pointed = drawn.peak;
     const at = (index) => {
+      pointed = index;
       const point = drawn.points[index];
       const carried = point.in + point.out;
       const across = x(index).toFixed(1);
@@ -1782,7 +1800,17 @@
       vline.setAttribute('y1', up);
       mark.setAttribute('cx', across);
       mark.setAttribute('cy', up);
-      tip.style.left = `${Math.min(88, Math.max(12, (index / Math.max(1, drawn.points.length - 1)) * 100))}%`;
+      // The note is centred on the point and kept on the card by its own
+      // width. It has a width only once the card is on the page; before that
+      // a percent stands in, and the placing is done again after.
+      const along = index / Math.max(1, drawn.points.length - 1);
+      const wide = chart ? chart.clientWidth : 0;
+      // Measured to the fraction: the browser centres it by the fraction too,
+      // and a whole-pixel half leaves it a fraction over the edge.
+      const half = tip.getBoundingClientRect().width / 2;
+      tip.style.left = wide && half
+        ? `${Math.min(wide - half - 1, Math.max(half + 1, along * wide))}px`
+        : `${Math.min(86, Math.max(14, along * 100))}%`;
       put(tip, '.d', drawn.byHour ? t('ui-dash-at-hour', { at: clock(point.day) }) : day(point.day));
       put(tip, '.n', bytes(carried));
       const [, unitOf] = scale(carried);
@@ -1791,10 +1819,10 @@
         + ` · ${t('ui-dash-sent').toLowerCase()} ${share(point.out)}`);
     };
     at(drawn.peak);
+    requestAnimationFrame(() => at(pointed));
 
     // Moving over the chart moves the marker; leaving it puts the marker back
     // where the stand drew it, on the busiest point.
-    const chart = $('.chart', traffic);
     if (chart) {
       chart.style.cursor = 'crosshair';
       chart.onmousemove = (event) => {
@@ -1837,8 +1865,8 @@
     remember('localStorage', 'ap-range', String(days));
     try {
       const [now, before] = await Promise.all([
-        api('GET', days === 1 ? '/v1/traffic?hours=24' : `/v1/traffic?days=${days}`),
-        api('GET', days === 1 ? '/v1/traffic?hours=48' : `/v1/traffic?days=${days * 2}`),
+        api('GET', days === 1 ? '/v1/traffic?hours=24' : `/v1/traffic?days=${days + 1}`),
+        api('GET', days === 1 ? '/v1/traffic?hours=48' : `/v1/traffic?days=${days * 2 + 1}`),
       ]);
       const fresh = $('#screen-dashboard').content.cloneNode(true);
       const drawnCard = $$('.g > .card', fresh)[1];
