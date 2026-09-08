@@ -120,7 +120,11 @@ async fn the_feed_carries_what_is_published_and_nothing_else() {
     .await;
     assert_eq!(stopped.status, StatusCode::NO_CONTENT, "{}", stopped.body);
 
-    // A client's link on the same node: never on the site.
+    // A client's link, on a node of its own: never on the site. It cannot
+    // share a node with a public link — a published address is censored and
+    // takes its node's clients with it, so the panel refuses the mix (0090,
+    // 0097) — which is why this client sits on a node the feed never sees.
+    let client_node = a_node(&panel, &token, "socks5", Some("203.0.113.9")).await;
     let client = call(
         &panel.router,
         "POST",
@@ -135,7 +139,7 @@ async fn the_feed_carries_what_is_published_and_nothing_else() {
         "POST",
         "/v1/accesses",
         Some(&token),
-        Some(serde_json::json!({ "client_id": client_id, "node_id": addressed })),
+        Some(serde_json::json!({ "client_id": client_id, "node_id": client_node })),
     )
     .await;
     assert_eq!(owned.status, StatusCode::CREATED, "{}", owned.body);

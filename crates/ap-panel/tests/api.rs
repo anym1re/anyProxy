@@ -778,3 +778,148 @@ async fn a_short_password_is_not_taken_for_the_owner() {
     );
     assert_eq!(refused.json()["error"]["code"], "password_too_short");
 }
+
+// ── a node carries one holder kind, so a censored public link never takes
+//    clients down with it (0090, 0097) ─────────────────────────────────────
+
+/// Makes a node of the given open kind and returns its id.
+async fn a_node(panel: &common::Panel, token: &str, kind: &str) -> String {
+    let node = call(
+        &panel.router,
+        "POST",
+        "/v1/nodes",
+        Some(token),
+        Some(serde_json::json!({ "label": unique("n"), "kind": kind })),
+    )
+    .await;
+    assert_eq!(node.status, StatusCode::CREATED, "{}", node.body);
+    node.json()["id"].as_str().unwrap().to_owned()
+}
+
+/// Issues a client access on a node, returning the reply.
+async fn client_access_on(panel: &common::Panel, token: &str, node_id: &str) -> common::Reply {
+    let client = call(
+        &panel.router,
+        "POST",
+        "/v1/clients",
+        Some(token),
+        Some(serde_json::json!({ "label": unique("c") })),
+    )
+    .await;
+    let client_id = client.json()["id"].as_str().unwrap().to_owned();
+    call(
+        &panel.router,
+        "POST",
+        "/v1/accesses",
+        Some(token),
+        Some(serde_json::json!({ "client_id": client_id, "node_id": node_id })),
+    )
+    .await
+}
+
+/// Publishes a public link on a node, returning the reply.
+async fn public_link_on(panel: &common::Panel, token: &str, node_id: &str) -> common::Reply {
+    call(
+        &panel.router,
+        "POST",
+        "/v1/accesses",
+        Some(token),
+        Some(serde_json::json!({ "name": unique("p"), "node_id": node_id })),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_public_link_is_refused_on_a_node_that_carries_clients() {
+    let panel = panel!();
+    let (_, boss) = admin(&panel, Role::Superadmin).await;
+    let node = a_node(&panel, &boss, "socks5").await;
+
+    let client = client_access_on(&panel, &boss, &node).await;
+    assert_eq!(client.status, StatusCode::CREATED, "{}", client.body);
+
+    let refused = public_link_on(&panel, &boss, &node).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.json()["error"]["code"], "node_mixes_holders");
+}
+
+#[tokio::test]
+async fn a_client_is_refused_on_a_node_that_carries_a_public_link() {
+    let panel = panel!();
+    let (_, boss) = admin(&panel, Role::Superadmin).await;
+    let node = a_node(&panel, &boss, "socks5").await;
+
+    let link = public_link_on(&panel, &boss, &node).await;
+    assert_eq!(link.status, StatusCode::CREATED, "{}", link.body);
+
+    let refused = client_access_on(&panel, &boss, &node).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.json()["error"]["code"], "node_mixes_holders");
+}
+
+#[tokio::test]
+async fn same_kind_accesses_share_a_node() {
+    let panel = panel!();
+    let (_, boss) = admin(&panel, Role::Superadmin).await;
+
+    let clients = a_node(&panel, &boss, "socks5").await;
+    let first = client_access_on(&panel, &boss, &clients).await;
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.body);
+    let second = client_access_on(&panel, &boss, &clients).await;
+    assert_eq!(second.status, StatusCode::CREATED, "{}", second.body);
+
+    let links = a_node(&panel, &boss, "socks5").await;
+    let one = public_link_on(&panel, &boss, &links).await;
+    assert_eq!(one.status, StatusCode::CREATED, "{}", one.body);
+    let two = public_link_on(&panel, &boss, &links).await;
+    assert_eq!(two.status, StatusCode::CREATED, "{}", two.body);
+}
+
+#[tokio::test]
+async fn a_disabled_client_still_reserves_its_node() {
+    let panel = panel!();
+    let (_, boss) = admin(&panel, Role::Superadmin).await;
+    let node = a_node(&panel, &boss, "socks5").await;
+
+    let client = client_access_on(&panel, &boss, &node).await;
+    let access_id = client.json()["id"].as_str().unwrap().to_owned();
+    let off = call(
+        &panel.router,
+        "POST",
+        &format!("/v1/accesses/{access_id}/state"),
+        Some(&boss),
+        Some(serde_json::json!({ "state": "disabled" })),
+    )
+    .await;
+    assert_eq!(off.status, StatusCode::NO_CONTENT, "{}", off.body);
+
+    // Disabled is reversible, so the client is still live value: a public link
+    // is still refused.
+    let refused = public_link_on(&panel, &boss, &node).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.json()["error"]["code"], "node_mixes_holders");
+}
+
+#[tokio::test]
+async fn a_revoked_client_frees_its_node_for_a_public_link() {
+    let panel = panel!();
+    let (_, boss) = admin(&panel, Role::Superadmin).await;
+    let node = a_node(&panel, &boss, "socks5").await;
+
+    let client = client_access_on(&panel, &boss, &node).await;
+    let access_id = client.json()["id"].as_str().unwrap().to_owned();
+    let gone = call(
+        &panel.router,
+        "POST",
+        &format!("/v1/accesses/{access_id}/state"),
+        Some(&boss),
+        Some(serde_json::json!({ "state": "revoked" })),
+    )
+    .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.body);
+
+    // Revoked is terminal and its credential is never reissued, so the node is
+    // clear: a public link takes it.
+    let link = public_link_on(&panel, &boss, &node).await;
+    assert_eq!(link.status, StatusCode::CREATED, "{}", link.body);
+}

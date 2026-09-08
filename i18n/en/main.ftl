@@ -85,6 +85,7 @@ api-already-enrolled = that node has already enrolled
 api-password-too-short = the password is too short
 api-value-refused = the panel would not take that value
 api-already-set-up = this panel already has an owner
+api-node-mixes-holders = a node carries either a public link or client accesses, not both
 api-unknown = the panel refused the request ({ $code })
 
 cli-signed-in = signed in as { $login }

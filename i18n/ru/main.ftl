@@ -86,6 +86,7 @@ api-already-enrolled = эта нода уже зарегистрирована
 api-password-too-short = пароль слишком короткий
 api-value-refused = панель не приняла значение
 api-already-set-up = у панели уже есть хозяин
+api-node-mixes-holders = нода несёт либо публичную ссылку, либо клиентские доступы, но не то и другое
 api-unknown = панель отклонила запрос ({ $code })
 
 cli-signed-in = вход выполнен: { $login }
