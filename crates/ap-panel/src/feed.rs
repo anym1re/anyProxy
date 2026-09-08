@@ -8,7 +8,7 @@
 //! What it carries is rendered here, by the process that holds the key. The
 //! site gets strings and opens nothing.
 
-use ap_core::{AccessState, AnyAccess, Credential, Holder, NodeState, OpenMethod, Served};
+use ap_core::{AccessState, Holder, NodeState, Served, StealthMethod};
 use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -17,6 +17,7 @@ use axum::routing::get;
 use time::OffsetDateTime;
 
 use crate::AppState;
+use crate::handout::Handout;
 
 /// Builds the feed router: one route and nothing else.
 pub fn router(state: AppState) -> Router {
@@ -107,60 +108,44 @@ pub async fn published(state: &AppState) -> Result<Vec<PublicLink>, crate::ApiEr
             }
         }
 
-        let host = node.address().map(|address| address.to_string());
-        let rendered = match (&access, &credential, node.kind().tag().served()) {
-            (AnyAccess::Stealth(access), Credential::Secret(secret), Served::Masked(_)) => {
-                // WEB names the domain itself; FakeTLS needs the address to
-                // put beside the borrowed name.
-                let Some(domain) = node.kind().domain() else {
-                    continue;
-                };
-                let host = match access.method() {
-                    ap_core::StealthMethod::Web => domain.as_str().to_owned(),
-                    ap_core::StealthMethod::FakeTls => match host {
-                        Some(host) => host,
-                        None => continue,
-                    },
-                };
-                PublicLink::Link {
-                    name: name.as_str().to_owned(),
-                    method: access.method().as_stored(),
-                    link: ap_core::stealth_link(*access.method(), &host, domain, secret)?,
-                }
-            }
-            (AnyAccess::Open(access), Credential::Secret(secret), Served::Open(_)) => {
-                let Some(host) = host else {
-                    continue;
-                };
-                PublicLink::Link {
-                    name: name.as_str().to_owned(),
-                    method: access.method().as_stored(),
-                    link: ap_core::mtproto_link(&host, 8443, secret)?,
-                }
-            }
-            (AnyAccess::Open(access), Credential::Login { user, pass }, Served::Open(_)) => {
-                let Some(host) = host else {
-                    continue;
-                };
-                PublicLink::Account {
-                    name: name.as_str().to_owned(),
-                    method: access.method().as_stored(),
-                    host,
-                    port: match access.method() {
-                        OpenMethod::Socks5 => 1080,
-                        OpenMethod::Http => 3128,
-                        OpenMethod::Mtproto => 8443,
-                    },
-                    user: user.clone(),
-                    password: pass.clone(),
-                }
-            }
-            // A credential of the wrong shape for its method, or a node whose
-            // kind disagrees with its access: neither can be rendered into a
-            // link that works, so neither is shown.
-            _ => continue,
+        // The host a visitor is told to dial. A web node is dialled by its
+        // own name; every other kind by the address the operator set (0091),
+        // and a forged handshake borrows its name from somebody else, so that
+        // name is never the host. Without one there is no link to show.
+        let host = match (node.kind().tag().served(), node.kind().domain()) {
+            (Served::Masked(StealthMethod::Web), Some(domain)) => domain.as_str().to_owned(),
+            _ => match node.address() {
+                Some(address) => address.to_string(),
+                None => continue,
+            },
         };
-        links.push(rendered);
+        // Rendered where the link endpoint and the bot render theirs (0088).
+        // A credential of the wrong shape for its method cannot become a link
+        // that works, and is left out rather than shown.
+        let Ok(handout) = crate::handout::handout(&access, &credential, node.kind(), &host) else {
+            continue;
+        };
+        links.push(match handout {
+            Handout::Link { link, method } => PublicLink::Link {
+                name: name.as_str().to_owned(),
+                method,
+                link,
+            },
+            Handout::Account {
+                host,
+                port,
+                user,
+                password,
+                method,
+            } => PublicLink::Account {
+                name: name.as_str().to_owned(),
+                method,
+                host,
+                port,
+                user,
+                password,
+            },
+        });
     }
 
     Ok(links)
