@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
+use sha2::Digest as _;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -38,6 +39,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/clients/{id}", get(read_client))
         .route("/v1/clients/{id}/state", post(set_client_state))
         .route("/v1/clients/{id}/traffic", get(client_traffic))
+        .route("/v1/clients/{id}/bot-code", post(issue_bot_code))
+        .route("/v1/clients/{id}/telegram", delete(unlink_telegram))
         .route("/v1/clients/{id}/accesses", get(list_accesses))
         .route("/v1/accesses", get(list_all_accesses).post(create_access))
         .route("/v1/accesses/public", get(list_public_accesses))
@@ -331,6 +334,9 @@ fn client_json(client: &Client) -> Result<serde_json::Value, ApiError> {
         "quota_bytes": client.quota_bytes(),
         "expires_at": client.expires_at().map(format_rfc3339).transpose()?,
         "created_at": format_rfc3339(client.created_at())?,
+        // When a Telegram account was tied to this client, and nothing
+        // about the account (0082).
+        "telegram_linked_at": client.telegram_linked_at().map(format_rfc3339).transpose()?,
     }))
 }
 
@@ -426,6 +432,70 @@ async fn client_traffic(
         "bytes_out": totals.bytes_out,
         "total": totals.total(),
     })))
+}
+
+/// How long a code that ties a Telegram account to a client stays usable.
+const BOT_CODE_MINUTES: i64 = 60;
+
+/// Issues a one-time code for a client to present to the bot (0082).
+///
+/// The code is shown here and nowhere else: only its digest is kept. When
+/// the panel knows the bot's name, a link that carries the code to it is
+/// given as well, so nothing has to be typed.
+async fn issue_bot_code(
+    State(state): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let mut bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
+    let code = hex::encode(bytes);
+    let now = OffsetDateTime::now_utc();
+    let expires_at = now + time::Duration::minutes(BOT_CODE_MINUTES);
+
+    let guarded = state.guarded(&actor);
+    let client = guarded
+        .issue_bot_code(id, &sha2::Sha256::digest(code.as_bytes()), expires_at, now)
+        .await?;
+    guarded
+        .record(
+            "bot.code.issued",
+            Some(client.label().as_str()),
+            serde_json::json!({}),
+        )
+        .await?;
+
+    let (_, username) = state.bot_status().snapshot();
+    Ok((
+        StatusCode::CREATED,
+        [("cache-control", "no-store")],
+        Json(serde_json::json!({
+            "code": code,
+            "link": username.map(|name| format!("https://t.me/{name}?start={code}")),
+            "expires_at": format_rfc3339(expires_at)?,
+        })),
+    )
+        .into_response())
+}
+
+/// Takes the Telegram account off a client (0082).
+async fn unlink_telegram(
+    State(state): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let guarded = state.guarded(&actor);
+    let (client, had) = guarded.unlink_telegram(id).await?;
+    if had {
+        guarded
+            .record(
+                "bot.unlinked",
+                Some(client.label().as_str()),
+                serde_json::json!({}),
+            )
+            .await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ── accesses ─────────────────────────────────────────────────────────────
@@ -696,41 +766,26 @@ async fn render_link(
     let credential = guarded.credential(id).await?;
     let node = guarded.node(access.common().node_id()).await?;
 
-    let payload = match (&access, &credential) {
-        (AnyAccess::Stealth(access), Credential::Secret(secret)) => {
-            let domain = node
-                .kind()
-                .domain()
-                .ok_or(ApiError::Internal("node_without_domain"))?;
-            serde_json::json!({
-                "link": ap_core::stealth_link(
-                    *access.method(),
-                    &body.host,
-                    domain,
-                    secret,
-                )?,
-                "method": access.method().as_stored(),
-            })
-        }
-        (AnyAccess::Open(access), Credential::Secret(secret)) => serde_json::json!({
-            "link": ap_core::mtproto_link(&body.host, 8443, secret)?,
-            "method": access.method().as_stored(),
+    // Built where the bot builds it too, so both hand out the same thing
+    // (0088).
+    let payload = match crate::handout::handout(&access, &credential, node.kind(), &body.host)? {
+        crate::handout::Handout::Link { link, method } => serde_json::json!({
+            "link": link,
+            "method": method,
         }),
-        (AnyAccess::Open(access), Credential::Login { user, pass }) => serde_json::json!({
-            "host": body.host,
-            // The port the method is actually served on. One number for both
-            // would send everyone holding an HTTP account to the SOCKS5
-            // listener, which refuses them for looking like the wrong protocol.
-            "port": match access.method() {
-                OpenMethod::Socks5 => 1080,
-                OpenMethod::Http => 3128,
-                OpenMethod::Mtproto => 8443,
-            },
+        crate::handout::Handout::Account {
+            host,
+            port,
+            user,
+            password,
+            method,
+        } => serde_json::json!({
+            "host": host,
+            "port": port,
             "user": user,
-            "password": pass,
-            "method": access.method().as_stored(),
+            "password": password,
+            "method": method,
         }),
-        _ => return Err(ApiError::Internal("credential_mismatch")),
     };
 
     Ok((
@@ -1084,22 +1139,42 @@ async fn read_settings(
         return Err(ApiError::NotFound);
     }
     let stored = ap_store::SettingRepo::all(state.pool()).await?;
-    let changed: std::collections::HashMap<&str, &ap_store::Setting> =
-        stored.iter().map(|one| (one.name.as_str(), one)).collect();
+    let changed: std::collections::HashMap<&str, OffsetDateTime> = stored
+        .iter()
+        .map(|one| (one.name.as_str(), one.changed_at))
+        .collect();
+    // A sealed setting says when it was set and nothing of what it says
+    // (0084).
+    let sealed = ap_store::SealedSettingRepo::all(state.pool()).await?;
+    let sealed_at: std::collections::HashMap<&str, OffsetDateTime> = sealed
+        .iter()
+        .map(|one| (one.name.as_str(), one.changed_at))
+        .collect();
     let settings = crate::settings::Settings::read(state.pool()).await?;
     let mut said = Vec::with_capacity(crate::settings::KNOWN.len());
     for known in crate::settings::KNOWN {
-        let touched = changed.get(known.name);
+        let touched = if known.secret {
+            sealed_at.get(known.name)
+        } else {
+            changed.get(known.name)
+        };
         said.push(serde_json::json!({
             "name": known.name,
-            "value": settings.text(known.name),
+            "value": if known.secret { "" } else { settings.text(known.name) },
             "choices": known.choices,
+            "secret": known.secret,
+            "set": if known.secret { touched.is_some() } else { !settings.text(known.name).is_empty() },
             "changed_at": touched
-                .map(|one| format_rfc3339(one.changed_at))
+                .map(|at| format_rfc3339(*at))
                 .transpose()?,
         }));
     }
-    Ok(Json(serde_json::json!({ "settings": said })))
+    // What the bot is doing, for the head of its group on the screen (0085).
+    let (standing, username) = state.bot_status().snapshot();
+    Ok(Json(serde_json::json!({
+        "settings": said,
+        "bot": { "state": standing.as_stored(), "username": username },
+    })))
 }
 
 /// Changes settings, one call for however many the operator changed.
@@ -1126,6 +1201,24 @@ async fn write_settings(
     }
     let now = OffsetDateTime::now_utc();
     for (name, value) in &body.values {
+        if crate::settings::is_secret(name) {
+            // Sealed under the key, or taken away when the value is empty
+            // (0084). Never in the table the others are in.
+            if value.is_empty() {
+                ap_store::SealedSettingRepo::clear(state.pool(), name).await?;
+            } else {
+                ap_store::SealedSettingRepo::put(
+                    state.pool(),
+                    name,
+                    value,
+                    state.key(),
+                    Some(actor.id()),
+                    now,
+                )
+                .await?;
+            }
+            continue;
+        }
         ap_store::SettingRepo::put(state.pool(), name, value, Some(actor.id()), now).await?;
     }
     // The name is recorded and the value is not: a value can be an address or

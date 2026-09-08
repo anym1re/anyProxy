@@ -5,11 +5,13 @@
 //! scanners, opportunists and a targeted attacker at once.
 
 mod auth;
+pub mod bot;
 pub mod ca;
 pub mod channel;
 pub mod enrollment;
 mod error;
 mod guard;
+pub mod handout;
 mod own;
 mod routes;
 pub mod settings;
@@ -39,7 +41,13 @@ pub struct Config {
     /// address: the interface then reads the host from the panel it is
     /// already looking at.
     pub channel_address: String,
+    /// Where the bot talks to Telegram (0081). [`BOT_API`] outside tests; a
+    /// test points it at a double on the loopback.
+    pub bot_api: String,
 }
+
+/// The Bot API, where it really is.
+pub const BOT_API: &str = "https://api.telegram.org";
 
 impl Config {
     /// Loopback and nothing else, which is the only safe default.
@@ -49,6 +57,7 @@ impl Config {
             database_url,
             key_file,
             channel_address: String::new(),
+            bot_api: BOT_API.to_owned(),
         }
     }
 }
@@ -65,6 +74,8 @@ pub struct AppState {
     authority: Arc<ca::Authority>,
     attempts: Arc<auth::Attempts>,
     channel_address: Arc<str>,
+    bot_api: Arc<str>,
+    bot: Arc<bot::Status>,
     /// When this process started answering, for the figure the foot of the
     /// dashboard was drawn with.
     started: std::time::Instant,
@@ -91,6 +102,8 @@ impl AppState {
             authority: Arc::new(authority),
             attempts: Arc::new(auth::Attempts::default()),
             channel_address: Arc::from(config.channel_address.as_str()),
+            bot_api: Arc::from(config.bot_api.as_str()),
+            bot: Arc::new(bot::Status::default()),
             started: std::time::Instant::now(),
         })
     }
@@ -126,6 +139,16 @@ impl AppState {
     /// How long this process has been answering, in seconds.
     pub(crate) fn uptime_seconds(&self) -> u64 {
         self.started.elapsed().as_secs()
+    }
+
+    /// Where the bot talks to Telegram.
+    pub(crate) fn bot_api(&self) -> &str {
+        &self.bot_api
+    }
+
+    /// What the bot is doing right now (0085).
+    pub fn bot_status(&self) -> &bot::Status {
+        &self.bot
     }
 
     pub(crate) fn attempts(&self) -> &auth::Attempts {

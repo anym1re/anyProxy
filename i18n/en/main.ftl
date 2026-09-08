@@ -449,3 +449,85 @@ ui-event-node-enrollment-issued = Enrolment code issued
 ui-log-by-agent = agent
 ui-event-node-health = The node reported on itself
 ui-link-acknowledge = I understand: handing out a link is written down
+
+# The bot for the users (0083). The panel renders these itself, so unlike
+# the ui- keys they may select on a number.
+bot-hello = This bot hands out your connection links and says how much you have left.
+bot-ask-code = Send the code you were given: /start CODE
+bot-linked-as = You are linked as { $label }. /links — connection links, /status — allowance and term.
+bot-linked = Linked as { $label }. /links — connection links, /status — allowance and term.
+bot-code-refused = That code does not work.
+bot-wait = Too many attempts; wait { $seconds } s.
+bot-not-linked = Not linked yet. Send the code you were given: /start CODE
+bot-unlinked = Unlinked. Send a code to link again.
+bot-help = /links — connection links, /status — allowance and term, /unlink — unlink this account
+bot-links-none = Nothing to connect with yet.
+bot-link-line =
+    { $node } · { $method }
+    { $link }
+bot-account-line =
+    { $node } · { $method }
+    host { $host }, port { $port }
+    login { $user }
+    password { $password }
+bot-link-not-ready = { $node } · { $method }: not ready yet
+bot-status-client = { $label }: { $state }
+bot-status-usage = Used { $used } of { $quota }
+bot-status-usage-unlimited = Used { $used }, no limit
+bot-status-until = Until { $date }
+bot-status-no-expiry = No expiry
+bot-status-access = { $node } · { $method }: { $words }
+bot-client-active = active
+bot-client-suspended = suspended
+bot-client-archived = archived
+bot-access-active = active
+bot-access-disabled = disabled
+bot-access-revoked = revoked
+bot-node-pending = the node is not up yet
+bot-node-disabled = the node is switched off
+bot-node-gone = the node is gone
+bot-node-no-report = no word from the node yet
+bot-node-trouble = the node is having trouble
+bot-node-ok = the node is in order
+bot-method-faketls = MTProto, masked
+bot-method-web = WEB
+bot-method-mtproto = MTProto
+bot-method-socks5 = SOCKS5
+bot-method-http = HTTP
+bot-bytes-b = { $count } B
+bot-bytes-kb = { $count } KB
+bot-bytes-mb = { $count } MB
+bot-bytes-gb = { $count } GB
+bot-bytes-tb = { $count } TB
+
+# The bot on the settings screen and in the user card (0085, 0086).
+ui-set-bot = Telegram bot
+ui-set-scope-bot = Scope: users
+ui-set-bot-enabled = Bot
+ui-set-bot-token = Bot token
+ui-set-bot-token-hint = from @BotFather; paste to replace
+ui-set-bot-token-set = set
+ui-set-bot-token-unset = not set
+ui-set-bot-greeting = Greeting
+ui-set-bot-greeting-hint = what the bot answers to /start
+ui-set-bot-show-usage = Tell usage and term
+ui-set-bot-show-node = Tell node state
+ui-bot-state-off = off
+ui-bot-state-polling = answers as @{ $name }
+ui-bot-state-refused = Telegram refused the token
+ui-bot-state-unreachable = Telegram is not answering
+ui-bot-telegram = Telegram
+ui-bot-linked-since = linked { $date }
+ui-bot-not-linked = not linked
+ui-bot-code = Code
+ui-bot-unlink = Unlink
+ui-bot-code-title = Code for the bot
+ui-bot-code-until = Valid until { $date }, once
+ui-bot-code-no-bot = The bot is off; the code works once it is on
+ui-log-bot = Bot
+ui-log-by-bot = bot
+ui-event-bot-code-issued = Bot code issued
+ui-event-bot-linked = Telegram linked
+ui-event-bot-unlinked = Telegram unlinked
+ui-event-bot-link-rendered = Link handed out by the bot
+ui-event-bot-state = The bot changed state

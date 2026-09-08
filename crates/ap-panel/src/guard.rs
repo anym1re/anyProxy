@@ -160,6 +160,31 @@ impl<'a> Guarded<'a> {
         Ok(TrafficRepo::for_client(self.pool, id).await?)
     }
 
+    /// Records a code that ties a Telegram account to a client (0082).
+    ///
+    /// The digest and nothing else: the code is shown once by the caller.
+    /// Only for a client this actor may see, and the client comes back so
+    /// the journal can name it.
+    pub async fn issue_bot_code(
+        &self,
+        client_id: Uuid,
+        code_hash: &[u8],
+        expires_at: OffsetDateTime,
+        at: OffsetDateTime,
+    ) -> Result<Client, ApiError> {
+        let client = self.client(client_id).await?;
+        ap_store::BotRepo::issue_code(self.pool, client_id, code_hash, expires_at, at).await?;
+        Ok(client)
+    }
+
+    /// Takes the Telegram account off a client this actor may see. The
+    /// client, and whether there was an account to take off.
+    pub async fn unlink_telegram(&self, client_id: Uuid) -> Result<(Client, bool), ApiError> {
+        let client = self.client(client_id).await?;
+        let had = ap_store::BotRepo::unlink(self.pool, client_id).await?;
+        Ok((client, had))
+    }
+
     /// Accesses a client holds.
     pub async fn accesses(&self, client_id: Uuid) -> Result<Vec<AnyAccess>, ApiError> {
         self.client(client_id).await?;

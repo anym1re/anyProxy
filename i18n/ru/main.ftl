@@ -450,3 +450,85 @@ ui-event-node-enrollment-issued = Код регистрации выпущен
 ui-log-by-agent = агент
 ui-event-node-health = Нода сообщила о себе
 ui-link-acknowledge = Понимаю: выдача ссылки записывается в журнал
+
+# Бот для пользователей (0083). Панель собирает эти строки сама, поэтому, в
+# отличие от ключей ui-, здесь допустим выбор по числу.
+bot-hello = Этот бот выдаёт ссылки для подключения и говорит, сколько осталось.
+bot-ask-code = Пришлите код, который вам выдали: /start КОД
+bot-linked-as = Вы привязаны как { $label }. /links — ссылки для подключения, /status — квота и срок.
+bot-linked = Привязано: { $label }. /links — ссылки для подключения, /status — квота и срок.
+bot-code-refused = Этот код не подходит.
+bot-wait = Слишком много попыток, подождите { $seconds } с.
+bot-not-linked = Привязки ещё нет. Пришлите код, который вам выдали: /start КОД
+bot-unlinked = Привязка снята. Чтобы привязать снова, пришлите код.
+bot-help = /links — ссылки для подключения, /status — квота и срок, /unlink — снять привязку
+bot-links-none = Подключаться пока не к чему.
+bot-link-line =
+    { $node } · { $method }
+    { $link }
+bot-account-line =
+    { $node } · { $method }
+    хост { $host }, порт { $port }
+    логин { $user }
+    пароль { $password }
+bot-link-not-ready = { $node } · { $method }: ещё не готово
+bot-status-client = { $label }: { $state }
+bot-status-usage = Израсходовано { $used } из { $quota }
+bot-status-usage-unlimited = Израсходовано { $used }, без ограничения
+bot-status-until = До { $date }
+bot-status-no-expiry = Без срока
+bot-status-access = { $node } · { $method }: { $words }
+bot-client-active = действует
+bot-client-suspended = приостановлен
+bot-client-archived = в архиве
+bot-access-active = действует
+bot-access-disabled = отключён
+bot-access-revoked = отозван
+bot-node-pending = нода ещё не поднята
+bot-node-disabled = нода выключена
+bot-node-gone = ноды больше нет
+bot-node-no-report = нода ещё не сообщала о себе
+bot-node-trouble = у ноды неполадка
+bot-node-ok = нода в порядке
+bot-method-faketls = MTProto, маскировка
+bot-method-web = WEB
+bot-method-mtproto = MTProto
+bot-method-socks5 = SOCKS5
+bot-method-http = HTTP
+bot-bytes-b = { $count } Б
+bot-bytes-kb = { $count } КБ
+bot-bytes-mb = { $count } МБ
+bot-bytes-gb = { $count } ГБ
+bot-bytes-tb = { $count } ТБ
+
+# Бот на экране настроек и в карточке пользователя (0085, 0086).
+ui-set-bot = Telegram-бот
+ui-set-scope-bot = Область: пользователи
+ui-set-bot-enabled = Бот
+ui-set-bot-token = Токен бота
+ui-set-bot-token-hint = от @BotFather; вставьте, чтобы заменить
+ui-set-bot-token-set = задан
+ui-set-bot-token-unset = не задан
+ui-set-bot-greeting = Приветствие
+ui-set-bot-greeting-hint = что бот отвечает на /start
+ui-set-bot-show-usage = Говорить расход и срок
+ui-set-bot-show-node = Говорить состояние ноды
+ui-bot-state-off = выключен
+ui-bot-state-polling = отвечает как @{ $name }
+ui-bot-state-refused = Telegram отверг токен
+ui-bot-state-unreachable = Telegram не отвечает
+ui-bot-telegram = Telegram
+ui-bot-linked-since = привязан { $date }
+ui-bot-not-linked = не привязан
+ui-bot-code = Код
+ui-bot-unlink = Отвязать
+ui-bot-code-title = Код для бота
+ui-bot-code-until = Действует до { $date }, один раз
+ui-bot-code-no-bot = Бот выключен; код сработает, когда его включат
+ui-log-bot = Бот
+ui-log-by-bot = бот
+ui-event-bot-code-issued = Код для бота выпущен
+ui-event-bot-linked = Telegram привязан
+ui-event-bot-unlinked = Telegram отвязан
+ui-event-bot-link-rendered = Ссылка выдана ботом
+ui-event-bot-state = Бот сменил состояние

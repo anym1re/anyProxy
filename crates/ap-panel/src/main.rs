@@ -29,6 +29,7 @@ fn main() {
             .map(PathBuf::from)
             .unwrap_or_default(),
         channel_address: String::new(),
+        bot_api: ap_panel::BOT_API.to_owned(),
     };
 
     let channel_bind: std::net::SocketAddr = std::env::var("ANYPROXY_CHANNEL_BIND")
@@ -55,13 +56,17 @@ fn main() {
     }
 }
 
-/// Serves the operator interface and the agent channel side by side.
+/// Serves the operator interface and the agent channel side by side, with
+/// the bot for the users beside them.
 ///
 /// They are separate listeners on purpose: the first binds to loopback and
-/// holds every secret, the second faces the nodes and must be reachable.
+/// holds every secret, the second faces the nodes and must be reachable. The
+/// bot listens on nothing: it dials out to Telegram when it is switched on
+/// (0080).
 async fn run(config: ap_panel::Config, channel_bind: std::net::SocketAddr) -> Result<(), String> {
     let state = ap_panel::AppState::build(&config).await?;
     let authority = state.authority_handle();
+    tokio::spawn(ap_panel::bot::serve(state.clone()));
 
     let rest = {
         let state = state.clone();
