@@ -71,6 +71,37 @@ impl AccessRepo {
         rows.into_iter().map(read_access).collect()
     }
 
+    /// Every public link that is active, with its credential opened, in one
+    /// query (0091).
+    ///
+    /// The feed renders every public link on every poll. Read one row at a
+    /// time and opened one credential at a time, that is three round trips
+    /// per link, and over a tunnel a few dozen links take longer than the
+    /// site waits.
+    pub async fn public_active_with_credentials(
+        pool: &PgPool,
+        key: &KeyStore,
+    ) -> Result<Vec<(AnyAccess, Credential)>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "select {COLUMNS} from access \
+             where client_id is null and state = 'active' order by name"
+        ))
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let nonce: Vec<u8> = row.try_get("credential_nonce")?;
+                let nonce: [u8; 24] = nonce
+                    .try_into()
+                    .map_err(|_| StoreError::Domain(ap_core::Error::SealedValue))?;
+                let ciphertext: Vec<u8> = row.try_get("credential_ciphertext")?;
+                let credential =
+                    Encrypted::<Credential>::from_parts(nonce, ciphertext).open(key)?;
+                Ok((read_access(row)?, credential))
+            })
+            .collect()
+    }
+
     /// Every access a client holds, oldest first.
     pub async fn by_client(pool: &PgPool, client_id: Uuid) -> Result<Vec<AnyAccess>, StoreError> {
         let rows = sqlx::query(&format!(

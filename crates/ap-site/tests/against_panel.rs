@@ -101,6 +101,10 @@ async fn a_link_made_public_in_the_database_reaches_the_page() {
     });
 
     let running = start(config(feed)).await;
+    // Asked again, out loud: the first ask in `start` swallows a refusal, and
+    // a page without the link should say why rather than only that.
+    let shown = running.site.refresh().await.expect("the feed answered");
+    assert!(shown >= 1, "the feed carried nothing");
     for path in ["/ru/", "/en/"] {
         let page = get(running.public, path).await.text();
         assert!(page.contains(&name), "{path}: the public link is not shown");

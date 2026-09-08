@@ -62,12 +62,26 @@ pub enum PublicLink {
 /// that is active and has what the link needs. Anything else is left out
 /// rather than shown with a state — the site has no use for a link that does
 /// not work, and a visitor has less.
+///
+/// Two queries for the whole list — the links with their credentials, and
+/// the nodes — and one more for each link that carries an allowance. Read
+/// one link at a time it was three round trips per link, and over a tunnel
+/// a few dozen links took longer than the site waits for an answer.
 pub async fn published(state: &AppState) -> Result<Vec<PublicLink>, crate::ApiError> {
     let pool = state.pool();
     let now = OffsetDateTime::now_utc();
     let mut links = Vec::new();
 
-    for access in ap_store::AccessRepo::public(pool).await? {
+    let nodes: std::collections::HashMap<uuid::Uuid, ap_core::Node> =
+        ap_store::NodeRepo::list(pool)
+            .await?
+            .into_iter()
+            .map(|node| (node.id(), node))
+            .collect();
+
+    for (access, credential) in
+        ap_store::AccessRepo::public_active_with_credentials(pool, state.key()).await?
+    {
         let common = access.common();
         let Holder::Public(name) = common.holder() else {
             continue;
@@ -78,6 +92,12 @@ pub async fn published(state: &AppState) -> Result<Vec<PublicLink>, crate::ApiEr
         if common.expires_at().is_some_and(|until| until <= now) {
             continue;
         }
+        let Some(node) = nodes.get(&common.node_id()) else {
+            continue;
+        };
+        if node.state() != NodeState::Active {
+            continue;
+        }
         if let Some(ceiling) = common.quota_bytes() {
             let spent = ap_store::TrafficRepo::for_access(pool, common.id())
                 .await?
@@ -86,19 +106,6 @@ pub async fn published(state: &AppState) -> Result<Vec<PublicLink>, crate::ApiEr
                 continue;
             }
         }
-
-        let Some(node) = ap_store::NodeRepo::by_id(pool, common.node_id()).await? else {
-            continue;
-        };
-        if node.state() != NodeState::Active {
-            continue;
-        }
-
-        let Some(credential) =
-            ap_store::AccessRepo::credential(pool, common.id(), state.key()).await?
-        else {
-            continue;
-        };
 
         let host = node.address().map(|address| address.to_string());
         let rendered = match (&access, &credential, node.kind().tag().served()) {
