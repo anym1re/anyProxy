@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::StoreError;
 
-const COLUMNS: &str = "id, label, note_nonce, note_ciphertext, state, quota_bytes, expires_at, \n     created_at, owner_id";
+pub(crate) const COLUMNS: &str = "id, label, note_nonce, note_ciphertext, state, quota_bytes, expires_at, \n     created_at, owner_id, telegram_linked_at";
 
 /// Reads and writes clients.
 pub struct ClientRepo;
@@ -124,7 +124,7 @@ fn split_note(client: &Client) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
     }
 }
 
-fn read_client(row: sqlx::postgres::PgRow) -> Result<Client, StoreError> {
+pub(crate) fn read_client(row: sqlx::postgres::PgRow) -> Result<Client, StoreError> {
     let label = Label::try_from(row.try_get::<String, _>("label")?)?;
     let state = ClientState::from_stored(&row.try_get::<String, _>("state")?)?;
     let nonce: Option<Vec<u8>> = row.try_get("note_nonce")?;
@@ -146,5 +146,6 @@ fn read_client(row: sqlx::postgres::PgRow) -> Result<Client, StoreError> {
         row.try_get("quota_bytes")?,
         row.try_get::<Option<OffsetDateTime>, _>("expires_at")?,
         row.try_get("created_at")?,
-    ))
+    )
+    .with_telegram_linked(row.try_get::<Option<OffsetDateTime>, _>("telegram_linked_at")?))
 }

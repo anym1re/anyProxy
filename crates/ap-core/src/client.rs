@@ -24,6 +24,7 @@ pub struct Client {
     quota_bytes: Option<i64>,
     expires_at: Option<OffsetDateTime>,
     created_at: OffsetDateTime,
+    telegram_linked_at: Option<OffsetDateTime>,
 }
 
 impl Client {
@@ -37,6 +38,7 @@ impl Client {
             quota_bytes: None,
             expires_at: None,
             created_at,
+            telegram_linked_at: None,
         }
     }
 
@@ -60,6 +62,7 @@ impl Client {
             quota_bytes,
             expires_at,
             created_at,
+            telegram_linked_at: None,
         }
     }
 
@@ -67,6 +70,20 @@ impl Client {
     pub fn with_note(mut self, note: Encrypted<String>) -> Self {
         self.note = Some(note);
         self
+    }
+
+    /// Records when a Telegram account was tied to this client (0082).
+    ///
+    /// Only the moment: the account itself is known to the panel as a keyed
+    /// digest, and that digest is not a property of the client in memory.
+    pub fn with_telegram_linked(mut self, at: Option<OffsetDateTime>) -> Self {
+        self.telegram_linked_at = at;
+        self
+    }
+
+    /// When a Telegram account was tied to this client, if one is.
+    pub fn telegram_linked_at(&self) -> Option<OffsetDateTime> {
+        self.telegram_linked_at
     }
 
     /// The sealed operator note, if one is set.

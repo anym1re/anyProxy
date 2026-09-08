@@ -7,10 +7,12 @@
 mod access;
 mod admin;
 mod audit;
+mod bot;
 mod channel;
 mod client;
 mod error;
 mod node;
+mod sealed;
 mod setting;
 mod tag;
 mod traffic;
@@ -18,10 +20,12 @@ mod traffic;
 pub use access::AccessRepo;
 pub use admin::{AdminRepo, SessionRepo};
 pub use audit::{AuditEntry, AuditRepo};
+pub use bot::{BotRepo, Linked};
 pub use channel::{EnrollmentRepo, PanelIdentity, PanelIdentityRepo, PresenceRepo};
 pub use client::ClientRepo;
 pub use error::StoreError;
 pub use node::NodeRepo;
+pub use sealed::{SealedSetting, SealedSettingRepo};
 pub use setting::{Setting, SettingRepo};
 pub use tag::TagRepo;
 pub use traffic::{DailyTraffic, TrafficRepo, TrafficTotals};
@@ -123,6 +127,22 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0020_traffic_hourly",
         include_str!("../../../migrations/0020_traffic_hourly.sql"),
+    ),
+    (
+        "0021_sealed_settings",
+        include_str!("../../../migrations/0021_sealed_settings.sql"),
+    ),
+    (
+        "0022_client_telegram",
+        include_str!("../../../migrations/0022_client_telegram.sql"),
+    ),
+    (
+        "0023_bot_code",
+        include_str!("../../../migrations/0023_bot_code.sql"),
+    ),
+    (
+        "0024_bot_cursor",
+        include_str!("../../../migrations/0024_bot_cursor.sql"),
     ),
 ];
 
