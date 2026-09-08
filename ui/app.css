@@ -3076,6 +3076,22 @@ button, input, select, textarea { font-family: inherit; font-size: inherit;
    stand drew a field to begin with, its lines are the browser's. */
 input.inp, select.inp, textarea.inp { line-height: inherit; }
 select.inp { appearance: none; }
+/* A dialog was drawn on an artboard of its own, and shown here over a screen.
+   The artboard's frame is not the dialog's: without this it paints the page
+   black and sits where the drawing put it on the board. */
+#modal-root { position: fixed; inset: 0; z-index: 40; display: block;
+              background: none; min-height: 0; width: auto; }
+#modal-root:empty { display: none; }
+#modal-root .scrim { position: fixed; inset: 0; }
+#modal-root .dlgwrap { position: fixed; inset: 0; display: flex;
+                       align-items: center; justify-content: center; }
+#modal-root .dlg { position: static; transform: none; margin: 0; }
+
+/* The stand marks the range being shown by which of its hidden radio
+   buttons is checked. The panel has none, so the mark is a class, wearing what
+   the stand gave the checked one. */
+#screen .seg label.on { background: var(--raise); color: var(--ink); }
+
 /* A line that says nothing takes no room. */
 #screen .hint:empty, #modal-root .hint:empty { display: none; }
 .hint.bad { color: var(--bad); }

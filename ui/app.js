@@ -592,11 +592,6 @@
     const live = nodes.filter((node) => node.state !== 'burned');
     const seen = live.filter((node) => node.last_seen_at);
     const wanting = live.filter((node) => node.wants_attention || standing(node) === 'none');
-    const drawn = state.range === 1 ? hours(now, 24) : series(now, state.range);
-    const older = state.range === 1 ? hours(before, 48) : series(before, state.range * 2);
-    const earlier = older.total - drawn.total;
-    const change = earlier > 0 ? Math.round(((drawn.total - earlier) / earlier) * 100) : null;
-
     put(root, '.phead h1', t('ui-nav-dashboard'));
     // Two figures, as drawn: when it was refreshed, and how often it is.
     $('.pmeta', root).replaceChildren(
@@ -642,100 +637,7 @@
     }
 
     // ── traffic ──
-    put(traffic, '.ch h2', t('ui-dash-traffic'));
-    put(traffic, '.ch .note', t('ui-dash-traffic-note'));
-    const seg = $('.seg', traffic);
-    seg.replaceChildren(...RANGES.map(([label, days]) => h('label', {
-      class: days === state.range ? 'on' : '',
-      role: 'button',
-      tabindex: '0',
-      on: { click: () => { state.range = days; remember('localStorage', 'ap-range', String(days)); route(); } },
-    }, label)));
-    const shown = SERIES[Math.max(0, RANGES.findIndex(([, days]) => days === state.range))] || SERIES[0];
-    /// Keeps the drawn figure for this range, fills it, and drops the rest.
-    const only = (box, value) => {
-      if (!box) return null;
-      const all = $$('b', box);
-      const kept = all.find((one) => one.classList.contains(shown)) || all[0];
-      all.forEach((one) => { if (one !== kept) one.remove(); });
-      if (kept) kept.textContent = value;
-      return kept;
-    };
-    /// The same choice among elements that are the series themselves.
-    const pick = (all) => all.find((one) => one.classList.contains(shown)) || all[0];
-
-    const [total, unit] = scale(drawn.total);
-    only($('.big .v', traffic), total);
-    only($('.big .u', traffic), unit);
-    const delta = $('.big .delta', traffic);
-    if (change == null) {
-      delta.remove();
-    } else {
-      // The stand names the range being compared with, not «the previous
-      // period»: «18 % к прошлому месяцу».
-      const against = t(`ui-dash-against-${shown}`);
-      only(delta, `${t(change < 0 ? 'ui-dash-down' : 'ui-dash-up', { percent: Math.abs(change) })} ${against}`);
-    }
-
-    const svg = $('.chart svg', traffic);
-    const view = svg.getAttribute('viewBox').split(' ').map(Number);
-    const { line, x, y } = curve(drawn.points, view[2], 8, 162);
-    // The stand drew a curve per range; the panel draws the one it was asked
-    // for, and the spares go.
-    const fills = $$('.fill', svg);
-    const lines = $$('.line', svg);
-    const fill = pick(fills);
-    const stroke = pick(lines);
-    fills.forEach((path) => { if (path !== fill) path.remove(); });
-    lines.forEach((path) => { if (path !== stroke) path.remove(); });
-    fill.setAttribute('d', `${line} L ${view[2]} ${view[3]} L 0 ${view[3]} Z`);
-    stroke.setAttribute('d', line);
-    // The line is drawn by a dash the length of the path; the stand's was
-    // 1500 units long and ours is whatever the days make it, so it is
-    // measured rather than assumed — otherwise the curve arrives in pieces.
-    const length = Math.ceil(stroke.getTotalLength());
-    stroke.style.strokeDasharray = length;
-    stroke.style.strokeDashoffset = length;
-    stroke.style.animationName = 'draw';
-    const top = drawn.points[drawn.peak];
-    const peakX = x(drawn.peak).toFixed(1);
-    const peakY = y(top.in + top.out).toFixed(1);
-    const vlines = $$('.vline', svg);
-    const vline = pick(vlines);
-    vlines.forEach((one) => { if (one !== vline) one.remove(); });
-    vline.setAttribute('x1', peakX);
-    vline.setAttribute('x2', peakX);
-    vline.setAttribute('y1', peakY);
-    const marks = $$('.pk', svg);
-    const mark = pick(marks);
-    marks.forEach((one) => { if (one !== mark) one.remove(); });
-    mark.setAttribute('cx', peakX);
-    mark.setAttribute('cy', peakY);
-    const tips = $$('.tip', traffic);
-    const tip = pick(tips);
-    tips.forEach((one) => { if (one !== tip) one.remove(); });
-    tip.style.left = `${Math.min(88, Math.max(12, (drawn.peak / Math.max(1, drawn.points.length - 1)) * 100))}%`;
-    put(tip, '.d', drawn.byHour ? t('ui-dash-at-hour', { at: clock(top.day) }) : day(top.day));
-    put(tip, '.n', bytes(top.in + top.out));
-    put(tip, '.s', `${t('ui-dash-received')} ${bytes(top.in)} · ${t('ui-dash-sent')} ${bytes(top.out)}`);
-    const axis = $$('.xax > span', traffic);
-    const edge = (iso) => (drawn.byHour ? clock(iso) : day(iso));
-    only(axis[0], edge(drawn.points[0].day));
-    only(axis[1], edge(drawn.points[drawn.points.length - 1].day));
-    const foot = $$('.tfoot > span', traffic);
-    const figure = (span, label, value) => {
-      const kept = only(span, value);
-      // Everything but the figure goes, the word included: the word may have
-      // been wrapped for translation and is no longer a bare piece of text.
-      [...span.childNodes].filter((node) => node !== kept).forEach((node) => node.remove());
-      if (kept) span.insertBefore(document.createTextNode(`${label} `), kept);
-    };
-    figure(foot[0], t('ui-dash-received'), bytes(drawn.received));
-    figure(foot[1], t('ui-dash-sent'), bytes(drawn.sent));
-    figure(foot[2], t('ui-dash-peak'), bytes(top.in + top.out));
-    figure(foot[3], t('ui-dash-average'), drawn.byHour
-      ? t('ui-dash-per-hour', { bytes: bytes(drawn.total / 24) })
-      : t('ui-dash-per-day', { bytes: bytes(drawn.total / state.range) }));
+    drawTraffic(traffic, now, before);
 
     // ── the fleet ──
     if (!seesNodes) fleet.remove();
@@ -781,8 +683,10 @@
     // is worth seeing, so each is counted.
     const byVersion = new Map();
     for (const node of seen) {
-      const said = node.agent_version || '—';
-      byVersion.set(said, (byVersion.get(said) || 0) + 1);
+      // A node that has never said which build it runs is not a build to
+      // count: «1 × —» is not a fact about the fleet.
+      if (!node.agent_version) continue;
+      byVersion.set(node.agent_version, (byVersion.get(node.agent_version) || 0) + 1);
     }
     cell(1, t('ui-strip-agents'), h('span', { class: 'mono' }, byVersion.size
       ? [...byVersion].map(([said, many]) => t('ui-dash-agents-of', { count: num(many), version: said })).join(' · ')
@@ -1244,19 +1148,21 @@
       // As drawn: when it was granted, what it carried over the range, and
       // when it was last busy. A row with nothing behind it says so and is
       // muted, which is how the stand drew that case too.
+      // A cell with nothing behind it is a dash, as drawn: «пока пусто» is a
+      // sentence, and a table of them reads as a table of sentences.
       if (cells[2]) {
-        cells[2].textContent = access ? shortDate(access.created_at) : t('ui-empty');
+        cells[2].textContent = access ? shortDate(access.created_at) : '—';
         cells[2].className = access ? 'm2' : 'm3';
       }
       const carried = access ? Number(access.carried_bytes || 0) : null;
       if (cells[3]) {
-        cells[3].textContent = carried == null ? t('ui-empty') : (carried ? bytes(carried) : '0');
+        cells[3].textContent = carried == null ? '—' : (carried ? bytes(carried) : '0');
         cells[3].className = carried ? 'r mono' : 'r mono m3';
       }
       if (cells[4]) {
         const sick = node && standing(node) !== 'ok';
         if (!access) {
-          cells[4].textContent = t('ui-empty');
+          cells[4].textContent = '—';
           cells[4].className = 'r m3';
         } else if (sick) {
           cells[4].textContent = trouble(node);
@@ -1293,11 +1199,19 @@
           // link is a secret and is handed out only through the endpoint that
           // writes to the journal, so the text says the link exists and the
           // drawn button is what asks for it.
-          if (value) value.textContent = t('ui-link-hidden');
+          // The stand printed the link here. A link is a secret and is handed
+          // out only through the endpoint that writes the handing to the
+          // journal, so what stands here is the word for that and the button
+          // beside it is the asking.
+          if (value) {
+            value.textContent = t('ui-link-hidden');
+            value.classList.add('m3');
+          }
           if (ask) {
             ask.setAttribute('role', 'button');
             ask.setAttribute('tabindex', '0');
             ask.title = t('ui-access-link');
+            ask.style.cursor = 'pointer';
             ask.onclick = () => linkFor(access, node);
           }
         }
@@ -1776,6 +1690,164 @@
     ]);
   }
 
+
+  /// Fills the traffic card: the figure, the curve, the marker and the words.
+  ///
+  /// Takes the two series it needs rather than reading them from the screen,
+  /// so switching a range is fetching two series and filling this card again
+  /// rather than building the whole screen a second time.
+  function drawTraffic(traffic, now, before) {
+    const drawn = state.range === 1 ? hours(now, 24) : series(now, state.range);
+    const older = state.range === 1 ? hours(before, 48) : series(before, state.range * 2);
+    const earlier = older.total - drawn.total;
+    const change = earlier > 0 ? Math.round(((drawn.total - earlier) / earlier) * 100) : null;
+
+    put(traffic, '.ch h2', t('ui-dash-traffic'));
+    put(traffic, '.ch .note', t('ui-dash-traffic-note'));
+    const seg = $('.seg', traffic);
+    seg.replaceChildren(...RANGES.map(([label, days]) => h('label', {
+      class: days === state.range ? 'on' : '',
+      role: 'button',
+      tabindex: '0',
+      on: { click: () => switchRange(days, traffic) },
+    }, label)));
+    const shown = SERIES[Math.max(0, RANGES.findIndex(([, days]) => days === state.range))] || SERIES[0];
+    /// Keeps the drawn figure for this range, fills it, and drops the rest.
+    const only = (box, value) => {
+      if (!box) return null;
+      const all = $$('b', box);
+      const kept = all.find((one) => one.classList.contains(shown)) || all[0];
+      all.forEach((one) => { if (one !== kept) one.remove(); });
+      if (kept) kept.textContent = value;
+      return kept;
+    };
+    /// The same choice among elements that are the series themselves.
+    const pick = (all) => all.find((one) => one.classList.contains(shown)) || all[0];
+
+    const [total, unit] = scale(drawn.total);
+    only($('.big .v', traffic), total);
+    only($('.big .u', traffic), unit);
+    const delta = $('.big .delta', traffic);
+    if (change == null) {
+      delta.remove();
+    } else {
+      // The stand names the range being compared with, not «the previous
+      // period»: «18 % к прошлому месяцу».
+      const against = t(`ui-dash-against-${shown}`);
+      only(delta, `${t(change < 0 ? 'ui-dash-down' : 'ui-dash-up', { percent: Math.abs(change) })} ${against}`);
+    }
+
+    const svg = $('.chart svg', traffic);
+    const view = svg.getAttribute('viewBox').split(' ').map(Number);
+    const { line, x, y } = curve(drawn.points, view[2], 8, 162);
+    // The stand drew a curve per range; the panel draws the one it was asked
+    // for, and the spares go.
+    const fills = $$('.fill', svg);
+    const lines = $$('.line', svg);
+    const fill = pick(fills);
+    const stroke = pick(lines);
+    fills.forEach((path) => { if (path !== fill) path.remove(); });
+    lines.forEach((path) => { if (path !== stroke) path.remove(); });
+    fill.setAttribute('d', `${line} L ${view[2]} ${view[3]} L 0 ${view[3]} Z`);
+    stroke.setAttribute('d', line);
+    // The line is drawn by a dash the length of the path; the stand's was
+    // 1500 units long and ours is whatever the range makes it, so it is
+    // measured rather than assumed — otherwise the curve arrives in pieces.
+    // The walking of the dash is the sheet's business: naming the animation
+    // here once left the dash sitting at the full length of the path, which
+    // is a line nobody can see.
+    const length = Math.ceil(stroke.getTotalLength());
+    stroke.style.strokeDasharray = length;
+    stroke.style.strokeDashoffset = length;
+
+    const vline = pick($$('.vline', svg));
+    $$('.vline', svg).forEach((one) => { if (one !== vline) one.remove(); });
+    const mark = pick($$('.pk', svg));
+    $$('.pk', svg).forEach((one) => { if (one !== mark) one.remove(); });
+    const tip = pick($$('.tip', traffic));
+    $$('.tip', traffic).forEach((one) => { if (one !== tip) one.remove(); });
+
+    /// Puts the marker and the note on one point of the curve.
+    ///
+    /// The note says the figures in the unit of the point, not of the range:
+    /// the stand writes «118,4 ГБ» over «к клиентам 104,3 · от клиентов 14,1»,
+    /// with the unit said once.
+    const at = (index) => {
+      const point = drawn.points[index];
+      const carried = point.in + point.out;
+      const across = x(index).toFixed(1);
+      const up = y(carried).toFixed(1);
+      vline.setAttribute('x1', across);
+      vline.setAttribute('x2', across);
+      vline.setAttribute('y1', up);
+      mark.setAttribute('cx', across);
+      mark.setAttribute('cy', up);
+      tip.style.left = `${Math.min(88, Math.max(12, (index / Math.max(1, drawn.points.length - 1)) * 100))}%`;
+      put(tip, '.d', drawn.byHour ? t('ui-dash-at-hour', { at: clock(point.day) }) : day(point.day));
+      put(tip, '.n', bytes(carried));
+      const [, unitOf] = scale(carried);
+      const share = (part) => (unitOf ? scale(part)[0] : bytes(part));
+      put(tip, '.s', `${t('ui-dash-received').toLowerCase()} ${share(point.in)}`
+        + ` · ${t('ui-dash-sent').toLowerCase()} ${share(point.out)}`);
+    };
+    at(drawn.peak);
+
+    // Moving over the chart moves the marker; leaving it puts the marker back
+    // where the stand drew it, on the busiest point.
+    const chart = $('.chart', traffic);
+    if (chart) {
+      chart.style.cursor = 'crosshair';
+      chart.onmousemove = (event) => {
+        const box = chart.getBoundingClientRect();
+        const along = (event.clientX - box.left) / Math.max(1, box.width);
+        at(Math.min(drawn.points.length - 1,
+          Math.max(0, Math.round(along * (drawn.points.length - 1)))));
+      };
+      chart.onmouseleave = () => at(drawn.peak);
+    }
+
+    const axis = $$('.xax > span', traffic);
+    const edge = (iso) => (drawn.byHour ? clock(iso) : day(iso));
+    only(axis[0], edge(drawn.points[0].day));
+    only(axis[1], edge(drawn.points[drawn.points.length - 1].day));
+    const foot = $$('.tfoot > span', traffic);
+    const figure = (span, label, value) => {
+      const kept = only(span, value);
+      // Everything but the figure goes, the word included: the word may have
+      // been wrapped for translation and is no longer a bare piece of text.
+      [...span.childNodes].filter((node) => node !== kept).forEach((node) => node.remove());
+      if (kept) span.insertBefore(document.createTextNode(`${label} `), kept);
+    };
+    const top = drawn.points[drawn.peak];
+    figure(foot[0], t('ui-dash-received'), bytes(drawn.received));
+    figure(foot[1], t('ui-dash-sent'), bytes(drawn.sent));
+    figure(foot[2], t('ui-dash-peak'), bytes(top.in + top.out));
+    figure(foot[3], t('ui-dash-average'), drawn.byHour
+      ? t('ui-dash-per-hour', { bytes: bytes(drawn.total / 24) })
+      : t('ui-dash-per-day', { bytes: bytes(drawn.total / state.range) }));
+  }
+
+  /// Shows another range on the traffic card, and nothing else.
+  ///
+  /// Two series are fetched and this one card is drawn again in place. The
+  /// screen around it is left alone: rebuilding it made picking a range look
+  /// like the page reloading.
+  async function switchRange(days, card) {
+    state.range = days;
+    remember('localStorage', 'ap-range', String(days));
+    try {
+      const [now, before] = await Promise.all([
+        api('GET', days === 1 ? '/v1/traffic?hours=24' : `/v1/traffic?days=${days}`),
+        api('GET', days === 1 ? '/v1/traffic?hours=48' : `/v1/traffic?days=${days * 2}`),
+      ]);
+      const fresh = $('#screen-dashboard').content.cloneNode(true);
+      const drawnCard = $$('.g > .card', fresh)[1];
+      drawTraffic(drawnCard, now, before);
+      applyStaticText(drawnCard);
+      card.replaceWith(drawnCard);
+    } catch (error) { refused(error); }
+  }
+
   // ── the things a screen can do ──────────────────────────────────────────
 
   const reload = () => route();
@@ -1787,28 +1859,44 @@
   function linkFor(access, node) {
     dialog('link', (box, close) => {
       const fields = $$('.fld .inp', box);
-      const host = editable(fields[0], (node && node.address) || (node && node.domain) || '');
+      // A node that shows a name is dialled by that name; the address is
+      // where its agent last called from, which is not the same thing and is
+      // not what a client can use.
+      const host = editable(fields[0], (node && node.domain) || (node && node.address) || '');
       const pairs = $('.pair', box);
       if (pairs) pairs.replaceChildren();
+      // The box the link goes in is empty until there is a link, and an
+      // empty bordered box reads as a field somebody forgot to fill.
       const shown = $('.link', box);
-      shown.replaceChildren(h('span', { class: 'm3' }, '—'));
-      let acknowledged = false;
-      const check = $('.chk', box);
-      if (check) {
-        $('.bx svg', check).style.opacity = '0';
-        check.addEventListener('click', () => {
-          acknowledged = !acknowledged;
-          $('.bx svg', check).style.opacity = acknowledged ? '1' : '0';
-          $('.bx', check).style.cssText = acknowledged ? 'background: var(--key); border-color: var(--key);' : '';
-        });
-      }
+      shown.replaceChildren();
+      shown.hidden = true;
       const buttons = $$('.df .btn', box);
       buttons[0].addEventListener('click', close);
       const get = buttons[1] || buttons[0];
+      // Handing out a link is written down, and the operator says they know
+      // that before it is handed out. A consent, not a setting: the button
+      // waits for it.
+      let acknowledged = false;
+      const check = $('.chk', box);
+      if (check) {
+        put(check, '.tx .t', t('ui-link-acknowledge'));
+        const box_ = $('.bx', check);
+        const tick = $('.bx svg', check);
+        if (tick) tick.style.opacity = '0';
+        get.disabled = true;
+        check.addEventListener('click', () => {
+          acknowledged = !acknowledged;
+          if (tick) tick.style.opacity = acknowledged ? '1' : '0';
+          if (box_) box_.style.cssText = acknowledged
+            ? 'background: var(--key); border-color: var(--key);' : '';
+          get.disabled = !acknowledged;
+        });
+      }
       get.addEventListener('click', async () => {
         try {
           const issued = await api('POST', `/v1/accesses/${access.id}/link`, { host: host.value.trim(), acknowledged });
           const text = issued.link || `${issued.method}://${issued.user}:${issued.password}@${issued.host}:${issued.port}`;
+          shown.hidden = false;
           shown.replaceChildren(text, h('span', { class: 'cp', on: { click: () => copy(text) } }, '⧉'));
           if (pairs && !issued.link) {
             pairs.replaceChildren(...[[t('ui-link-host'), issued.host], [t('ui-link-port'), issued.port],
@@ -2137,8 +2225,14 @@
     }
   }
 
+  /// Which routing is the current one. A screen takes a moment to gather its
+  /// figures, and the operator can be somewhere else by the time it is done;
+  /// what follows the gathering must know that.
+  let routed = 0;
+
   async function route() {
     clearInterval(state.timer);
+    const turn = (routed += 1);
     if (!state.me) {
       wear(state.setupNeeded ? 'first-run' : 'login');
       $('#screen').replaceChildren(state.setupNeeded ? setupView() : loginView());
@@ -2148,6 +2242,7 @@
     if (!views[name] || !allowed(name)) name = 'dashboard';
     $$('.rail .nav a').forEach((link) => link.classList.toggle('on', link.dataset.view === name));
     await show(name, false);
+    if (turn !== routed) return;
     if (name === 'dashboard' || name === 'nodes') {
       state.timer = setInterval(() => {
         if (document.visibilityState === 'visible' && !$('#modal-root').childElementCount) show(name, true);
