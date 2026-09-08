@@ -1279,7 +1279,14 @@
     ['sessions', 'ui-log-sessions', ['session.']],
     ['removals', 'ui-log-removals', ['node.burned', 'access.state', 'client.state']],
     ['faults', 'ui-log-faults', ['fault.']],
+    ['bot', 'ui-log-bot', ['bot.']],
   ];
+
+  /// Who a record came from: an operator, the panel itself, or one of the
+  /// things that act on their own and say so in the details (0075).
+  const sourceWords = (entry, facts) => (facts.by === 'agent' || facts.by === 'bot'
+    ? t(`ui-log-by-${facts.by}`)
+    : t(entry.actor_id ? 'ui-log-by-operator' : 'ui-log-by-panel'));
 
   /// Whether a record falls in a group. An empty group takes everything.
   const inGroup = (action, starts) => !starts.length || starts.some((one) => action.startsWith(one));
@@ -1421,11 +1428,7 @@
           .map(([key, value]) => `${key}: ${value}`).join(' · ');
         cells[4].textContent = said || '—';
       }
-      if (cells[5]) {
-        cells[5].textContent = facts.by === 'agent'
-          ? t('ui-log-by-agent')
-          : t(entry.actor_id ? 'ui-log-by-operator' : 'ui-log-by-panel');
-      }
+      if (cells[5]) cells[5].textContent = sourceWords(entry, facts);
       rows.push(row);
       if (opened) {
         row.style.cursor = 'pointer';
@@ -1508,9 +1511,7 @@
     ), left);
     pairs([
       [t('ui-col-time'), stamp(entry.at), false],
-      [t('ui-col-source'), facts.by === 'agent'
-        ? t('ui-log-by-agent')
-        : t(entry.actor_id ? 'ui-log-by-operator' : 'ui-log-by-panel'), false],
+      [t('ui-col-source'), sourceWords(entry, facts), false],
       [t('ui-col-object'), entry.target || t('ui-none'), !entry.target],
       ['id', entry.id, false],
     ], right);
@@ -1549,6 +1550,10 @@
   const SETTING_GROUPS = [
     { title: 'ui-set-panel', scope: 'ui-set-scope-panel', column: 0,
       names: ['channel_address', 'loopback_only', 'session_hours'] },
+    // The bot for the users (0085). Its head says what the bot is doing
+    // rather than a scope: that is what an operator looks here to learn.
+    { title: 'ui-set-bot', scope: 'ui-set-scope-bot', column: 0, bot: true,
+      names: ['bot_enabled', 'bot_token', 'bot_greeting', 'bot_show_usage', 'bot_show_node'] },
     { title: 'ui-set-checks', scope: 'ui-set-scope-nodes', column: 1,
       names: ['heartbeat_secs', 'silence_minutes'] },
     { title: 'ui-set-sponsor', scope: 'ui-set-scope-new', column: 1,
@@ -1558,14 +1563,25 @@
   /// Which of them the nodes are told about, for the figure in the head.
   const DELIVERED = ['heartbeat_secs', 'default_ad_tag'];
 
+  /// Whether a setting has two positions and nothing else, which the stand
+  /// draws as a switch.
+  const isSwitch = (choices) => choices.length === 2 && choices.includes('on') && choices.includes('off');
+
   /// How a setting's value reads on screen. A number is a number of
   /// something, and the something is the setting's own.
   function settingWords(name, value) {
-    if (name === 'loopback_only') return t(value === 'on' ? 'ui-set-on' : 'ui-set-off');
+    if (value === 'on' || value === 'off') return t(value === 'on' ? 'ui-set-on' : 'ui-set-off');
     if (name === 'session_hours') return t('ui-lasting-hours', { count: value });
     if (name === 'heartbeat_secs') return t('ui-set-every-seconds', { count: value });
     if (name === 'silence_minutes') return t('ui-lasting-minutes', { count: value });
     return value;
+  }
+
+  /// What the bot is doing, in the words of the settings screen (0085).
+  function botWords(bot) {
+    if (!bot) return t('ui-bot-state-off');
+    if (bot.state === 'polling') return t('ui-bot-state-polling', { name: bot.username || '' });
+    return t(`ui-bot-state-${bot.state}`);
   }
 
   async function settings(root) {
@@ -1593,7 +1609,7 @@
       const choices = one.choices || [];
       // Drawn as a switch where there are two ways to be, as a list where
       // there are more, and as a box to type in where there is no list.
-      const kind = name === 'loopback_only' ? 'toggle' : (choices.length ? 'select' : 'text');
+      const kind = isSwitch(choices) ? 'toggle' : (choices.length ? 'select' : 'text');
       const row = shapes.row[kind].cloneNode(true);
       put(row, '.k', t(`ui-set-${name.replace(/_/g, '-')}`));
       const now = () => (edited.has(name) ? edited.get(name) : one.value);
@@ -1619,8 +1635,19 @@
         put(row, '.tog .lab', settingWords(name, now()));
       } else {
         const field = $('input[type=text]', row);
-        field.value = now();
-        field.placeholder = t(`ui-set-${name.replace(/_/g, '-')}-hint`);
+        const slug = name.replace(/_/g, '-');
+        if (one.secret) {
+          // A sealed setting never comes back (0084): the box is empty and
+          // says whether anything is set; typing into it replaces that,
+          // clearing it takes it away.
+          field.type = 'password';
+          field.autocomplete = 'new-password';
+          field.value = '';
+          field.placeholder = `${t(`ui-set-${slug}-${one.set ? 'set' : 'unset'}`)} · ${t(`ui-set-${slug}-hint`)}`;
+        } else {
+          field.value = now();
+          field.placeholder = t(`ui-set-${slug}-hint`);
+        }
         field.addEventListener('input', () => touch(field.value.trim()));
       }
       put(row, '.when', stampedAt(one));
@@ -1636,7 +1663,7 @@
       head.classList.toggle('gap', built[group.column].length > 0);
       put(head, 'h2', t(group.title));
       put(head, '.cnt', num(group.names.length));
-      put(head, '.note', t(group.scope));
+      put(head, '.note', group.bot ? botWords(answer.bot) : t(group.scope));
       const card = shapes.card.cloneNode(true);
       card.replaceChildren(...group.names.map(drawRow));
       built[group.column].push(head, card);
@@ -1660,11 +1687,13 @@
       savebar.hidden = edited.size === 0;
       put(savebar, '.t', t('ui-set-changed', { count: num(edited.size) }));
       const [first] = [...edited.keys()];
+      // A sealed value is not repeated back, not even the one just typed.
+      const veiled = (one, value) => ((one || {}).secret && value ? '••••' : value);
       put(savebar, '.x', first
         ? t('ui-set-was-now', {
           name: t(`ui-set-${first.replace(/_/g, '-')}`),
-          was: settingWords(first, (known.get(first) || {}).value || t('ui-empty')),
-          now: settingWords(first, edited.get(first) || t('ui-empty')),
+          was: settingWords(first, veiled(known.get(first), (known.get(first) || {}).value) || t('ui-empty')),
+          now: settingWords(first, veiled(known.get(first), edited.get(first)) || t('ui-empty')),
         })
         : '');
     }
@@ -1884,6 +1913,44 @@
     try { await api('POST', `/v1/accesses/${access.id}/state`, { state: value }); reload(); } catch (error) { refused(error); }
   }
 
+  /// Issues a code for the bot and shows it once, in the link dialog: the
+  /// same kind of thing — a string shown once and copied (0086).
+  function botCode(client) {
+    dialog('link', (box, close) => {
+      put(box, '.dh h2', t('ui-bot-code-title'));
+      put(box, '.dh .note', client.label);
+      $$('.fld, .chk', box).forEach((part) => part.remove());
+      const pairs = $('.pair', box);
+      if (pairs) pairs.replaceChildren();
+      const shown = $('.link', box);
+      shown.replaceChildren();
+      shown.hidden = true;
+      const buttons = $$('.df .btn', box);
+      buttons[0].addEventListener('click', close);
+      const get = buttons[1] || buttons[0];
+      get.textContent = t('ui-bot-code');
+      get.addEventListener('click', async () => {
+        try {
+          const issued = await api('POST', `/v1/clients/${client.id}/bot-code`);
+          // The link carries the code to the bot without typing, when the
+          // panel knows the bot's name; otherwise the code stands alone.
+          const text = issued.link || issued.code;
+          shown.hidden = false;
+          shown.replaceChildren(text, h('span', { class: 'cp', on: { click: () => copy(text) } }, '⧉'));
+          if (pairs) {
+            pairs.replaceChildren(
+              h('span', { class: 'k' }, t('ui-bot-code')), h('span', { class: 'v mono' }, issued.code),
+              h('span', { class: 'k' }, t('ui-col-expires')),
+              h('span', { class: 'v' }, t('ui-bot-code-until', { date: stamp(issued.expires_at) })),
+              ...(issued.link ? [] : [h('span', { class: 'k' }, t('ui-bot-telegram')),
+                h('span', { class: 'v m3' }, t('ui-bot-code-no-bot'))]));
+          }
+          get.disabled = true;
+        } catch (error) { refused(error); }
+      });
+    });
+  }
+
   function linkFor(access, node) {
     dialog('link', (box, close) => {
       const fields = $$('.fld .inp', box);
@@ -2032,7 +2099,28 @@
                 },
               },
             }, t(access.state === 'active' ? 'ui-access-disable' : 'ui-access-enable')));
-        }))] : []));
+        }))] : []),
+        // Whether this person reaches the bot, and the way to change that:
+        // a code to hand them, or the tie taken off (0086). The table above
+        // has no column for it; this card is where there is room.
+        h('div', { class: 'lst' }, h('div', { class: 'lk' },
+          h('span', { class: 'v' }, `${t('ui-bot-telegram')} · ${client.telegram_linked_at
+            ? t('ui-bot-linked-since', { date: shortDate(client.telegram_linked_at) })
+            : t('ui-bot-not-linked')}`),
+          h('button', {
+            type: 'button',
+            class: 'btn',
+            on: {
+              click: async () => {
+                if (client.telegram_linked_at) {
+                  try { await api('DELETE', `/v1/clients/${client.id}/telegram`); close(); reload(); } catch (error) { refused(error); }
+                } else {
+                  close();
+                  botCode(client);
+                }
+              },
+            },
+          }, t(client.telegram_linked_at ? 'ui-bot-unlink' : 'ui-bot-code')))));
       const buttons = $$('.df .btn', box);
       buttons[0].textContent = t('ui-close');
       buttons[0].addEventListener('click', close);
