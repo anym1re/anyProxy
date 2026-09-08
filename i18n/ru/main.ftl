@@ -447,3 +447,4 @@ ui-node-diagnose = Диагностика
 ui-node-trouble-for = { $trouble } — { $lasting }
 ui-dash-per-hour = { $bytes } в час
 ui-dash-at-hour = в { $at }
+ui-event-node-enrollment-issued = Код регистрации выпущен

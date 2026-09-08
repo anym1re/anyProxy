@@ -446,3 +446,4 @@ ui-node-diagnose = Diagnose
 ui-node-trouble-for = { $trouble } — { $lasting }
 ui-dash-per-hour = { $bytes } an hour
 ui-dash-at-hour = at { $at }
+ui-event-node-enrollment-issued = Enrolment code issued

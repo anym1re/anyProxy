@@ -607,6 +607,35 @@ async fn read_access(
     Ok(Json(access_json(&access)?))
 }
 
+/// How an access is named in the journal: who holds it, and on what.
+///
+/// Falls back to the identifier when either half cannot be read, so a line is
+/// written whatever happens: a journal that skips an entry is worse than one
+/// that names it awkwardly.
+async fn said_access(guarded: &crate::Guarded<'_>, id: Uuid) -> Result<String, ApiError> {
+    let Ok(access) = guarded.access(id).await else {
+        return Ok(id.to_string());
+    };
+    let common = access.common();
+    let node = guarded
+        .node(common.node_id())
+        .await
+        .map(|node| node.label().as_str().to_owned())
+        .unwrap_or_else(|_| common.node_id().to_string());
+    let who = match common.name() {
+        Some(name) => name.as_str().to_owned(),
+        None => match common.client_id() {
+            Some(client_id) => guarded
+                .client(client_id)
+                .await
+                .map(|client| client.label().as_str().to_owned())
+                .unwrap_or_else(|_| client_id.to_string()),
+            None => id.to_string(),
+        },
+    };
+    Ok(format!("{who} · {node}"))
+}
+
 async fn set_access_state(
     State(state): State<AppState>,
     actor: Actor,
@@ -615,12 +644,15 @@ async fn set_access_state(
 ) -> Result<StatusCode, ApiError> {
     let wanted = AccessState::from_stored(&body.state)?;
     let guarded = state.guarded(&actor);
+    // An access has no name of its own. It is said by who holds it and which
+    // node it is on, which is how the screens name it too (0074).
+    let said = said_access(&guarded, id).await?;
     let changed = guarded.set_access_state(id, wanted).await?;
     guarded
         .record(
             "access.state",
-            Some(&id.to_string()),
-            serde_json::json!({ "state": body.state, "changed": changed }),
+            Some(&said),
+            serde_json::json!({ "state": body.state, "changed": changed, "access": id }),
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -908,7 +940,7 @@ async fn issue_enrollment(
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
     let guarded = state.guarded(&actor);
-    guarded.node(id).await?;
+    let node = guarded.node(id).await?;
     if !actor.role().manages_nodes() {
         return Err(ApiError::NotFound);
     }
@@ -917,7 +949,7 @@ async fn issue_enrollment(
     guarded
         .record(
             "node.enrollment.issued",
-            Some(&id.to_string()),
+            Some(node.label().as_str()),
             serde_json::json!({}),
         )
         .await?;
@@ -940,9 +972,16 @@ async fn burn_node(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let guarded = state.guarded(&actor);
+    // Read before it is burned: a burned node is still there to be named, and
+    // reading it first keeps the journal line readable either way (0074).
+    let node = guarded.node(id).await?;
     guarded.burn_node(id).await?;
     guarded
-        .record("node.burned", Some(&id.to_string()), serde_json::json!({}))
+        .record(
+            "node.burned",
+            Some(node.label().as_str()),
+            serde_json::json!({}),
+        )
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
