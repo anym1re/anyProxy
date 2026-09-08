@@ -1920,8 +1920,6 @@
       put(box, '.dh h2', t('ui-bot-code-title'));
       put(box, '.dh .note', client.label);
       $$('.fld, .chk', box).forEach((part) => part.remove());
-      const pairs = $('.pair', box);
-      if (pairs) pairs.replaceChildren();
       const shown = $('.link', box);
       shown.replaceChildren();
       shown.hidden = true;
@@ -1937,13 +1935,16 @@
           const text = issued.link || issued.code;
           shown.hidden = false;
           shown.replaceChildren(text, h('span', { class: 'cp', on: { click: () => copy(text) } }, '⧉'));
-          if (pairs) {
-            pairs.replaceChildren(
-              h('span', { class: 'k' }, t('ui-bot-code')), h('span', { class: 'v mono' }, issued.code),
-              h('span', { class: 'k' }, t('ui-col-expires')),
-              h('span', { class: 'v' }, t('ui-bot-code-until', { date: stamp(issued.expires_at) })),
-              ...(issued.link ? [] : [h('span', { class: 'k' }, t('ui-bot-telegram')),
-                h('span', { class: 'v m3' }, t('ui-bot-code-no-bot'))]));
+          // A code that is spent once and dies in an hour has to say so: the
+          // link dialog it borrows has no place for it, so the words go under
+          // the code itself. When the bot is off the code still issues, and
+          // that is worth saying rather than leaving the operator to wonder.
+          const body = shown.parentElement;
+          $$('.exp', body).forEach((line) => line.remove());
+          body.appendChild(h('div', { class: 'exp m3' },
+            t('ui-bot-code-until', { date: stamp(issued.expires_at) })));
+          if (!issued.link) {
+            body.appendChild(h('div', { class: 'exp m3' }, t('ui-bot-code-no-bot')));
           }
           get.disabled = true;
         } catch (error) { refused(error); }

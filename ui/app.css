@@ -3111,6 +3111,10 @@ select.inp { appearance: none; }
 
 /* A line that says nothing takes no room. */
 #screen .hint:empty, #modal-root .hint:empty { display: none; }
+/* A word or two under a handed-out code: how long it lives, and whether the
+   bot is on to answer it. Set apart from the code above without a box. */
+#modal-root .exp { margin-top: 8px; font-size: 12.5px; }
+#modal-root .exp + .exp { margin-top: 3px; }
 .hint.bad { color: var(--bad); }
 .hint.warn { color: var(--warn); }
 .lnk { border: 0; background: none; padding: 0; font: inherit; color: var(--key);
