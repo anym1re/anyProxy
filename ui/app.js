@@ -916,10 +916,15 @@
     const live = list.filter((node) => node.state !== 'burned');
     const shown = live.filter((node) => state.filter === 'all'
       || (state.filter === 'attention' ? standing(node) !== 'ok' : node.kind === state.filter));
-    // The order the note on the bar promises: whatever wants doing something
-    // about comes first, and the rest keep to their names.
-    const RANK = { bad: 0, none: 1, warn: 2, ok: 3 };
-    shown.sort((one, other) => (RANK[standing(one)] - RANK[standing(other)])
+    // The order the note on the bar promises: by what each carried over the
+    // range, most first, and by name where two carried the same.
+    const carriedBy = new Map();
+    for (const access of accesses) {
+      carriedBy.set(access.node_id,
+        (carriedBy.get(access.node_id) || 0) + Number(access.carried_bytes || 0));
+    }
+    const carried = (node) => carriedBy.get(node.id) || 0;
+    shown.sort((one, other) => (carried(other) - carried(one))
       || one.label.localeCompare(other.label));
     const held = new Map();
     for (const access of accesses) held.set(access.node_id, (held.get(access.node_id) || 0) + 1);
@@ -964,7 +969,7 @@
       // and on the right the order the cards are in.
       const kindChips = filters.filter(([value]) => value !== 'attention').map(chipFor);
       const attention = filters.filter(([value]) => value === 'attention').map(chipFor);
-      if (note) note.textContent = t('ui-nodes-order');
+      if (note) note.textContent = t('ui-nodes-order', { days: num(state.range) });
       bar.replaceChildren(...kindChips, ...(divider ? [divider] : []), ...attention,
         ...(note ? [note] : []));
     }
@@ -1020,8 +1025,19 @@
     }
     const where = node.domain || node.address || '—';
     const line = $('.cline', card);
-    if (how === 'ok') line.replaceChildren(h('span', { class: 'mono' }, where), ` · ${kindOf(node)}`);
-    else line.replaceChildren(trouble(node), ' · ', h('span', { class: 'mono' }, where));
+    if (how === 'ok') {
+      line.className = 'cline';
+      line.replaceChildren(h('span', { class: 'mono' }, where), ` · ${kindOf(node)}`);
+    } else {
+      // As drawn: one sentence saying what is wrong and how long it has been.
+      // A node that says nothing has been that way since it last spoke; one
+      // that says something wrong has been that way since it started saying it.
+      const since = how === 'none' ? node.last_seen_at : (node.trouble_since || node.last_seen_at);
+      line.className = `cline ${{ warn: 'alert', bad: 'stop', none: 'm3' }[how] || ''}`.trim();
+      line.textContent = since
+        ? t('ui-node-trouble-for', { trouble: trouble(node), lasting: lasting(since) })
+        : trouble(node);
+    }
     put(card, '.hw', machine
       ? `${num(machine.cpus)} CPU · ${machine.memory_limit_mb ? mbytes(machine.memory_limit_mb) : '—'}`
       : '—');
@@ -1067,18 +1083,38 @@
 
     const foot = $('.cfoot', card);
     if (foot) {
-      put(foot, '.mono', `${node.agent_version || '—'} · ${node.last_seen_at ? clock(node.last_seen_at) : t('ui-never')}`);
+      // As drawn: the build and how long since it spoke, or — for a node
+      // that has stopped speaking — when it last did.
+      put(foot, '.mono', node.last_seen_at
+        ? (how === 'none'
+          ? t('ui-node-last-contact', { at: clock(node.last_seen_at) })
+          : `${node.agent_version || '—'} · ${t('ui-node-contact-ago', { ago: lasting(node.last_seen_at) })}`)
+        : t('ui-never'));
+      // The stand shows a certificate only where there is one to show.
       const cert = $('.cert', foot);
+      const until = node.health && node.health.cert_not_after;
       if (cert) {
-        cert.textContent = node.health && node.health.cert_not_after
-          ? t('ui-cert-until', { date: date(node.health.cert_not_after) })
-          : (node.kind === 'web' ? t('ui-cert-none') : '');
+        if (until) cert.textContent = t('ui-cert-until', { date: date(until) });
+        else cert.remove();
       }
+      // Two actions, as drawn: the one this node is asking for, and deleting
+      // it. A node nobody has heard from yet is asking for its code.
       const acts = $('.a', foot);
       if (acts) {
-        acts.replaceChildren(...(state.me.role === 'superadmin' && node.state !== 'burned' ? [
-          node.domain != null ? h('a', { href: '#', on: { click: (event) => { event.preventDefault(); renameNode(node); } } }, t('ui-node-rename')) : null,
-          h('a', { href: '#', on: { click: (event) => { event.preventDefault(); enrol(node); } } }, t('ui-node-code')),
+        const may = state.me.role === 'superadmin' && node.state !== 'burned';
+        const first_ = node.state === 'pending' || !node.last_seen_at
+          ? { word: 'ui-node-code', urgent: false, go: () => enrol(node) }
+          : (how === 'ok'
+            ? (node.domain != null
+              ? { word: 'ui-node-rename', urgent: false, go: () => renameNode(node) }
+              : null)
+            : { word: how === 'warn' ? 'ui-node-diagnose' : 'ui-node-check', urgent: true, go: () => checkNode(node) });
+        acts.replaceChildren(...(may ? [
+          first_ ? h('a', {
+            href: '#',
+            ...(first_.urgent ? { class: 'act-now' } : {}),
+            on: { click: (event) => { event.preventDefault(); first_.go(); } },
+          }, t(first_.word)) : null,
           h('a', { href: '#', class: 'risk', on: { click: (event) => { event.preventDefault(); deleteNode(node); } } }, t('ui-node-delete')),
         ].filter(Boolean) : []));
       }
@@ -1150,13 +1186,13 @@
       const node = access ? list.find((candidate) => candidate.id === access.node_id) : null;
       const who = $('.who', row);
       who.className = `who ${first ? '' : 'same'}`;
-      who.replaceChildren(client
-        ? h('button', {
-          type: 'button',
-          class: 'lnk',
-          on: { click: () => clientCard(client, byClient.get(client.id) || [], list) },
-        }, first ? client.label : '')
-        : h('span', null, access.name || '—'));
+      if (client) {
+        who.textContent = first ? client.label : '';
+        who.style.cursor = 'pointer';
+        who.onclick = () => clientCard(client, byClient.get(client.id) || [], list);
+      } else {
+        who.textContent = access.name || '—';
+      }
       const where = $('.node', row);
       where.replaceChildren(h('span', { class: `sd ${node && standing(node) === 'ok' ? '' : 'w'}` }), node ? node.label : '—');
       const cells = [...row.children];
@@ -1197,8 +1233,9 @@
         const value = $('.v', link);
         const ask = $('.cp', link);
         if (!access) {
-          // The stand drew this row with one button in it: the way to give
-          // this person something to connect with.
+          // The stand drew this row with one button in it, in a plain cell:
+          // the way to give this person something to connect with.
+          link.className = '';
           link.replaceChildren(h('button', {
             type: 'button',
             class: 'btn sm key',
@@ -1859,6 +1896,17 @@
         } catch (error) { refused(error); }
       });
     });
+  }
+
+  /// Asks a node to look at itself now, and says the asking was heard (0070).
+  ///
+  /// The answer comes when the node next speaks, which is at most one contact
+  /// period away; the screen refreshes itself on the same beat.
+  async function checkNode(node) {
+    try {
+      await api('POST', `/v1/nodes/${node.id}/check`);
+      toast(t('ui-node-check-asked', { label: node.label }));
+    } catch (error) { refused(error); }
   }
 
   async function enrol(node) {

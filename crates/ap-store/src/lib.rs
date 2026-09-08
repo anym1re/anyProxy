@@ -112,6 +112,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0017_settings",
         include_str!("../../../migrations/0017_settings.sql"),
     ),
+    (
+        "0018_node_check",
+        include_str!("../../../migrations/0018_node_check.sql"),
+    ),
+    (
+        "0019_node_trouble",
+        include_str!("../../../migrations/0019_node_trouble.sql"),
+    ),
 ];
 
 /// The migrations this build carries, in the order they apply.

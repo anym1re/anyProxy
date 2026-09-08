@@ -50,6 +50,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/nodes/{id}/names", post(rename_node))
         .route("/v1/nodes/{id}/sponsorship", post(sponsor_node))
         .route("/v1/nodes/{id}/enrollment", post(issue_enrollment))
+        .route("/v1/nodes/{id}/check", post(ask_check))
         .route("/v1/settings", get(read_settings).put(write_settings))
         .route("/v1/audit", get(read_audit))
         .route("/v1/audit/summary", get(audit_summary))
@@ -805,6 +806,7 @@ fn node_json_with(node: &Node, silence_minutes: i64) -> Result<serde_json::Value
         "last_seen_at": node.last_seen_at().map(format_rfc3339).transpose()?,
         "health": health,
         "machine": machine,
+        "trouble_since": node.trouble_since().map(format_rfc3339).transpose()?,
         "wants_attention": node.wants_attention() || silent,
         "silent": silent,
         "created_at": format_rfc3339(node.created_at())?,
@@ -997,6 +999,29 @@ async fn rename_node(
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Asks a node to look at itself at the first opportunity (0070).
+///
+/// Answers as soon as the asking is written down rather than when the node
+/// gets to it: the node may be a minute away, and an operator waiting on a
+/// button learns nothing from the wait.
+async fn ask_check(
+    State(state): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let guarded = state.guarded(&actor);
+    let node = guarded.node(id).await?;
+    ap_store::PresenceRepo::ask_check(state.pool(), node.id(), OffsetDateTime::now_utc()).await?;
+    guarded
+        .record(
+            "node.check_asked",
+            Some(node.label().as_str()),
+            serde_json::json!({}),
+        )
+        .await?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 // ── settings ─────────────────────────────────────────────────────────────

@@ -290,6 +290,8 @@ pub struct Node {
     ad_tag: Option<AdTag>,
     health: Option<NodeHealth>,
     machine: Option<Machine>,
+    /// When the health it reports stopped being well (0071).
+    trouble_since: Option<OffsetDateTime>,
 }
 
 impl Node {
@@ -307,7 +309,20 @@ impl Node {
             ad_tag: None,
             health: None,
             machine: None,
+            trouble_since: None,
         }
+    }
+
+    /// The same node, knowing when its trouble started (0071).
+    #[must_use]
+    pub fn with_trouble_since(mut self, since: Option<OffsetDateTime>) -> Self {
+        self.trouble_since = since;
+        self
+    }
+
+    /// When what is wrong with it started, when something is.
+    pub fn trouble_since(&self) -> Option<OffsetDateTime> {
+        self.trouble_since
     }
 
     /// The same node, carrying a sponsorship tag.
@@ -342,6 +357,7 @@ impl Node {
             ad_tag,
             health: None,
             machine: None,
+            trouble_since: None,
         }
     }
 

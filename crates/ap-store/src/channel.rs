@@ -211,7 +211,16 @@ impl PresenceRepo {
              health_site = coalesce($5, health_site), \
              health_reach = coalesce($6, health_reach), \
              cert_not_after = coalesce($7, cert_not_after), \
-             state = case when state = 'pending' then 'active' else state end \
+             state = case when state = 'pending' then 'active' else state end, \
+             -- When the trouble started (0071). Worked out in the same
+             -- statement as the health it follows from: read first and write
+             -- after, two reports in a row would move the start of a trouble
+             -- to the middle of it.
+             trouble_since = case \
+                 when $4 is null then trouble_since \
+                 when $4 = 'up' and $5 <> 'down' and $6 <> 'blocked' then null \
+                 when trouble_since is null then $2 \
+                 else trouble_since end \
              where id = $1 and state <> 'burned'",
         )
         .bind(node_id)
@@ -262,6 +271,32 @@ impl PresenceRepo {
         .execute(pool)
         .await?;
         Ok(())
+    }
+
+    /// Notes that an operator asked this node to look at itself (0070).
+    pub async fn ask_check(
+        pool: &PgPool,
+        node_id: Uuid,
+        at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        sqlx::query("update node set check_asked_at = $2 where id = $1 and state <> 'burned'")
+            .bind(node_id)
+            .bind(at)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Takes the asking, if there is one, so it is handed over once.
+    pub async fn take_check(pool: &PgPool, node_id: Uuid) -> Result<bool, StoreError> {
+        let row = sqlx::query(
+            "update node set check_asked_at = null \
+             where id = $1 and check_asked_at is not null returning id",
+        )
+        .bind(node_id)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.is_some())
     }
 
     /// Records what is running on the node.

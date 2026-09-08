@@ -245,8 +245,13 @@ async fn once(
     let heartbeat = Duration::from_secs(
         u64::from(state.heartbeat_secs.max(1)).min(engine::READING_INTERVAL_SECS),
     );
+    // Set when the panel asks for a look now: the next turn of the loop is
+    // taken at once instead of at the end of the wait (0070).
+    let mut at_once = false;
     loop {
-        let received = tokio::time::timeout(heartbeat, channel.receive()).await;
+        let waiting = if at_once { Duration::ZERO } else { heartbeat };
+        at_once = false;
+        let received = tokio::time::timeout(waiting, channel.receive()).await;
         let now = OffsetDateTime::now_utc();
 
         match received {
@@ -266,6 +271,26 @@ async fn once(
                     }
                     settle(paths, settings, control, running).await;
                 }
+            }
+            // An operator asked this node to look at itself now (0070). What
+            // it last found is forgotten, so the probes run again rather than
+            // being repeated from memory, and the turn that runs them is taken
+            // immediately rather than at the end of the wait.
+            Ok(Ok(Some(Message::Command(asked)))) => {
+                let done = if asked.action == "probe" {
+                    last_probe = None;
+                    at_once = true;
+                    "ok"
+                } else {
+                    "unknown"
+                };
+                channel
+                    .send(&Message::Result(ap_proto::CommandResult {
+                        id: asked.id,
+                        status: done.to_owned(),
+                        detail: None,
+                    }))
+                    .await?;
             }
             Ok(Ok(Some(_))) => {}
             Ok(Ok(None)) => return Ok(state.applied_revision),

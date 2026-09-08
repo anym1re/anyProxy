@@ -239,6 +239,11 @@ async fn handle(
             if let Some(config) = config_if_it_changed(state, node_id).await? {
                 answer.push(Message::Config(config));
             }
+            // An operator asked this node to look at itself; the asking rides
+            // along with whatever else is going back (0070).
+            if let Some(asked) = check_if_asked(state, node_id).await? {
+                answer.push(asked);
+            }
             Ok(answer)
         }
 
@@ -290,6 +295,21 @@ async fn enrol(
         ca: authority.certificate_pem().to_owned(),
         not_after: String::new(),
     })
+}
+
+/// The instruction to look at itself, when an operator asked for one (0070).
+///
+/// Taken rather than read: one press is one check, and a press that was handed
+/// over is a press that is done with.
+async fn check_if_asked(state: &AppState, node_id: Uuid) -> Result<Option<Message>, ApiError> {
+    if !ap_store::PresenceRepo::take_check(state.pool(), node_id).await? {
+        return Ok(None);
+    }
+    Ok(Some(Message::Command(ap_proto::Command {
+        id: Uuid::now_v7(),
+        action: "probe".to_owned(),
+        args: serde_json::json!({}),
+    })))
 }
 
 /// Builds a configuration and remembers the fingerprint of what it carries.

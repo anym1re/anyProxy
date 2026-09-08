@@ -15,7 +15,7 @@ const COLUMNS: &str = "id, label, kind, domain, address, agent_version, last_see
                        machine_memory_limit_mb, machine_memory_stall, machine_cpu_stall, \
                        machine_open_files, machine_file_limit, machine_cpu_percent, \
                        machine_uptime_seconds, machine_connections, machine_rx_bps, \
-                       machine_tx_bps";
+                       machine_tx_bps, trouble_since";
 
 /// Reads and writes nodes.
 pub struct NodeRepo;
@@ -265,5 +265,6 @@ fn read_node(row: sqlx::postgres::PgRow) -> Result<Node, StoreError> {
         ad_tag,
     )
     .with_health(health)
-    .with_machine(machine))
+    .with_machine(machine)
+    .with_trouble_since(row.try_get("trouble_since")?))
 }
