@@ -448,3 +448,5 @@ ui-node-trouble-for = { $trouble } — { $lasting }
 ui-dash-per-hour = { $bytes } в час
 ui-dash-at-hour = в { $at }
 ui-event-node-enrollment-issued = Код регистрации выпущен
+ui-log-by-agent = агент
+ui-event-node-health = Нода сообщила о себе

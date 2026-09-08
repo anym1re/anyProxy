@@ -507,6 +507,11 @@ async fn apply_telemetry(
     let pool = state.pool();
     let now = OffsetDateTime::now_utc();
 
+    // What the node said about itself last time, so a change can be told from
+    // a repetition: the journal wants the moment it changed, not two entries a
+    // minute saying it is still so (0075).
+    let before = ap_store::NodeRepo::by_id(pool, node_id).await?;
+
     // What the node says about itself travels with the traffic it reports.
     ap_store::PresenceRepo::seen(
         pool,
@@ -526,6 +531,39 @@ async fn apply_telemetry(
     )
     .await
     .map_err(ApiError::from)?;
+
+    // One line when it changed, none when it did not (0075).
+    if let Some(node) = before.as_ref() {
+        let said = node.health().map(|health| {
+            (
+                health.engine.clone().unwrap_or_default(),
+                health.site.clone().unwrap_or_default(),
+                health.reach.clone().unwrap_or_default(),
+            )
+        });
+        let now_said = (
+            telemetry.health.engine.clone(),
+            telemetry.health.site.clone(),
+            telemetry.health.reach.clone(),
+        );
+        if said.as_ref() != Some(&now_said) {
+            ap_store::AuditRepo::record(
+                pool,
+                None,
+                "node.health",
+                Some(node.label().as_str()),
+                now,
+                serde_json::json!({
+                    "engine": now_said.0,
+                    "site": now_said.1,
+                    "reach": now_said.2,
+                    "by": "agent",
+                }),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        }
+    }
 
     // What it said about the machine under it, when it said anything and the
     // word is one of the three. An unknown word is a report the panel does

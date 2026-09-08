@@ -637,9 +637,23 @@ async fn accesses_are_listed_across_clients_but_only_ones_own() {
     let items = listed.json();
     let items = items.as_array().unwrap();
     assert!(items.len() <= 200);
-    // Newest first, so the one just issued leads.
-    assert_eq!(items[0]["id"], access_id, "{}", listed.body);
-    assert_eq!(items[0]["client_id"], client_id);
+    // Newest first. Which one is newest is not asserted: these tests share a
+    // database and run beside each other, so another test's access can be
+    // issued between this one and the reading. What is asserted is that the
+    // one just issued is there, belongs to its client, and that the order is
+    // the one the screen relies on.
+    let mine = items
+        .iter()
+        .find(|item| item["id"] == access_id)
+        .unwrap_or_else(|| panic!("the access just issued is not listed: {}", listed.body));
+    assert_eq!(mine["client_id"], client_id);
+    let issued: Vec<&str> = items
+        .iter()
+        .map(|item| item["created_at"].as_str().unwrap_or_default())
+        .collect();
+    let mut newest_first = issued.clone();
+    newest_first.sort_by(|one, other| other.cmp(one));
+    assert_eq!(issued, newest_first, "the newest is not first");
     assert!(
         items.iter().all(|item| !item["client_id"].is_null()),
         "a public link was listed"

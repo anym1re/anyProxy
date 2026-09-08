@@ -52,6 +52,15 @@ impl NodeRepo {
         row.map(read_node).transpose()
     }
 
+    /// One node by its identifier.
+    pub async fn by_id(pool: &PgPool, id: Uuid) -> Result<Option<Node>, StoreError> {
+        let row = sqlx::query(&format!("select {COLUMNS} from node where id = $1"))
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+        row.map(read_node).transpose()
+    }
+
     /// Every node, oldest first.
     pub async fn list(pool: &PgPool) -> Result<Vec<Node>, StoreError> {
         let rows = sqlx::query(&format!(

@@ -1365,7 +1365,12 @@
 
   /// How an entry should read: what went wrong is red, what was taken away is
   /// amber, what was made is green, and the rest is plain.
-  function eventTone(action) {
+  function eventTone(action, facts) {
+    if (action === 'node.health' && facts) {
+      if (facts.engine === 'down' || facts.reach === 'blocked') return 'bad';
+      if (facts.site === 'down' || facts.site === 'unknown') return 'warn';
+      return 'ok';
+    }
     if (action.includes('fail') || action.includes('refus')) return 'bad';
     if (action.endsWith('.burned') || action.endsWith('.state')) return 'warn';
     if (action.endsWith('.created') || action.endsWith('.opened')) return 'ok';
@@ -1478,7 +1483,7 @@
       if (cells[1]) cells[1].textContent = facts.node || facts.label || (entry.action.startsWith('node.') ? entry.target : '') || '—';
       if (cells[2]) {
         cells[2].textContent = eventWords(entry.action);
-        cells[2].className = `ev ${eventTone(entry.action)}`.trim();
+        cells[2].className = `ev ${eventTone(entry.action, facts)}`.trim();
       }
       if (cells[3]) cells[3].textContent = entry.target || '—';
       if (cells[4]) {
@@ -1487,7 +1492,11 @@
           .map(([key, value]) => `${key}: ${value}`).join(' · ');
         cells[4].textContent = said || '—';
       }
-      if (cells[5]) cells[5].textContent = entry.actor_id ? t('ui-log-by-operator') : t('ui-log-by-panel');
+      if (cells[5]) {
+        cells[5].textContent = facts.by === 'agent'
+          ? t('ui-log-by-agent')
+          : t(entry.actor_id ? 'ui-log-by-operator' : 'ui-log-by-panel');
+      }
       rows.push(row);
       if (opened) {
         row.style.cursor = 'pointer';
@@ -1570,7 +1579,9 @@
     ), left);
     pairs([
       [t('ui-col-time'), stamp(entry.at), false],
-      [t('ui-col-source'), entry.actor_id ? t('ui-log-by-operator') : t('ui-log-by-panel'), false],
+      [t('ui-col-source'), facts.by === 'agent'
+        ? t('ui-log-by-agent')
+        : t(entry.actor_id ? 'ui-log-by-operator' : 'ui-log-by-panel'), false],
       [t('ui-col-object'), entry.target || t('ui-none'), !entry.target],
       ['id', entry.id, false],
     ], right);
