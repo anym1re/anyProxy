@@ -112,6 +112,25 @@ impl NodeRepo {
         Ok(result.rows_affected() == 1)
     }
 
+    /// Sets or clears the address clients reach a node at (0091).
+    ///
+    /// Written by the operator and never taken from the agent channel: the
+    /// panel may hear a node through a tunnel, and then the address it sees is
+    /// the tunnel's. A node without one is left out of the public feed, except
+    /// a `web` node, whose link names its domain.
+    pub async fn set_address(
+        pool: &PgPool,
+        id: Uuid,
+        address: Option<IpAddr>,
+    ) -> Result<bool, StoreError> {
+        let result = sqlx::query("update node set address = $2 where id = $1")
+            .bind(id)
+            .bind(address.map(|address| address.to_string()))
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Sets or clears the sponsorship tag a node carries.
     ///
     /// Set after the fact rather than at registration, because that is the

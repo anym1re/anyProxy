@@ -378,6 +378,20 @@ impl<'a> Guarded<'a> {
         Ok(())
     }
 
+    /// Sets or clears the address clients reach a node at (0091).
+    pub async fn set_node_address(
+        &self,
+        id: Uuid,
+        address: Option<std::net::IpAddr>,
+    ) -> Result<(), ApiError> {
+        if !self.actor.role().manages_nodes() {
+            return Err(ApiError::NotFound);
+        }
+        self.node(id).await?;
+        NodeRepo::set_address(self.pool, id, address).await?;
+        Ok(())
+    }
+
     /// Links the operator hands out themselves, which belong to no client.
     ///
     /// Only for roles that reach every client: a reseller sees what is theirs,

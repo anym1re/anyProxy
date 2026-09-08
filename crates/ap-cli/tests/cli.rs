@@ -460,6 +460,41 @@ fn adding_a_node_shows_its_enrolment_code_once() {
     );
 }
 
+#[test]
+fn a_node_is_given_the_address_clients_reach_it_at() {
+    if !have_database() {
+        return;
+    }
+    let panel = panel!();
+    let node = unique("edge");
+    assert_eq!(
+        code(&panel.run(&["node", "add", &node, "--kind", "mtproto"])),
+        0
+    );
+
+    let neither = panel.run(&["node", "address", &node]);
+    assert_eq!(
+        code(&neither),
+        2,
+        "an address command with nothing to do ran"
+    );
+
+    let refused = panel.run(&["node", "address", &node, "not-an-address"]);
+    assert_ne!(code(&refused), 0, "a word was taken for an address");
+
+    let set = panel.run(&["node", "address", &node, "203.0.113.42"]);
+    assert_eq!(code(&set), 0, "{}", String::from_utf8_lossy(&set.stderr));
+    let listed = stdout(&panel.run(&["--format", "json", "node", "list"]));
+    assert!(
+        listed.contains("\"address\":\"203.0.113.42\"")
+            || listed.contains("\"address\": \"203.0.113.42\""),
+        "the address is not on the node: {listed}"
+    );
+
+    let cleared = panel.run(&["node", "address", &node, "--clear"]);
+    assert_eq!(code(&cleared), 0);
+}
+
 #[cfg(unix)]
 #[test]
 fn a_token_others_can_read_is_refused() {

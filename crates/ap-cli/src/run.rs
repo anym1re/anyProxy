@@ -191,6 +191,21 @@ pub enum NodeCommand {
         #[arg(long)]
         domain: Option<String>,
     },
+    /// Sets or clears the address clients reach a node at.
+    ///
+    /// The public site puts it into every public link for the node. A node
+    /// without one stays off the site, unless it is a web node, whose link
+    /// names its domain.
+    Address {
+        /// The node, by the name an operator knows it by.
+        node: String,
+        /// The address, IPv4 or IPv6.
+        #[arg(conflicts_with = "clear")]
+        address: Option<String>,
+        /// Carry no address, and leave the public site.
+        #[arg(long, conflicts_with = "address")]
+        clear: bool,
+    },
 }
 
 /// Runs one command.
@@ -855,6 +870,32 @@ async fn node(command: NodeCommand, context: Context) -> Outcome {
             Ok(Rendered::line(say(
                 locale,
                 "cli-node-renamed",
+                &[("node", Argument::Text(&node))],
+            )?))
+        }
+        NodeCommand::Address {
+            node,
+            address,
+            clear,
+        } => {
+            if address.is_none() && !clear {
+                return Err(Failure::Arguments("say an address or --clear".to_owned()));
+            }
+            let record = node_by_label(&context, &node).await?;
+            post(
+                &context,
+                &format!("/v1/nodes/{}/address", text(&record, "id")),
+                serde_json::json!({ "address": address }),
+            )
+            .await?;
+
+            Ok(Rendered::line(say(
+                locale,
+                if clear {
+                    "cli-node-address-cleared"
+                } else {
+                    "cli-node-addressed"
+                },
                 &[("node", Argument::Text(&node))],
             )?))
         }

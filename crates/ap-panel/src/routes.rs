@@ -52,6 +52,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/nodes/{id}/burn", post(burn_node))
         .route("/v1/nodes/{id}/names", post(rename_node))
         .route("/v1/nodes/{id}/sponsorship", post(sponsor_node))
+        .route("/v1/nodes/{id}/address", post(set_node_address))
         .route("/v1/nodes/{id}/enrollment", post(issue_enrollment))
         .route("/v1/nodes/{id}/check", post(ask_check))
         .route("/v1/settings", get(read_settings).put(write_settings))
@@ -1097,6 +1098,48 @@ async fn rename_node(
             "node.renamed",
             Some(&id.to_string()),
             serde_json::json!({ "domain": body.domain }),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct NewAddress {
+    /// The address clients reach the node at, or null to carry none.
+    address: Option<String>,
+}
+
+/// Sets or clears the address clients reach a node at (0091).
+///
+/// Given by the operator rather than read off the agent channel: the panel
+/// may hear a node through a tunnel, and then what it sees is the tunnel.
+/// The public feed puts this into every link for the node, so it is written
+/// to the audit log by the node's name.
+async fn set_node_address(
+    State(state): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+    Json(body): Json<NewAddress>,
+) -> Result<StatusCode, ApiError> {
+    let address = body
+        .address
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| {
+            text.parse::<std::net::IpAddr>()
+                .map_err(|_| ApiError::Unprocessable("address_form"))
+        })
+        .transpose()?;
+
+    let guarded = state.guarded(&actor);
+    let node = guarded.node(id).await?;
+    guarded.set_node_address(id, address).await?;
+    guarded
+        .record(
+            "node.address",
+            Some(node.label().as_str()),
+            serde_json::json!({ "address": address.map(|address| address.to_string()) }),
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)
