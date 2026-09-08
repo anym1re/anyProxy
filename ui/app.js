@@ -8,9 +8,9 @@
 
   const REFRESH_MS = 30000;
   const PAGE = 200;
-  // The stand's four ranges. The series the panel keeps is by day, so the
-  // shortest is a week rather than the stand's single day.
-  const RANGES = [['Н', 7], ['М', 30], ['6М', 180], ['Г', 365]];
+  // The four ranges the stand drew. The shortest is a day, counted by the
+  // hour (0072); the rest are counted by the day.
+  const RANGES = [['Д', 1], ['Н', 7], ['М', 30], ['6М', 180]];
   // The stand drew one series per range and gave each its own class; the
   // panel keeps the one the range asks for, dressing and all.
   const SERIES = ['d', 'w', 'm', 'y'];
@@ -29,6 +29,7 @@
     version: '',
     channel: '',
     uptime: null,
+    own: null,
     // Which page of the journal is on screen, and what it is filtered to.
     journal: { group: 'all', day: false, node: null, offset: 0, size: 12 },
     setupNeeded: false,
@@ -534,6 +535,32 @@
     return { line, x, y };
   }
 
+  /// A day of hours: twenty-four points ending on the hour just past.
+  ///
+  /// Every hour is drawn, including the quiet ones, so a gap in the traffic
+  /// reads as a quiet hour and not as a hole in the record.
+  function hours(rows, many) {
+    const byHour = new Map(rows.map((point) => [point.hour.slice(0, 13), point]));
+    const now = new Date();
+    const top = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours());
+    const points = [];
+    for (let back = many - 1; back >= 0; back -= 1) {
+      const at = new Date(top - back * 3600000);
+      const key = at.toISOString().slice(0, 13);
+      const point = byHour.get(key);
+      points.push({
+        day: at.toISOString(),
+        in: point ? Number(point.bytes_in) : 0,
+        out: point ? Number(point.bytes_out) : 0,
+      });
+    }
+    const received = points.reduce((sum, point) => sum + point.in, 0);
+    const sent = points.reduce((sum, point) => sum + point.out, 0);
+    const peak = points.reduce((best, point, index) =>
+      (point.in + point.out > points[best].in + points[best].out ? index : best), 0);
+    return { points, received, sent, peak, total: received + sent, byHour: true };
+  }
+
   function series(rows, days) {
     const byDay = new Map(rows.map((point) => [point.day, point]));
     const now = new Date();
@@ -557,16 +584,16 @@
       seesNodes ? api('GET', '/v1/nodes') : Promise.resolve([]),
       api('GET', `/v1/clients?limit=${PAGE}`),
       api('GET', `/v1/accesses?limit=${PAGE}`),
-      api('GET', `/v1/traffic?days=${state.range}`),
-      api('GET', `/v1/traffic?days=${state.range * 2}`),
+      api('GET', state.range === 1 ? '/v1/traffic?hours=24' : `/v1/traffic?days=${state.range}`),
+      api('GET', state.range === 1 ? '/v1/traffic?hours=48' : `/v1/traffic?days=${state.range * 2}`),
     ]);
     state.known = { nodes, clients };
 
     const live = nodes.filter((node) => node.state !== 'burned');
     const seen = live.filter((node) => node.last_seen_at);
     const wanting = live.filter((node) => node.wants_attention || standing(node) === 'none');
-    const drawn = series(now, state.range);
-    const older = series(before, state.range * 2);
+    const drawn = state.range === 1 ? hours(now, 24) : series(now, state.range);
+    const older = state.range === 1 ? hours(before, 48) : series(before, state.range * 2);
     const earlier = older.total - drawn.total;
     const change = earlier > 0 ? Math.round(((drawn.total - earlier) / earlier) * 100) : null;
 
@@ -688,12 +715,13 @@
     const tip = pick(tips);
     tips.forEach((one) => { if (one !== tip) one.remove(); });
     tip.style.left = `${Math.min(88, Math.max(12, (drawn.peak / Math.max(1, drawn.points.length - 1)) * 100))}%`;
-    put(tip, '.d', day(top.day));
+    put(tip, '.d', drawn.byHour ? t('ui-dash-at-hour', { at: clock(top.day) }) : day(top.day));
     put(tip, '.n', bytes(top.in + top.out));
     put(tip, '.s', `${t('ui-dash-received')} ${bytes(top.in)} · ${t('ui-dash-sent')} ${bytes(top.out)}`);
     const axis = $$('.xax > span', traffic);
-    only(axis[0], day(drawn.points[0].day));
-    only(axis[1], day(drawn.points[drawn.points.length - 1].day));
+    const edge = (iso) => (drawn.byHour ? clock(iso) : day(iso));
+    only(axis[0], edge(drawn.points[0].day));
+    only(axis[1], edge(drawn.points[drawn.points.length - 1].day));
     const foot = $$('.tfoot > span', traffic);
     const figure = (span, label, value) => {
       const kept = only(span, value);
@@ -705,7 +733,9 @@
     figure(foot[0], t('ui-dash-received'), bytes(drawn.received));
     figure(foot[1], t('ui-dash-sent'), bytes(drawn.sent));
     figure(foot[2], t('ui-dash-peak'), bytes(top.in + top.out));
-    figure(foot[3], t('ui-dash-average'), t('ui-dash-per-day', { bytes: bytes(drawn.total / state.range) }));
+    figure(foot[3], t('ui-dash-average'), drawn.byHour
+      ? t('ui-dash-per-hour', { bytes: bytes(drawn.total / 24) })
+      : t('ui-dash-per-day', { bytes: bytes(drawn.total / state.range) }));
 
     // ── the fleet ──
     if (!seesNodes) fleet.remove();
@@ -839,10 +869,25 @@
           gathered.set(process.name, row);
         }
       }
+      // The panel counts itself: the card is a summary over the fleet and the
+      // panel is part of it (0073). Where its own figures cannot be read, the
+      // row is not invented.
+      if (state.own && (state.own.memory_mb != null || state.own.cpu_percent != null)) {
+        gathered.set(state.own.name, {
+          name: state.own.name,
+          hosts: 0,
+          cpu: Number(state.own.cpu_percent || 0),
+          memory: Number(state.own.memory_mb || 0),
+          restarts: 0,
+          onPanel: true,
+        });
+      }
       const rows = [...gathered.values()].map((row) => ({
         name: row.name,
-        hosts: `${num(row.hosts)} ${counted('ui-count-nodes', row.hosts)}`,
-        cpu: `${(row.cpu / Math.max(1, row.hosts)).toFixed(1)} %`,
+        hosts: row.onPanel
+          ? t('ui-proc-on-panel')
+          : `${num(row.hosts)} ${counted('ui-count-nodes', row.hosts)}`,
+        cpu: `${(row.cpu / Math.max(1, row.onPanel ? 1 : row.hosts)).toFixed(1)} %`,
         memory: mbytes(row.memory),
         restarts: row.restarts,
         well: row.restarts === 0,
@@ -2133,6 +2178,7 @@
       state.version = panel.version || '';
       state.channel = panel.channel_address || '';
       state.uptime = panel.uptime_seconds == null ? null : Number(panel.uptime_seconds);
+      state.own = panel.own || null;
     } catch { state.setupNeeded = false; }
     showRail();
     route();

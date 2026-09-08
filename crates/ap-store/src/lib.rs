@@ -120,6 +120,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0019_node_trouble",
         include_str!("../../../migrations/0019_node_trouble.sql"),
     ),
+    (
+        "0020_traffic_hourly",
+        include_str!("../../../migrations/0020_traffic_hourly.sql"),
+    ),
 ];
 
 /// The migrations this build carries, in the order they apply.

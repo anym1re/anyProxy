@@ -127,6 +127,13 @@ async fn setup_state(State(state): State<AppState>) -> Result<Json<serde_json::V
         // How long this process has been answering, which the foot of the
         // dashboard was drawn to show.
         "uptime_seconds": state.uptime_seconds(),
+        // What the panel's own process is using, when that can be read: the
+        // processes card sums the whole fleet, and the panel is in it (0073).
+        "own": {
+            "name": "anyproxy-panel",
+            "memory_mb": crate::own::memory_mb(),
+            "cpu_percent": crate::own::cpu_percent(),
+        },
     })))
 }
 
@@ -1174,6 +1181,8 @@ const DEFAULT_TRAFFIC_DAYS: i64 = 30;
 #[derive(Deserialize)]
 struct TrafficRange {
     days: Option<i64>,
+    /// Asked for instead of days when the card is showing one day (0072).
+    hours: Option<i64>,
 }
 
 /// Traffic by day, summed over everything the actor may see.
@@ -1182,6 +1191,22 @@ async fn traffic(
     actor: Actor,
     Query(range): Query<TrafficRange>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // A day is asked for by the hour: a day of daily figures is one figure,
+    // and the card was drawn with a curve (0072).
+    if let Some(hours) = range.hours {
+        let series = state.guarded(&actor).traffic_hourly(hours).await?;
+        let body: Result<Vec<_>, ApiError> = series
+            .iter()
+            .map(|(at, bytes_in, bytes_out)| {
+                Ok(serde_json::json!({
+                    "hour": format_rfc3339(*at)?,
+                    "bytes_in": bytes_in,
+                    "bytes_out": bytes_out,
+                }))
+            })
+            .collect();
+        return Ok(Json(serde_json::json!(body?)));
+    }
     let series = state
         .guarded(&actor)
         .traffic_daily(range.days.unwrap_or(DEFAULT_TRAFFIC_DAYS))

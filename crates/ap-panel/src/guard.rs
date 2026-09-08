@@ -176,6 +176,17 @@ impl<'a> Guarded<'a> {
         }
     }
 
+    /// What the fleet carried in each of the last hours (0072).
+    pub async fn traffic_hourly(
+        &self,
+        hours: i64,
+    ) -> Result<Vec<(time::OffsetDateTime, i64, i64)>, ApiError> {
+        let hours = hours.clamp(1, 72);
+        let since = time::OffsetDateTime::now_utc() - time::Duration::hours(hours);
+        let owner = (!self.actor.role().reaches_every_client()).then(|| self.actor.id());
+        Ok(ap_store::TrafficRepo::by_hour(self.pool, since, owner).await?)
+    }
+
     /// What every access this actor may see has carried over a window, and
     /// the last day each was busy (0066).
     pub async fn carried(

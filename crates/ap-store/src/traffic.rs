@@ -87,8 +87,64 @@ impl TrafficRepo {
         .execute(&mut *transaction)
         .await?;
 
+        // The same bytes against the hour they arrived in, for the day view
+        // (0072). Three days are kept; the row that ages out goes here rather
+        // than in a sweep nobody would run.
+        sqlx::query(
+            "insert into traffic_hourly (access_id, at_hour, bytes_in, bytes_out) \
+             values ($1, date_trunc('hour', $2::timestamptz), $3, $4) \
+             on conflict (access_id, at_hour) do update set \
+             bytes_in = traffic_hourly.bytes_in + excluded.bytes_in, \
+             bytes_out = traffic_hourly.bytes_out + excluded.bytes_out",
+        )
+        .bind(access_id)
+        .bind(at)
+        .bind(bytes_in)
+        .bind(bytes_out)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query("delete from traffic_hourly where at_hour < $1")
+            .bind(at - time::Duration::days(3))
+            .execute(&mut *transaction)
+            .await?;
+
         transaction.commit().await?;
         Ok(true)
+    }
+
+    /// What the fleet carried in each of the last hours (0072).
+    ///
+    /// Every hour in the window is returned, including the quiet ones: a gap
+    /// in a curve is read as a gap in the traffic, and it is not one.
+    pub async fn by_hour(
+        pool: &PgPool,
+        since: OffsetDateTime,
+        owner: Option<Uuid>,
+    ) -> Result<Vec<(OffsetDateTime, i64, i64)>, StoreError> {
+        let rows = sqlx::query(
+            "select date_trunc('hour', h.at_hour) as at_hour, \
+             sum(h.bytes_in)::bigint as bytes_in, \
+             sum(h.bytes_out)::bigint as bytes_out \
+             from traffic_hourly h \
+             join access a on a.id = h.access_id \
+             left join client c on c.id = a.client_id \
+             where h.at_hour >= date_trunc('hour', $1::timestamptz) \
+               and ($2::uuid is null or c.owner_id = $2) \
+             group by 1 order by 1",
+        )
+        .bind(since)
+        .bind(owner)
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok((
+                    row.try_get("at_hour")?,
+                    row.try_get("bytes_in")?,
+                    row.try_get("bytes_out")?,
+                ))
+            })
+            .collect()
     }
 
     /// What one access has spent in total.

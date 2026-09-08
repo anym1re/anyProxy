@@ -10,6 +10,7 @@ pub mod channel;
 pub mod enrollment;
 mod error;
 mod guard;
+mod own;
 mod routes;
 pub mod settings;
 
