@@ -1,0 +1,38 @@
+[package]
+name = "ap-site"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "anyproxy-site"
+path = "src/main.rs"
+
+[lib]
+name = "ap_site"
+path = "src/lib.rs"
+
+[dependencies]
+ap-core = { path = "../ap-core" }
+clap.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["server", "http1", "client"] }
+hyper-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "time", "rt-multi-thread", "macros", "signal", "sync"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+ap-panel = { path = "../ap-panel" }
+ap-store = { path = "../ap-store" }
+axum.workspace = true
+time.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

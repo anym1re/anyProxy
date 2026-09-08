@@ -99,6 +99,28 @@ cli-enrollment-code = код регистрации (показывается о
 cli-enrollment-fingerprint = отпечаток панели: { $fingerprint }
 cli-enrollment-command = выполните на ноде: { $command }
 
+# Публичный сайт ссылок (0093). Отрисовывается на сервере, без подстановок.
+site-title = Прокси для Telegram
+site-description = Публичные ссылки для подключения Telegram через прокси. Без учётной записи и без входа.
+site-heading = Ссылки для подключения
+site-lead = Откройте ссылку в Telegram и подтвердите.
+site-links = Ссылки
+site-none = Сейчас ссылок нет.
+site-open = Открыть в Telegram
+site-machine = Список для программ
+site-languages = Язык
+site-lang-ru = Русский
+site-lang-en = English
+site-method-faketls = MTProto, с маскировкой
+site-method-web = WEB
+site-method-mtproto = MTProto
+site-method-socks5 = SOCKS5
+site-method-http = HTTP
+site-host = Адрес
+site-port = Порт
+site-user = Пользователь
+site-password = Пароль
+
 # Веб-интерфейс. Уходит в браузер как есть: он сам подставляет { $name },
 # поэтому здесь нет селекторов.
 ui-title = anyProxy

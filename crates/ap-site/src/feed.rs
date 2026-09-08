@@ -1,0 +1,389 @@
+//! What the panel says, and whether it is believed.
+//!
+//! The feed is trusted to be the panel, because it is reached through a
+//! tunnel and nowhere else; it is not trusted to be well-formed. Every row is
+//! held to the same rules the panel itself applies, and a list with one bad
+//! row is refused whole (0094).
+
+use std::time::Duration;
+
+use ap_core::{LinkName, NodeKindTag};
+use http_body_util::{BodyExt, Empty};
+use hyper::body::Bytes;
+use hyper::{Request, StatusCode};
+
+/// Most rows a feed may carry.
+pub const MOST_ROWS: usize = 1000;
+
+/// Longest body read from the feed.
+const BODY_CEILING: usize = 1024 * 1024;
+
+/// How long one fetch may take, connect to last byte.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Where the feed answers: a host, a port and the one path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedAddress {
+    host: String,
+    port: u16,
+}
+
+impl FeedAddress {
+    /// Reads `http://host:port`, and nothing else.
+    ///
+    /// Plain HTTP on purpose: the feed is reached over a tunnel, which is what
+    /// carries the connection (0091). A path is refused rather than kept,
+    /// because there is only one.
+    pub fn parse(text: &str) -> Option<Self> {
+        let rest = text.trim().strip_prefix("http://")?;
+        let rest = rest.strip_suffix('/').unwrap_or(rest);
+        let (host, port) = rest.rsplit_once(':')?;
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        let port: u16 = port.parse().ok()?;
+        if host.is_empty() || port == 0 || host.contains('/') {
+            return None;
+        }
+        Some(Self {
+            host: host.to_owned(),
+            port,
+        })
+    }
+
+    /// The socket to open.
+    pub fn socket(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+}
+
+/// Why a feed was not taken.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FeedError {
+    /// The feed could not be reached.
+    #[error("connect: {0}")]
+    Connect(String),
+    /// The whole fetch took longer than allowed.
+    #[error("timeout")]
+    Timeout,
+    /// The feed answered with something other than 200.
+    #[error("status {0}")]
+    Status(u16),
+    /// The body was larger than the ceiling.
+    #[error("body too large")]
+    TooLarge,
+    /// The body was not the shape a feed has.
+    #[error("malformed: {0}")]
+    Malformed(&'static str),
+    /// More rows than the ceiling.
+    #[error("too many rows")]
+    TooMany,
+    /// The pages could not be built from a list that parsed.
+    #[error("render")]
+    Render,
+}
+
+/// One row of the feed as it arrives, before anything is believed about it.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Row {
+    name: String,
+    method: String,
+    #[serde(default)]
+    link: Option<String>,
+    #[serde(default)]
+    host: Option<String>,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    user: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct Body {
+    links: Vec<Row>,
+}
+
+/// One link the site shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublicLink {
+    /// A method with a `t.me` link.
+    Link {
+        /// The name the operator gave it.
+        name: LinkName,
+        /// The method served.
+        method: NodeKindTag,
+        /// The link, beginning `https://t.me/`.
+        link: String,
+    },
+    /// A method Telegram takes as host, port and an account.
+    Account {
+        /// The name the operator gave it.
+        name: LinkName,
+        /// The method served.
+        method: NodeKindTag,
+        /// The node's address.
+        host: String,
+        /// The port.
+        port: u16,
+        /// Account name.
+        user: String,
+        /// Account password.
+        password: String,
+    },
+}
+
+impl PublicLink {
+    /// The name the operator gave it.
+    pub fn name(&self) -> &LinkName {
+        match self {
+            Self::Link { name, .. } | Self::Account { name, .. } => name,
+        }
+    }
+
+    /// The method served.
+    pub fn method(&self) -> NodeKindTag {
+        match self {
+            Self::Link { method, .. } | Self::Account { method, .. } => *method,
+        }
+    }
+}
+
+/// Reads a feed body into links, or refuses it whole.
+pub fn parse(body: &[u8]) -> Result<Vec<PublicLink>, FeedError> {
+    let body: Body = serde_json::from_slice(body).map_err(|_| FeedError::Malformed("json"))?;
+    if body.links.len() > MOST_ROWS {
+        return Err(FeedError::TooMany);
+    }
+    body.links.into_iter().map(believe).collect()
+}
+
+/// The only prefix a link may have. Anything else is not a Telegram link,
+/// whatever the feed says.
+const LINK_PREFIX: &str = "https://t.me/";
+
+/// Holds one row to the rules, or refuses it.
+fn believe(row: Row) -> Result<PublicLink, FeedError> {
+    let name = LinkName::try_from(row.name.as_str()).map_err(|_| FeedError::Malformed("name"))?;
+    let method =
+        NodeKindTag::from_stored(&row.method).map_err(|_| FeedError::Malformed("method"))?;
+    match method {
+        NodeKindTag::FakeTls | NodeKindTag::Web | NodeKindTag::Mtproto => {
+            let link = row.link.ok_or(FeedError::Malformed("link"))?;
+            let sound = link.starts_with(LINK_PREFIX)
+                && link.len() <= 512
+                && link.bytes().all(|byte| byte.is_ascii_graphic());
+            if !sound {
+                return Err(FeedError::Malformed("link"));
+            }
+            Ok(PublicLink::Link { name, method, link })
+        }
+        NodeKindTag::Socks5 | NodeKindTag::Http => {
+            let host = plain(row.host, 253, "host")?;
+            let port = row
+                .port
+                .filter(|port| *port != 0)
+                .ok_or(FeedError::Malformed("port"))?;
+            let user = plain(row.user, 128, "user")?;
+            let password = plain(row.password, 128, "password")?;
+            Ok(PublicLink::Account {
+                name,
+                method,
+                host,
+                port,
+                user,
+                password,
+            })
+        }
+    }
+}
+
+/// A field that must be there, short, and free of anything that is not
+/// printable.
+fn plain(value: Option<String>, ceiling: usize, what: &'static str) -> Result<String, FeedError> {
+    let value = value.ok_or(FeedError::Malformed(what))?;
+    let sound = !value.is_empty()
+        && value.chars().count() <= ceiling
+        && !value.chars().any(|c| c.is_control() || c.is_whitespace());
+    if sound {
+        Ok(value)
+    } else {
+        Err(FeedError::Malformed(what))
+    }
+}
+
+/// Asks the feed once and returns its body, within the ceiling and the time.
+pub async fn fetch(feed: &FeedAddress) -> Result<Vec<u8>, FeedError> {
+    tokio::time::timeout(FETCH_TIMEOUT, fetch_inner(feed))
+        .await
+        .map_err(|_| FeedError::Timeout)?
+}
+
+async fn fetch_inner(feed: &FeedAddress) -> Result<Vec<u8>, FeedError> {
+    let socket = feed.socket();
+    let stream = tokio::net::TcpStream::connect(&socket)
+        .await
+        .map_err(|error| FeedError::Connect(error.to_string()))?;
+    let io = hyper_util::rt::TokioIo::new(stream);
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(io)
+        .await
+        .map_err(|error| FeedError::Connect(error.to_string()))?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/v1/public-links")
+        .header("host", socket)
+        .body(Empty::<Bytes>::new())
+        .map_err(|error| FeedError::Connect(error.to_string()))?;
+    let response = sender
+        .send_request(request)
+        .await
+        .map_err(|error| FeedError::Connect(error.to_string()))?;
+    if response.status() != StatusCode::OK {
+        return Err(FeedError::Status(response.status().as_u16()));
+    }
+
+    let mut body = response.into_body();
+    let mut bytes = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|error| FeedError::Connect(error.to_string()))?;
+        if let Some(chunk) = frame.data_ref() {
+            if bytes.len() + chunk.len() > BODY_CEILING {
+                return Err(FeedError::TooLarge);
+            }
+            bytes.extend_from_slice(chunk);
+        }
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(json: serde_json::Value) -> Result<Vec<PublicLink>, FeedError> {
+        parse(
+            serde_json::json!({ "links": [json] })
+                .to_string()
+                .as_bytes(),
+        )
+    }
+
+    #[test]
+    fn a_feed_address_is_host_and_port_and_nothing_else() {
+        assert_eq!(
+            FeedAddress::parse("http://10.0.0.1:8090"),
+            Some(FeedAddress {
+                host: "10.0.0.1".to_owned(),
+                port: 8090
+            })
+        );
+        assert_eq!(
+            FeedAddress::parse("http://[fd00::1]:8090/").map(|feed| feed.socket()),
+            Some("[fd00::1]:8090".to_owned())
+        );
+        for bad in [
+            "https://10.0.0.1:8090",
+            "http://10.0.0.1",
+            "http://10.0.0.1:0",
+            "http://10.0.0.1:8090/v1/public-links",
+            "",
+        ] {
+            assert_eq!(FeedAddress::parse(bad), None, "{bad:?} was taken");
+        }
+    }
+
+    #[test]
+    fn a_link_row_is_taken_when_it_points_at_telegram() {
+        let links = row(serde_json::json!({
+            "name": "для всех", "method": "faketls",
+            "link": "https://t.me/proxy?server=203.0.113.7&port=443&secret=ee00"
+        }))
+        .unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].method(), NodeKindTag::FakeTls);
+        assert_eq!(links[0].name().as_str(), "для всех");
+    }
+
+    #[test]
+    fn a_link_that_points_elsewhere_is_refused() {
+        for link in [
+            "https://example.com/proxy",
+            "http://t.me/proxy",
+            "https://t.me/proxy?server=a b",
+            "javascript:alert(1)",
+        ] {
+            let refused = row(serde_json::json!({
+                "name": "x", "method": "mtproto", "link": link
+            }));
+            assert_eq!(refused, Err(FeedError::Malformed("link")), "{link:?}");
+        }
+    }
+
+    #[test]
+    fn an_account_row_needs_every_field_and_no_control_characters() {
+        let taken = row(serde_json::json!({
+            "name": "socks", "method": "socks5", "host": "203.0.113.8",
+            "port": 1080, "user": "u", "password": "p"
+        }))
+        .unwrap();
+        assert!(matches!(taken[0], PublicLink::Account { port: 1080, .. }));
+
+        let no_port = row(serde_json::json!({
+            "name": "socks", "method": "socks5", "host": "203.0.113.8",
+            "user": "u", "password": "p"
+        }));
+        assert_eq!(no_port, Err(FeedError::Malformed("port")));
+
+        let bad_user = row(serde_json::json!({
+            "name": "socks", "method": "http", "host": "203.0.113.8",
+            "port": 3128, "user": "u\nv", "password": "p"
+        }));
+        assert_eq!(bad_user, Err(FeedError::Malformed("user")));
+    }
+
+    #[test]
+    fn an_unknown_method_and_a_bad_name_refuse_the_row() {
+        assert_eq!(
+            row(serde_json::json!({ "name": "x", "method": "vless", "link": "https://t.me/x" })),
+            Err(FeedError::Malformed("method"))
+        );
+        assert_eq!(
+            row(serde_json::json!({ "name": "a\nb", "method": "web", "link": "https://t.me/x" })),
+            Err(FeedError::Malformed("name"))
+        );
+    }
+
+    #[test]
+    fn one_bad_row_refuses_the_whole_feed() {
+        let body = serde_json::json!({ "links": [
+            { "name": "good", "method": "mtproto", "link": "https://t.me/proxy?x" },
+            { "name": "bad", "method": "mtproto", "link": "https://elsewhere/" },
+        ] });
+        assert_eq!(
+            parse(body.to_string().as_bytes()),
+            Err(FeedError::Malformed("link"))
+        );
+    }
+
+    #[test]
+    fn more_rows_than_the_ceiling_are_refused() {
+        let rows: Vec<_> = (0..=MOST_ROWS)
+            .map(|i| serde_json::json!({ "name": format!("n{i}"), "method": "mtproto", "link": "https://t.me/x" }))
+            .collect();
+        let body = serde_json::json!({ "links": rows });
+        assert_eq!(parse(body.to_string().as_bytes()), Err(FeedError::TooMany));
+    }
+
+    #[test]
+    fn something_that_is_not_a_feed_is_refused() {
+        assert_eq!(parse(b"<html>"), Err(FeedError::Malformed("json")));
+        assert_eq!(parse(b"{}"), Err(FeedError::Malformed("json")));
+    }
+}

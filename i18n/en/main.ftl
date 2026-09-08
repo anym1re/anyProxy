@@ -98,6 +98,28 @@ cli-enrollment-code = enrolment code (shown once): { $code }
 cli-enrollment-fingerprint = panel fingerprint: { $fingerprint }
 cli-enrollment-command = run on the node: { $command }
 
+# The public site of links (0093). Rendered on the server, no placeables.
+site-title = Telegram proxy
+site-description = Public links to connect Telegram through a proxy. No account, no sign-in.
+site-heading = Links to connect
+site-lead = Open a link in Telegram and confirm.
+site-links = Links
+site-none = No links right now.
+site-open = Open in Telegram
+site-machine = List for programs
+site-languages = Language
+site-lang-ru = Русский
+site-lang-en = English
+site-method-faketls = MTProto, masked
+site-method-web = WEB
+site-method-mtproto = MTProto
+site-method-socks5 = SOCKS5
+site-method-http = HTTP
+site-host = Host
+site-port = Port
+site-user = User
+site-password = Password
+
 # The web interface. Handed to the browser as written: it substitutes
 # { $name } itself, so these carry no selectors.
 ui-title = anyProxy
