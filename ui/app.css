@@ -3076,6 +3076,23 @@ button, input, select, textarea { font-family: inherit; font-size: inherit;
    stand drew a field to begin with, its lines are the browser's. */
 input.inp, select.inp, textarea.inp { line-height: inherit; }
 select.inp { appearance: none; }
+/* A screen still gathering its figures stands there as drawn, with a bar
+   where each word will be, lit by a sheen going across so the wait reads as a
+   wait. It answers nothing while it waits, and what it has not been told yet —
+   a curve, a marker, a mark against a name — is not drawn at all. The colour
+   goes with the words: a red dot says a node is down, and a screen that has not
+   asked yet must not say so. */
+#screen[data-waiting] { pointer-events: none; user-select: none; filter: grayscale(1); }
+#screen[data-waiting] svg, #screen[data-waiting] .tip { visibility: hidden; }
+#screen .sk { display: inline-block; height: 0.85em; vertical-align: -0.1em;
+              border-radius: 5px; color: transparent;
+              background: linear-gradient(90deg, var(--raise),
+                          color-mix(in srgb, var(--raise) 40%, var(--panel-2)),
+                          var(--raise)) 0 0 / 220% 100%;
+              animation: sheen 1.3s var(--ease-out) infinite; }
+@keyframes sheen { from { background-position: 220% 0; }
+                   to   { background-position: -120% 0; } }
+
 /* A dialog was drawn on an artboard of its own, and shown here over a screen.
    The artboard's frame is not the dialog's: without this it paints the page
    black and sits where the drawing put it on the board. */

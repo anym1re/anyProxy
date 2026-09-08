@@ -1862,7 +1862,13 @@
       // A node that shows a name is dialled by that name; the address is
       // where its agent last called from, which is not the same thing and is
       // not what a client can use.
-      const host = editable(fields[0], (node && node.domain) || (node && node.address) || '');
+      const host = editable(fields[0], (node && node.domain) || (node && node.address) || '',
+        () => ready());
+      // The stand drew its own node and method under the title. This dialog
+      // says which node this link is for, and says the access instead when the
+      // node is not among the ones it was given.
+      put(box, '.dh .note', node ? `${node.label} · ${kindOf(node)}`
+        : (access.name || access.id.slice(0, 8)));
       const pairs = $('.pair', box);
       if (pairs) pairs.replaceChildren();
       // The box the link goes in is empty until there is a link, and an
@@ -1877,21 +1883,23 @@
       // that before it is handed out. A consent, not a setting: the button
       // waits for it.
       let acknowledged = false;
+      // A link to nowhere is not a link: the button waits for a host as well.
+      const ready = () => { get.disabled = !acknowledged || !host.value.trim(); };
       const check = $('.chk', box);
       if (check) {
         put(check, '.tx .t', t('ui-link-acknowledge'));
-        const box_ = $('.bx', check);
+        const mark = $('.bx', check);
         const tick = $('.bx svg', check);
         if (tick) tick.style.opacity = '0';
-        get.disabled = true;
         check.addEventListener('click', () => {
           acknowledged = !acknowledged;
           if (tick) tick.style.opacity = acknowledged ? '1' : '0';
-          if (box_) box_.style.cssText = acknowledged
+          if (mark) mark.style.cssText = acknowledged
             ? 'background: var(--key); border-color: var(--key);' : '';
-          get.disabled = !acknowledged;
+          ready();
         });
       }
+      ready();
       get.addEventListener('click', async () => {
         try {
           const issued = await api('POST', `/v1/accesses/${access.id}/link`, { host: host.value.trim(), acknowledged });
@@ -2201,15 +2209,48 @@
   /// its figures must not land on top of one the operator has since moved to.
   let asked = 0;
 
+  /// The screen as drawn, with every word replaced by a bar: what a screen
+  /// looks like while its figures are on their way.
+  ///
+  /// The words are replaced rather than hidden — none of the drawing's own
+  /// figures may sit on a live screen, even unreadably — and the bar is as wide
+  /// as the word was, so it stands where the word will.
+  function skeleton(name) {
+    const root = screen(name);
+    const SKIP = new Set(['SCRIPT', 'STYLE', 'TITLE', 'OPTION', 'SELECT', 'TEXTAREA']);
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const words = [];
+    for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+      const parent = node.parentElement;
+      if (!parent || SKIP.has(parent.tagName) || parent.closest('svg')) continue;
+      if (node.nodeValue.trim()) words.push(node);
+    }
+    for (const node of words) {
+      const bar = document.createElement('span');
+      bar.className = 'sk';
+      bar.style.width = `${Math.min(18, Math.max(2, node.nodeValue.trim().length))}ch`;
+      node.replaceWith(bar);
+    }
+    // A control drawn with something in it would show that something, and a
+    // list of choices keeps its words out of reach of the walk above.
+    for (const field of root.querySelectorAll('input')) {
+      field.value = '';
+      field.placeholder = '';
+    }
+    for (const list of root.querySelectorAll('select')) list.replaceChildren();
+    return root;
+  }
+
   async function show(name, quiet) {
     const target = $('#screen');
     const ticket = (asked += 1);
-    // The screen it is about to be is worn straight away, and with it a word:
-    // the one before it, wearing the wrong sheet, is what a wait used to look
-    // like.
+    // The screen it is about to be is worn straight away, and the screen
+    // itself stands there while its figures are fetched. The one before it,
+    // wearing the wrong sheet, is what a wait used to look like.
     if (!quiet) {
       wear(name);
-      target.replaceChildren(h('div', { class: 'content' }, h('div', { class: 'm3' }, t('ui-loading'))));
+      target.dataset.waiting = '';
+      target.replaceChildren(skeleton(name));
     }
     const root = screen(name);
     try {
@@ -2218,9 +2259,13 @@
       applyStaticText(root);
       wear(name);
       target.replaceChildren(root);
+      delete target.dataset.waiting;
     } catch (error) {
       if (ticket !== asked) return;
-      if (!quiet) target.replaceChildren(h('div', { class: 'content' }, h('div', { class: 'm3' }, error.message)));
+      if (!quiet) {
+        target.replaceChildren(h('div', { class: 'content' }, h('div', { class: 'm3' }, error.message)));
+        delete target.dataset.waiting;
+      }
       refused(error);
     }
   }
@@ -2236,6 +2281,7 @@
     if (!state.me) {
       wear(state.setupNeeded ? 'first-run' : 'login');
       $('#screen').replaceChildren(state.setupNeeded ? setupView() : loginView());
+      delete $('#screen').dataset.waiting;
       return;
     }
     let name = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/')[0];

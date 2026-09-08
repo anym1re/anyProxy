@@ -441,7 +441,7 @@
           <div class="striplbl"><span>30 суток</span><span class="push warn">7 сбоев</span></div>
           <div class="cfoot">
             <span class="mono">v0.1.0 · связь 14 с назад</span>
-            <span class="a"><a href="nodes.html" class="act-now">Диагностика</a><a href="delete.html" class="risk"><span data-t="ui-node-delete">Удалить</span></a></span>
+            <span class="a"><a href="nodes.html" class="act-now"><span data-t="ui-node-diagnose">Диагностика</span></a><a href="delete.html" class="risk"><span data-t="ui-node-delete">Удалить</span></a></span>
           </div>
         </div>
 
@@ -641,7 +641,7 @@
           <div class="ev bad">Связь с Telegram потеряна</div>
           <div class="mono m2">проверка, 3 попытки</div>
           <div class="m2">Движок отвечает, адреса DC недоступны</div>
-          <div class="r src mono">агент</div>
+          <div class="r src mono"><span data-t="ui-log-by-agent">агент</span></div>
         </label>
 
         <label class="tr streamed" style="--d:40ms" for="r2">
@@ -704,7 +704,7 @@
         <label class="tr" for="r4">
           <div class="mono">19:36:58</div>
           <div class="nd">edge-fra</div>
-          <div class="ev">Код регистрации выпущен</div>
+          <div class="ev"><span data-t="ui-event-node-enrollment-issued">Код регистрации выпущен</span></div>
           <div class="mono m2">код, живёт 60 минут</div>
           <div class="m2">Показан один раз, хранится хеш</div>
           <div class="r src mono">operator</div>
@@ -716,7 +716,7 @@
           <div class="ev ok">Первое подключение по доступу</div>
           <div class="mono m2">tester</div>
           <div class="m2">Транспорт web, сайт-прикрытие отдаёт страницу</div>
-          <div class="r src mono">агент</div>
+          <div class="r src mono"><span data-t="ui-log-by-agent">агент</span></div>
         </div>
 
         <div class="tr">
@@ -725,7 +725,7 @@
           <div class="ev"><span data-t="ui-event-node-applied">Настройки доставлены</span></div>
           <div class="mono m2">версия настроек 4</div>
           <div class="m2">Подтверждена когда нода выходит на связь</div>
-          <div class="r src mono">агент</div>
+          <div class="r src mono"><span data-t="ui-log-by-agent">агент</span></div>
         </div>
 
         <div class="tr">
@@ -734,7 +734,7 @@
           <div class="ev">Агент зарегистрирован</div>
           <div class="mono m2">отпечаток панели совпал</div>
           <div class="m2">Отпечаток панели совпал</div>
-          <div class="r src mono">агент</div>
+          <div class="r src mono"><span data-t="ui-log-by-agent">агент</span></div>
         </div>
 
         <div class="tr">
@@ -761,7 +761,7 @@
           <div class="ev bad">Проверка не прошла</div>
           <div class="mono m2">таймаут 4 с</div>
           <div class="m2">Первая из трёх неудачных попыток</div>
-          <div class="r src mono">агент</div>
+          <div class="r src mono"><span data-t="ui-log-by-agent">агент</span></div>
         </div>
 
         <div class="tr">
@@ -812,7 +812,7 @@
           </div>
           <div class="card" style="--d:0ms">
             <div class="row">
-              <span class="k"><span data-t="ui-set-channel-address">Адрес панели</span></span>
+              <span class="k"><span data-t="ui-set-channel-address">Адрес канала</span></span>
               <input class="fld" type="text" value="panel.local:8443" spellcheck="false">
               <span class="when">12 авг</span>
             </div>
@@ -835,32 +835,6 @@
         </div>
 
         <div>
-          <div class="shead">
-            <h2>Обновления</h2><span class="cnt">3</span>
-            <span class="note">Область: все ноды</span>
-          </div>
-          <div class="card" style="--d:120ms">
-            <div class="row">
-              <span class="k">Версия движка на нодах</span>
-              <select class="fld">
-                <option>telemt 3.5.1</option>
-                <option>telemt 3.5.2</option>
-                <option selected>telemt 3.5.3</option>
-              </select>
-              <span class="when">1 сен</span>
-            </div>
-            <div class="row">
-              <span class="k">Обновлять ноды автоматически</span>
-              <label class="tog"><input type="checkbox" checked><span class="track"></span><span class="lab">включено</span></label>
-              <span class="when">12 авг</span>
-            </div>
-            <div class="row">
-              <span class="k">Проверка подписи обновления</span>
-              <label class="tog"><input type="checkbox" checked><span class="track"></span><span class="lab">включена</span></label>
-              <span class="when">12 авг</span>
-            </div>
-          </div>
-
           <div class="shead gap">
             <h2><span data-t="ui-set-checks">Проверки</span></h2><span class="cnt">2</span>
             <span class="note"><span data-t="ui-set-scope-nodes">Область: ноды</span></span>
@@ -875,7 +849,7 @@
               </select>
               <span class="when">2 сен</span>
             </div>
-            <div class="row dirty">
+            <div class="row">
               <span class="k"><span data-t="ui-set-silence-minutes">Порог молчания ноды</span></span>
               <select class="fld">
                 <option>2 минуты</option>
@@ -900,11 +874,11 @@
         </div>
       </div>
 
-      <div class="savebar">
+      <div class="savebar" hidden>
         <span class="t">Изменён 1 параметр</span>
         <span class="x">Порог молчания ноды: было 5 минут, стало 15 минут</span>
         <span class="sp"></span>
-        <button class="btn" type="button">Отменить</button>
+        <button class="btn" type="button"><span data-t="ui-set-cancel">Отменить</span></button>
         <button class="btn key" type="button"><span data-t="ui-save">Сохранить</span><span class="kbd" style="margin-left:4px">Ctrl S</span></button>
       </div>
     </div>
