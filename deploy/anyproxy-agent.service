@@ -10,6 +10,16 @@ ExecStart=/usr/local/bin/anyproxy-agent run
 Restart=always
 RestartSec=5s
 
+# What actually bounds how many clients a node serves at once, and it was the
+# stock 1024 — two descriptors a relayed connection, so about five hundred of
+# them, reached long before memory mattered. Measured on a node: a held
+# connection costs about 23 KB while it lives, and a listener settles at
+# roughly 36 KB per busiest-moment connection once the allocator stops handing
+# pages back. 16384 descriptors is therefore about eight thousand connections
+# and some three hundred megabytes at rest — sixteen times the old ceiling and
+# still safe beside the engine on the smallest host we support.
+LimitNOFILE=16384
+
 User=anyproxy
 Group=anyproxy
 DynamicUser=no
