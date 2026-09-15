@@ -1,0 +1,24 @@
+# Node deploy binaries run on hosts of unknown vintage — budget KVM, an older
+# Xeon, a Ryzen. They must be built for a portable baseline, never for the build
+# machine's own CPU: `-Ctarget-cpu=native` bakes in whatever the builder has
+# (a Ryzen's AVX2, a Xeon Gold's AVX-512) and the binary then dies with an
+# illegal instruction on any host without it.
+#
+# x86-64-v2 (SSE4.2, POPCNT, CMPXCHG16B) is present on every server CPU since
+# roughly 2010 — any real VPS, Xeon or Ryzen — and buys a little over bare
+# x86-64. It is NOT AVX2: that is x86-64-v3, which some cheap KVM plans and
+# feature-masked guests lack, so it is not the floor. Crypto acceleration is not
+# lost by staying conservative here — the TLS stack detects AES-NI and AVX2 at
+# runtime and uses them when the host has them, whatever this baseline says.
+#
+# For a fleet you know is uniformly v3-capable, override per build:
+#   RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cross build --release ...
+# For the most cautious floor (truly ancient or heavily masked guests), drop to
+#   -Ctarget-cpu=x86-64
+# aarch64 is left at its generic baseline, which is already portable.
+#
+# These blocks bind to the musl deploy triples only, so local dev and test
+# builds on the workstation are untouched.
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-Ctarget-cpu=x86-64-v2"]

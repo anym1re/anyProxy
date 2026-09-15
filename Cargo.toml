@@ -53,3 +53,17 @@ expect_used = "deny"
 panic = "deny"
 todo = "deny"
 unimplemented = "deny"
+
+# Tuned for nodes on small, shared hosts (1 CPU, 1–2 GB). opt-level stays at 3:
+# a node spends its CPU on TLS and byte-copying, and on one core throughput
+# matters more than a smaller binary — the size win comes from fat LTO and
+# stripping, which do not cost throughput. panic stays unwinding on purpose: a
+# proxy keeps serving every other connection when one task panics; aborting the
+# whole process to save a few kilobytes would take the fleet's clients down with
+# one bad request.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "unwind"

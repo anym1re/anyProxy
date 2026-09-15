@@ -60,6 +60,11 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
+        // Worker threads follow the core count on their own — one on a 1-CPU
+        // host — which is what a node wants. The blocking pool does not: its
+        // default is 512 threads, address space and memory a small host should
+        // never reserve for the handful of blocking calls a node makes.
+        .max_blocking_threads(4)
         .enable_all()
         .build()
     else {
