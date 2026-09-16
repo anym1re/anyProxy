@@ -19,8 +19,16 @@ const GREETING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10)
 /// on this machine, so there is nothing to authenticate and nobody to refuse.
 pub async fn serve(listener: TcpListener, site: Arc<Site>) {
     loop {
-        let Ok((mut stream, _)) = listener.accept().await else {
-            continue;
+        let (mut stream, _) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                // Out of descriptors the refusal repeats the instant it is
+                // retried, and retrying at once spends a whole core (0101).
+                if let Some(pause) = ap_core::net::pause_after_accept(&error) {
+                    tokio::time::sleep(pause).await;
+                }
+                continue;
+            }
         };
         let _ = stream.set_nodelay(true);
         let site = Arc::clone(&site);

@@ -39,8 +39,16 @@ pub async fn serve(
     let acceptor = acceptor(&authority)?;
 
     loop {
-        let Ok((stream, _)) = listener.accept().await else {
-            continue;
+        let (stream, _) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                // Out of descriptors the refusal repeats the instant it is
+                // retried, and retrying at once spends a whole core (0101).
+                if let Some(pause) = ap_core::net::pause_after_accept(&error) {
+                    tokio::time::sleep(pause).await;
+                }
+                continue;
+            }
         };
         let acceptor = acceptor.clone();
         let state = state.clone();

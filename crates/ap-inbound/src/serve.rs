@@ -28,8 +28,16 @@ pub async fn serve(
     // a second connection does not pay for reaching the destination again.
     let pool = Arc::new(crate::pool::Pool::new());
     loop {
-        let Ok((stream, peer)) = listener.accept().await else {
-            continue;
+        let (stream, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                // Out of descriptors the refusal repeats the instant it is
+                // retried, and retrying at once spends a whole core (0101).
+                if let Some(pause) = ap_core::net::pause_after_accept(&error) {
+                    tokio::time::sleep(pause).await;
+                }
+                continue;
+            }
         };
         // Accepted and closed at once while the machine is short: an accept
         // that is never made leaves the client hanging in the backlog until

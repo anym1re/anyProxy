@@ -9,6 +9,7 @@ pub mod i18n;
 mod limits;
 mod link;
 mod name;
+pub mod net;
 mod node;
 mod stored;
 mod tag;

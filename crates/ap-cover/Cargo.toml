@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+ap-core = { path = "../ap-core" }
 tokio = { workspace = true, features = ["io-util", "net", "time", "rt", "macros"] }
 
 [dev-dependencies]
