@@ -1,11 +1,11 @@
-use ap_core::{Client, ClientState, Encrypted, Label};
+use ap_core::{Client, ClientState, Encrypted, Label, TelegramAccount};
 use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::StoreError;
 
-pub(crate) const COLUMNS: &str = "id, label, note_nonce, note_ciphertext, state, quota_bytes, expires_at, \n     created_at, owner_id, telegram_linked_at";
+pub(crate) const COLUMNS: &str = "id, label, note_nonce, note_ciphertext, state, quota_bytes, expires_at, \n     created_at, owner_id, telegram_linked_at, telegram_account_nonce, \n     telegram_account_ciphertext, origin";
 
 /// Reads and writes clients.
 pub struct ClientRepo;
@@ -54,10 +54,12 @@ impl ClientRepo {
         row.map(read_client).transpose()
     }
 
-    /// Every client, oldest first. A limit is always applied.
+    /// Clients, newest first. A limit is always applied, and with people
+    /// signing up through the bot (0105) the list outgrows it: what an
+    /// operator is shown is who came last, not who came first.
     pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<Client>, StoreError> {
         let rows = sqlx::query(&format!(
-            "select {COLUMNS} from client order by created_at, id limit $1"
+            "select {COLUMNS} from client order by created_at desc, id desc limit $1"
         ))
         .bind(limit)
         .fetch_all(pool)
@@ -65,14 +67,15 @@ impl ClientRepo {
         rows.into_iter().map(read_client).collect()
     }
 
-    /// Every client one owner holds, oldest first.
+    /// The clients one owner holds, newest first.
     pub async fn list_owned(
         pool: &PgPool,
         owner: Uuid,
         limit: i64,
     ) -> Result<Vec<Client>, StoreError> {
         let rows = sqlx::query(&format!(
-            "select {COLUMNS} from client where owner_id = $1 order by created_at, id limit $2"
+            "select {COLUMNS} from client where owner_id = $1 \
+             order by created_at desc, id desc limit $2"
         ))
         .bind(owner)
         .bind(limit)
@@ -124,20 +127,30 @@ fn split_note(client: &Client) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
     }
 }
 
-pub(crate) fn read_client(row: sqlx::postgres::PgRow) -> Result<Client, StoreError> {
-    let label = Label::try_from(row.try_get::<String, _>("label")?)?;
-    let state = ClientState::from_stored(&row.try_get::<String, _>("state")?)?;
-    let nonce: Option<Vec<u8>> = row.try_get("note_nonce")?;
-    let ciphertext: Option<Vec<u8>> = row.try_get("note_ciphertext")?;
-    let note = match (nonce, ciphertext) {
+/// A sealed value from the two columns it is kept in, when both are set.
+pub(crate) fn sealed<T>(
+    nonce: Option<Vec<u8>>,
+    ciphertext: Option<Vec<u8>>,
+) -> Result<Option<Encrypted<T>>, StoreError> {
+    match (nonce, ciphertext) {
         (Some(nonce), Some(ciphertext)) => {
             let nonce: [u8; 24] = nonce
                 .try_into()
                 .map_err(|_| StoreError::Domain(ap_core::Error::SealedValue))?;
-            Some(Encrypted::<String>::from_parts(nonce, ciphertext))
+            Ok(Some(Encrypted::<T>::from_parts(nonce, ciphertext)))
         }
-        _ => None,
-    };
+        _ => Ok(None),
+    }
+}
+
+pub(crate) fn read_client(row: sqlx::postgres::PgRow) -> Result<Client, StoreError> {
+    let label = Label::try_from(row.try_get::<String, _>("label")?)?;
+    let state = ClientState::from_stored(&row.try_get::<String, _>("state")?)?;
+    let note = sealed::<String>(row.try_get("note_nonce")?, row.try_get("note_ciphertext")?)?;
+    let account = sealed::<TelegramAccount>(
+        row.try_get("telegram_account_nonce")?,
+        row.try_get("telegram_account_ciphertext")?,
+    )?;
     Ok(Client::from_parts(
         row.try_get("id")?,
         label,
@@ -147,5 +160,7 @@ pub(crate) fn read_client(row: sqlx::postgres::PgRow) -> Result<Client, StoreErr
         row.try_get::<Option<OffsetDateTime>, _>("expires_at")?,
         row.try_get("created_at")?,
     )
-    .with_telegram_linked(row.try_get::<Option<OffsetDateTime>, _>("telegram_linked_at")?))
+    .with_telegram_linked(row.try_get::<Option<OffsetDateTime>, _>("telegram_linked_at")?)
+    .with_telegram_account(account)
+    .with_bot_origin(row.try_get::<String, _>("origin")? == "bot"))
 }

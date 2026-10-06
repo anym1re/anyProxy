@@ -11,6 +11,19 @@ use crate::StoreError;
 const COLUMNS: &str = "id, client_id, name, node_id, surface, method, credential_nonce, \
      credential_ciphertext, tag_id, quota_bytes, expires_at, max_devices, state, created_at";
 
+/// What one node is carrying, as far as deciding whether it can take one more
+/// access goes (0105).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NodeLoad {
+    /// The node.
+    pub node_id: Uuid,
+    /// Accesses that are not revoked: what the node is configured with.
+    pub kept: i64,
+    /// Whether the client asked about holds an access here that is not
+    /// revoked.
+    pub held: bool,
+}
+
 /// Reads and writes accesses.
 pub struct AccessRepo;
 
@@ -152,6 +165,32 @@ impl AccessRepo {
         .fetch_all(pool)
         .await?;
         rows.into_iter().map(read_access).collect()
+    }
+
+    /// What every node is carrying, and whether one client is on it already
+    /// (0105). Counted in the database: a node with a thousand accesses is
+    /// asked about each time somebody asks the bot for their links, and
+    /// reading the thousand to count them would be the cost of every answer.
+    /// A node carrying nothing is not in the answer.
+    pub async fn loads(pool: &PgPool, client_id: Uuid) -> Result<Vec<NodeLoad>, StoreError> {
+        let rows = sqlx::query(
+            "select node_id, \
+                count(*) filter (where state <> 'revoked') as kept, \
+                coalesce(bool_or(state <> 'revoked' and client_id = $1), false) as held \
+             from access group by node_id",
+        )
+        .bind(client_id)
+        .fetch_all(pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(NodeLoad {
+                    node_id: row.try_get("node_id")?,
+                    kept: row.try_get("kept")?,
+                    held: row.try_get("held")?,
+                })
+            })
+            .collect()
     }
 
     /// Opens the credential of one access.

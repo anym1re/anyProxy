@@ -30,6 +30,7 @@ fn main() {
             .unwrap_or_default(),
         channel_address: String::new(),
         bot_api: ap_panel::BOT_API.to_owned(),
+        bot_signup: None,
     };
 
     let channel_bind: std::net::SocketAddr = std::env::var("ANYPROXY_CHANNEL_BIND")

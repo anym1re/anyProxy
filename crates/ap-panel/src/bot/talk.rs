@@ -7,12 +7,16 @@
 
 use ap_core::i18n::{Argument, message, message_with};
 use ap_core::time::format_date;
-use ap_core::{AccessState, AnyAccess, Client, ClientState, Locale, Node, NodeState};
+use ap_core::{
+    AccessState, AnyAccess, Client, ClientState, Encrypted, Locale, Node, NodeState,
+    TelegramAccount,
+};
 use ap_store::{AccessRepo, AuditRepo, BotRepo, ClientRepo, NodeRepo, TrafficRepo};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
-use super::api::Update;
+use super::api::{Markup, Reply, Update};
+use super::signup::{self, Arrival};
 use crate::handout::{Handout, handout, host_of};
 use crate::settings::Settings;
 use crate::{ApiError, AppState};
@@ -20,7 +24,7 @@ use crate::{ApiError, AppState};
 /// A message the bot was sent, reduced to what it answers by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Incoming {
-    /// The account that wrote. Never stored as such.
+    /// The account that wrote. Found by as a keyed digest.
     pub user_id: i64,
     /// Where the answer goes.
     pub chat_id: i64,
@@ -28,6 +32,9 @@ pub struct Incoming {
     pub locale: Locale,
     /// What was written.
     pub text: String,
+    /// Who wrote it, as Telegram describes them. Kept sealed on the client the
+    /// account is tied to, and refreshed with every message (0103).
+    pub account: TelegramAccount,
 }
 
 impl Incoming {
@@ -36,11 +43,20 @@ impl Incoming {
         let message = update.message?;
         let from = message.from?;
         let text = message.text?;
+        let language = from.language_code.unwrap_or_default();
         Some(Self {
             user_id: from.id,
             chat_id: message.chat.id,
-            locale: Locale::from_code(from.language_code.as_deref().unwrap_or_default()),
+            locale: Locale::from_code(&language),
             text,
+            account: TelegramAccount::new(
+                from.id,
+                message.chat.id,
+                from.username.as_deref(),
+                &from.first_name,
+                from.last_name.as_deref(),
+                &language,
+            ),
         })
     }
 }
@@ -85,6 +101,9 @@ fn parse(text: &str) -> Ask {
             _ => Ask::Help,
         };
     }
+    if let Some(ask) = menu_ask(text) {
+        return ask;
+    }
     if looks_like_code(text) {
         Ask::Start(Some(text.to_owned()))
     } else {
@@ -92,16 +111,66 @@ fn parse(text: &str) -> Ask {
     }
 }
 
-fn say(locale: Locale, key: &str) -> Result<String, ApiError> {
+/// The words of the menu and what each asks for (0106).
+const MENU: [(&str, Ask); 3] = [
+    ("bot-menu-links", Ask::Links),
+    ("bot-menu-status", Ask::Status),
+    ("bot-menu-help", Ask::Help),
+];
+
+/// What a word of the menu asks for, in any language the bot speaks. Pressing
+/// a button sends its word as a message, and the menu a person is looking at
+/// may have been drawn before they changed their language.
+fn menu_ask(text: &str) -> Option<Ask> {
+    let text = text.to_lowercase();
+    Locale::all().into_iter().find_map(|locale| {
+        MENU.iter().find_map(|(key, ask)| {
+            message(locale, key)
+                .is_ok_and(|word| word.to_lowercase() == text)
+                .then(|| ask.clone())
+        })
+    })
+}
+
+/// The menu under the box where a person types.
+fn menu(locale: Locale) -> Result<Markup, ApiError> {
+    Ok(Markup::Menu(vec![
+        vec![
+            say(locale, "bot-menu-links")?,
+            say(locale, "bot-menu-status")?,
+        ],
+        vec![say(locale, "bot-menu-help")?],
+    ]))
+}
+
+/// The commands the bot answers, with what each is for, as Telegram lists
+/// them beside the box where a person types.
+pub(crate) fn commands(locale: Locale) -> Vec<(&'static str, String)> {
+    [
+        ("start", "bot-command-start"),
+        ("links", "bot-command-links"),
+        ("status", "bot-command-status"),
+        ("help", "bot-command-help"),
+    ]
+    .into_iter()
+    .filter_map(|(command, key)| Some((command, message(locale, key).ok()?)))
+    .collect()
+}
+
+pub(crate) fn say(locale: Locale, key: &str) -> Result<String, ApiError> {
     message(locale, key).map_err(|_| ApiError::Internal("catalogue"))
 }
 
-fn say_with(locale: Locale, key: &str, args: &[(&str, Argument<'_>)]) -> Result<String, ApiError> {
+pub(crate) fn say_with(
+    locale: Locale,
+    key: &str,
+    args: &[(&str, Argument<'_>)],
+) -> Result<String, ApiError> {
     message_with(locale, key, args).map_err(|_| ApiError::Internal("catalogue"))
 }
 
 /// Bytes in the largest unit that keeps a digit before the point.
-fn bytes_words(locale: Locale, bytes: i64) -> Result<String, ApiError> {
+pub(crate) fn bytes_words(locale: Locale, bytes: i64) -> Result<String, ApiError> {
     const STEP: f64 = 1024.0;
     let mut value = bytes.max(0) as f64;
     let mut unit = "b";
@@ -129,7 +198,7 @@ fn bytes_words(locale: Locale, bytes: i64) -> Result<String, ApiError> {
     )
 }
 
-fn date_words(at: OffsetDateTime) -> Result<String, ApiError> {
+pub(crate) fn date_words(at: OffsetDateTime) -> Result<String, ApiError> {
     format_date(at.date()).map_err(ApiError::from)
 }
 
@@ -156,7 +225,7 @@ fn access_state_words(locale: Locale, state: AccessState) -> Result<String, ApiE
     say(locale, &format!("bot-access-{}", state.as_stored()))
 }
 
-fn method_words(locale: Locale, method: &str) -> Result<String, ApiError> {
+pub(crate) fn method_words(locale: Locale, method: &str) -> Result<String, ApiError> {
     say(locale, &format!("bot-method-{method}"))
 }
 
@@ -170,7 +239,7 @@ fn digest_of(state: &AppState, user_id: i64) -> Vec<u8> {
 
 /// Writes a line the bot is responsible for. No operator behind it: the
 /// journal says `by: bot` in the details (0075).
-async fn record(
+pub(crate) async fn record(
     state: &AppState,
     action: &str,
     target: &str,
@@ -191,37 +260,95 @@ async fn record(
     Ok(())
 }
 
+/// The account a message came from, sealed under the panel's key.
+pub(crate) fn sealed_account(
+    state: &AppState,
+    incoming: &Incoming,
+) -> Result<Encrypted<TelegramAccount>, ApiError> {
+    Encrypted::seal(&incoming.account, state.key()).map_err(ApiError::from)
+}
+
 /// Answers one message. The replies, in order, to send back.
-pub async fn answer(state: &AppState, incoming: &Incoming) -> Result<Vec<String>, ApiError> {
+pub async fn answer(state: &AppState, incoming: &Incoming) -> Result<Vec<Reply>, ApiError> {
     let locale = incoming.locale;
     let digest = digest_of(state, incoming.user_id);
-    let known = BotRepo::client_of(state.pool(), &digest).await?;
+    let mut known = BotRepo::client_of(state.pool(), &digest).await?;
     let settings = Settings::read(state.pool()).await?;
+    let ask = parse(&incoming.text);
 
-    match parse(&incoming.text) {
-        Ask::Start(Some(code)) => Ok(vec![claim(state, incoming, &digest, &code).await?]),
+    // Whoever wrote, if their account is tied, is who the panel shows and
+    // where the bot writes first from now on: names and usernames change, and
+    // an account tied before 0102 is picked up here the first time it writes.
+    if let Some(client) = &known {
+        BotRepo::remember_account(state.pool(), client.id(), &sealed_account(state, incoming)?)
+            .await?;
+    }
+
+    // An account nobody has tied, where the bot is the way in (0105): it is
+    // given a client of its own — unless what it sent is a code, which is for
+    // a client an operator made.
+    if known.is_none() && !matches!(ask, Ask::Start(Some(_))) && state.signup_open(&settings) {
+        match signup::arrive(state, incoming, &digest, &settings).await? {
+            Arrival::Later => return Ok(vec![Reply::plain(say(locale, "bot-signup-later")?)]),
+            Arrival::Made(client) => {
+                // Greeted, told the menu is there, and handed what they came
+                // for without being made to ask for it.
+                let hello = format!(
+                    "{}\n\n{}",
+                    greeting(locale, &settings)?,
+                    say(locale, "bot-signed-up")?
+                );
+                let mut replies = vec![Reply::with(hello, menu(locale)?)];
+                replies.extend(links(state, locale, &client).await?);
+                return Ok(replies);
+            }
+            Arrival::Back(client) => known = Some(client),
+        }
+    }
+
+    match ask {
+        Ask::Start(Some(code)) => {
+            let (said, tied) = claim(state, incoming, &digest, &code).await?;
+            Ok(vec![if tied {
+                Reply::with(said, menu(locale)?)
+            } else {
+                Reply::plain(said)
+            }])
+        }
         Ask::Start(None) => {
-            let greeting = match settings.text("bot_greeting").trim() {
-                "" => say(locale, "bot-hello")?,
-                said => said.to_owned(),
-            };
-            let then = match &known {
-                Some(client) => say_with(
-                    locale,
-                    "bot-linked-as",
-                    &[("label", Argument::Text(client.label().as_str()))],
-                )?,
-                None => say(locale, "bot-ask-code")?,
-            };
-            Ok(vec![format!("{greeting}\n\n{then}")])
+            let hello = greeting(locale, &settings)?;
+            match &known {
+                Some(client) => {
+                    let then = say_with(
+                        locale,
+                        "bot-linked-as",
+                        &[("label", Argument::Text(client.label().as_str()))],
+                    )?;
+                    let mut replies =
+                        vec![Reply::with(format!("{hello}\n\n{then}"), menu(locale)?)];
+                    // Somebody who came through the bot presses Start to get
+                    // connected, not to be told a command.
+                    if client.came_through_bot() {
+                        replies.extend(links(state, locale, client).await?);
+                    }
+                    Ok(replies)
+                }
+                None => Ok(vec![Reply::plain(format!(
+                    "{hello}\n\n{}",
+                    say(locale, "bot-ask-code")?
+                ))]),
+            }
         }
         Ask::Links => match &known {
             Some(client) => links(state, locale, client).await,
-            None => Ok(vec![say(locale, "bot-not-linked")?]),
+            None => Ok(vec![Reply::plain(say(locale, "bot-not-linked")?)]),
         },
         Ask::Status => match &known {
-            Some(client) => Ok(vec![status(state, locale, client, &settings).await?]),
-            None => Ok(vec![say(locale, "bot-not-linked")?]),
+            Some(client) => Ok(vec![Reply::with(
+                status(state, locale, client, &settings).await?,
+                menu(locale)?,
+            )]),
+            None => Ok(vec![Reply::plain(say(locale, "bot-not-linked")?)]),
         },
         Ask::Unlink => match &known {
             Some(client) => {
@@ -233,15 +360,27 @@ pub async fn answer(state: &AppState, incoming: &Incoming) -> Result<Vec<String>
                     serde_json::json!({}),
                 )
                 .await?;
-                Ok(vec![say(locale, "bot-unlinked")?])
+                Ok(vec![Reply::plain(say(locale, "bot-unlinked")?)])
             }
-            None => Ok(vec![say(locale, "bot-not-linked")?]),
+            None => Ok(vec![Reply::plain(say(locale, "bot-not-linked")?)]),
         },
-        Ask::Help => Ok(vec![say(locale, "bot-help")?]),
+        Ask::Help => Ok(vec![match &known {
+            Some(_) => Reply::with(say(locale, "bot-help")?, menu(locale)?),
+            None => Reply::plain(say(locale, "bot-help")?),
+        }]),
     }
 }
 
-/// Ties the account to the client a code was issued for.
+/// What the bot opens with: the operator's own words when there are any.
+fn greeting(locale: Locale, settings: &Settings) -> Result<String, ApiError> {
+    Ok(match settings.text("bot_greeting").trim() {
+        "" => say(locale, "bot-hello")?,
+        said => said.to_owned(),
+    })
+}
+
+/// Ties the account to the client a code was issued for. What to say, and
+/// whether it was tied.
 ///
 /// A wrong, spent and expired code get one answer. Guesses are counted the
 /// way sign-in attempts are, and held back the same way (Б13).
@@ -250,22 +389,30 @@ async fn claim(
     incoming: &Incoming,
     digest: &[u8],
     code: &str,
-) -> Result<String, ApiError> {
+) -> Result<(String, bool), ApiError> {
     let locale = incoming.locale;
     let subject = format!("telegram:{}", incoming.user_id);
     if let Some(wait) = state.attempts().record(&subject) {
-        return say_with(
+        let wait = say_with(
             locale,
             "bot-wait",
             &[("seconds", Argument::Number(wait as i64))],
-        );
+        )?;
+        return Ok((wait, false));
     }
     let now = OffsetDateTime::now_utc();
     let hash = Sha256::digest(code.trim().as_bytes());
     let Some(client_id) = BotRepo::claim_code(state.pool(), &hash, now).await? else {
-        return say(locale, "bot-code-refused");
+        return Ok((say(locale, "bot-code-refused")?, false));
     };
-    let linked = BotRepo::link(state.pool(), client_id, digest, now).await?;
+    let linked = BotRepo::link(
+        state.pool(),
+        client_id,
+        digest,
+        &sealed_account(state, incoming)?,
+        now,
+    )
+    .await?;
     state.attempts().forget(&subject);
     let label = ClientRepo::by_id(state.pool(), client_id)
         .await?
@@ -281,17 +428,32 @@ async fn claim(
         .await?;
     }
     record(state, "bot.linked", &label, serde_json::json!({})).await?;
-    say_with(locale, "bot-linked", &[("label", Argument::Text(&label))])
+    let tied = say_with(locale, "bot-linked", &[("label", Argument::Text(&label))])?;
+    Ok((tied, true))
 }
 
-/// One message per access the client may connect with.
+/// One message per access the client may connect with, each with a button
+/// that opens it where Telegram can (0106).
 ///
 /// Each is written to the journal before it is built, the way the panel's
-/// own endpoint does it: no line, no link.
-async fn links(state: &AppState, locale: Locale, client: &Client) -> Result<Vec<String>, ApiError> {
+/// own endpoint does it: no line, no link. The same answer goes out when the
+/// bot writes first because the links changed (0102).
+///
+/// Somebody who came through the bot is first given an access on every node
+/// that can take one and that they are not on yet: asking for the links is
+/// when a node that appeared since becomes theirs.
+pub(crate) async fn links(
+    state: &AppState,
+    locale: Locale,
+    client: &Client,
+) -> Result<Vec<Reply>, ApiError> {
     if client.state() != ClientState::Active {
-        return Ok(vec![client_state_words(locale, client.state())?]);
+        return Ok(vec![Reply::plain(client_state_words(
+            locale,
+            client.state(),
+        )?)]);
     }
+    signup::top_up(state, client).await?;
     let accesses = AccessRepo::by_client(state.pool(), client.id()).await?;
     let mut said = Vec::new();
     for access in accesses
@@ -307,14 +469,14 @@ async fn links(state: &AppState, locale: Locale, client: &Client) -> Result<Vec<
         }
         let method = method_words(locale, method_of(access))?;
         let Some(host) = host_of(&node) else {
-            said.push(say_with(
+            said.push(Reply::plain(say_with(
                 locale,
                 "bot-link-not-ready",
                 &[
                     ("node", Argument::Text(node.label().as_str())),
                     ("method", Argument::Text(&method)),
                 ],
-            )?);
+            )?));
             continue;
         };
         let Some(credential) =
@@ -329,43 +491,96 @@ async fn links(state: &AppState, locale: Locale, client: &Client) -> Result<Vec<
             serde_json::json!({ "access": common.id(), "host": host }),
         )
         .await?;
+        let connect = say(locale, "bot-button-connect")?;
         said.push(match handout(access, &credential, node.kind(), &host)? {
-            Handout::Link { link, .. } => say_with(
-                locale,
-                "bot-link-line",
-                &[
-                    ("node", Argument::Text(node.label().as_str())),
-                    ("method", Argument::Text(&method)),
-                    ("link", Argument::Text(&link)),
-                ],
-            )?,
+            Handout::Link { link, .. } => Reply::with(
+                say_with(
+                    locale,
+                    "bot-link-line",
+                    &[
+                        ("node", Argument::Text(node.label().as_str())),
+                        ("method", Argument::Text(&method)),
+                        ("link", Argument::Text(&link)),
+                    ],
+                )?,
+                Markup::Open(vec![vec![(connect, link)]]),
+            ),
             Handout::Account {
                 host,
                 port,
                 user,
                 password,
                 ..
-            } => say_with(
-                locale,
-                "bot-account-line",
-                &[
-                    ("node", Argument::Text(node.label().as_str())),
-                    ("method", Argument::Text(&method)),
-                    ("host", Argument::Text(&host)),
-                    ("port", Argument::Number(i64::from(port))),
-                    ("user", Argument::Text(&user)),
-                    ("password", Argument::Text(&password)),
-                ],
-            )?,
+            } => {
+                let words = say_with(
+                    locale,
+                    "bot-account-line",
+                    &[
+                        ("node", Argument::Text(node.label().as_str())),
+                        ("method", Argument::Text(&method)),
+                        ("host", Argument::Text(&host)),
+                        ("port", Argument::Number(i64::from(port))),
+                        ("user", Argument::Text(&user)),
+                        ("password", Argument::Text(&password)),
+                    ],
+                )?;
+                // Telegram opens a SOCKS5 proxy from an address of its own
+                // and has none for an HTTP one, which stays as text.
+                match socks_address(method_of(access), &host, port, &user, &password) {
+                    Some(address) => {
+                        Reply::with(words, Markup::Open(vec![vec![(connect, address)]]))
+                    }
+                    None => Reply::plain(words),
+                }
+            }
         });
     }
     if said.is_empty() {
-        said.push(say(locale, "bot-links-none")?);
+        // Somebody the bot took in is waiting for a node, not for an
+        // operator to remember them.
+        let key = if client.came_through_bot() {
+            "bot-no-nodes"
+        } else {
+            "bot-links-none"
+        };
+        said.push(Reply::plain(say(locale, key)?));
     }
     Ok(said)
 }
 
-fn method_of(access: &AnyAccess) -> &'static str {
+/// The address Telegram opens to set a SOCKS5 proxy, when the access is one.
+fn socks_address(
+    method: &str,
+    host: &str,
+    port: u16,
+    user: &str,
+    password: &str,
+) -> Option<String> {
+    (method == "socks5").then(|| {
+        format!(
+            "https://t.me/socks?server={}&port={port}&user={}&pass={}",
+            query_escaped(host),
+            query_escaped(user),
+            query_escaped(password)
+        )
+    })
+}
+
+/// A value as it goes into the query of an address: everything but letters,
+/// digits and the four signs that mean nothing there is written as its bytes.
+fn query_escaped(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+pub(crate) fn method_of(access: &AnyAccess) -> &'static str {
     match access {
         AnyAccess::Stealth(access) => access.method().as_stored(),
         AnyAccess::Open(access) => access.method().as_stored(),
@@ -487,6 +702,51 @@ mod tests {
     }
 
     #[test]
+    fn a_word_of_the_menu_asks_what_its_command_asks() {
+        // Whichever language the menu was drawn in, and however it was typed.
+        assert_eq!(parse("Links"), Ask::Links);
+        assert_eq!(parse("Ссылки"), Ask::Links);
+        assert_eq!(parse(" ссылки "), Ask::Links);
+        assert_eq!(parse("Status"), Ask::Status);
+        assert_eq!(parse("Статус"), Ask::Status);
+        assert_eq!(parse("Помощь"), Ask::Help);
+        // The menu is a word in every row and no row is empty.
+        for locale in Locale::all() {
+            let Markup::Menu(rows) = menu(locale).unwrap() else {
+                panic!("the menu is a menu");
+            };
+            assert!(rows.iter().all(|row| !row.is_empty()));
+            assert_eq!(rows.concat().len(), MENU.len());
+        }
+    }
+
+    #[test]
+    fn every_command_announced_is_a_command_answered() {
+        for locale in Locale::all() {
+            let announced = commands(locale);
+            assert_eq!(announced.len(), 4, "{locale:?}");
+            for (command, description) in announced {
+                assert!(!description.is_empty());
+                assert_ne!(parse(&format!("/{command}")), Ask::Unlink);
+                // Telegram takes lowercase letters, digits and underscores.
+                assert!(command.bytes().all(|byte| byte.is_ascii_lowercase()));
+            }
+        }
+        assert_eq!(parse("/help"), Ask::Help);
+        assert_eq!(parse("/links"), Ask::Links);
+    }
+
+    #[test]
+    fn a_socks_proxy_opens_from_an_address_and_an_http_one_does_not() {
+        let address = socks_address("socks5", "203.0.113.7", 1080, "u1", "p&s=1 /").unwrap();
+        assert_eq!(
+            address,
+            "https://t.me/socks?server=203.0.113.7&port=1080&user=u1&pass=p%26s%3D1%20%2F"
+        );
+        assert!(socks_address("http", "203.0.113.7", 8080, "u1", "p").is_none());
+    }
+
+    #[test]
     fn a_bare_code_is_taken_as_a_start() {
         let code = "0123456789abcdef0123456789abcdef";
         assert_eq!(parse(code), Ask::Start(Some(code.to_owned())));
@@ -532,6 +792,17 @@ mod tests {
                 "bot-method-mtproto",
                 "bot-method-socks5",
                 "bot-method-http",
+                "bot-menu-links",
+                "bot-menu-status",
+                "bot-menu-help",
+                "bot-command-start",
+                "bot-command-links",
+                "bot-command-status",
+                "bot-command-help",
+                "bot-button-connect",
+                "bot-signed-up",
+                "bot-no-nodes",
+                "bot-signup-later",
             ] {
                 assert!(say(locale, key).is_ok(), "{key} in {locale:?}");
             }

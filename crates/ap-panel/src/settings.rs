@@ -109,6 +109,52 @@ pub const KNOWN: &[Known] = &[
         max: 0,
         secret: false,
     },
+    // Whether an account that writes to the bot is given a client of its
+    // own, and what that client starts with (0105). Nought is no limit.
+    Known {
+        name: "bot_signup",
+        fallback: "on",
+        choices: SWITCH,
+        max: 0,
+        secret: false,
+    },
+    Known {
+        name: "bot_signup_quota_gb",
+        fallback: "0",
+        choices: &["0", "10", "50", "100", "500"],
+        max: 0,
+        secret: false,
+    },
+    Known {
+        name: "bot_signup_days",
+        fallback: "0",
+        choices: &["0", "7", "30", "90", "365"],
+        max: 0,
+        secret: false,
+    },
+    Known {
+        name: "bot_signup_devices",
+        fallback: "0",
+        choices: &["0", "1", "2", "3", "5"],
+        max: 0,
+        secret: false,
+    },
+    // At what share of a quota the bot warns the person, once (0102).
+    Known {
+        name: "bot_warn_quota_percent",
+        fallback: "90",
+        choices: &["80", "90", "95"],
+        max: 0,
+        secret: false,
+    },
+    // How many days before the end of a term the bot warns, once (0102).
+    Known {
+        name: "bot_warn_days",
+        fallback: "3",
+        choices: &["1", "3", "7"],
+        max: 0,
+        secret: false,
+    },
 ];
 
 /// The description of a setting, by name.
@@ -202,6 +248,7 @@ mod tests {
             "bot_enabled",
             "bot_show_usage",
             "bot_show_node",
+            "bot_signup",
         ] {
             assert!(acceptable(name, "on"), "{name}");
             assert!(acceptable(name, "off"), "{name}");
@@ -216,6 +263,15 @@ mod tests {
         assert!(acceptable("bot_token", ""));
         assert!(acceptable("bot_token", "123456:abc"));
         assert!(!acceptable("bot_token", "with\nline"));
+    }
+
+    #[test]
+    fn a_warning_threshold_is_one_of_its_steps() {
+        assert!(acceptable("bot_warn_quota_percent", "90"));
+        assert!(!acceptable("bot_warn_quota_percent", "85"));
+        assert!(!acceptable("bot_warn_quota_percent", "90%"));
+        assert!(acceptable("bot_warn_days", "7"));
+        assert!(!acceptable("bot_warn_days", "0"));
     }
 
     #[test]

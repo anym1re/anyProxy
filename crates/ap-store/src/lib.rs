@@ -17,10 +17,10 @@ mod setting;
 mod tag;
 mod traffic;
 
-pub use access::AccessRepo;
+pub use access::{AccessRepo, NodeLoad};
 pub use admin::{AdminRepo, SessionRepo};
 pub use audit::{AuditEntry, AuditRepo};
-pub use bot::{BotRepo, Linked};
+pub use bot::{BotRepo, Linked, Outgoing};
 pub use channel::{EnrollmentRepo, PanelIdentity, PanelIdentityRepo, PresenceRepo};
 pub use client::ClientRepo;
 pub use error::StoreError;
@@ -143,6 +143,22 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0024_bot_cursor",
         include_str!("../../../migrations/0024_bot_cursor.sql"),
+    ),
+    (
+        "0025_client_telegram_account",
+        include_str!("../../../migrations/0025_client_telegram_account.sql"),
+    ),
+    (
+        "0026_bot_outbox",
+        include_str!("../../../migrations/0026_bot_outbox.sql"),
+    ),
+    (
+        "0027_bot_warning",
+        include_str!("../../../migrations/0027_bot_warning.sql"),
+    ),
+    (
+        "0028_client_signup",
+        include_str!("../../../migrations/0028_client_signup.sql"),
     ),
 ];
 

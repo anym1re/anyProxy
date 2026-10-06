@@ -27,8 +27,103 @@ pub enum Fault {
     Unreachable,
     /// Telegram answered, and said no. Its own words.
     Refused(String),
+    /// The person blocked the bot, or the account is gone: nothing more can
+    /// be sent to that chat until they write again (0102).
+    Forbidden,
+    /// Telegram asked the bot to wait this many seconds before the next call.
+    Slow(u64),
     /// The address of the Bot API is not one that can be dialled.
     Address,
+}
+
+/// What hangs on a message (0106). A message carries one of these and not
+/// two: that is Telegram's rule, and why the menu and the button that opens a
+/// link go out on different messages.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Markup {
+    /// Nothing.
+    #[default]
+    None,
+    /// The menu under the box where a person types: rows of words. Pressing
+    /// one sends the word, as if it had been typed.
+    Menu(Vec<Vec<String>>),
+    /// Buttons under the message itself: rows of a word and the address it
+    /// opens.
+    Open(Vec<Vec<(String, String)>>),
+}
+
+impl Markup {
+    fn as_json(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::None => None,
+            Self::Menu(rows) => Some(serde_json::json!({
+                "keyboard": rows
+                    .iter()
+                    .map(|row| row.iter().map(|word| serde_json::json!({ "text": word })).collect())
+                    .collect::<Vec<Vec<_>>>(),
+                "resize_keyboard": true,
+                "is_persistent": true,
+            })),
+            Self::Open(rows) => Some(serde_json::json!({
+                "inline_keyboard": rows
+                    .iter()
+                    .map(|row| {
+                        row.iter()
+                            .map(|(word, address)| serde_json::json!({ "text": word, "url": address }))
+                            .collect()
+                    })
+                    .collect::<Vec<Vec<_>>>(),
+            })),
+        }
+    }
+}
+
+/// One message the bot sends: what it says and what hangs on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    /// The text.
+    pub text: String,
+    /// The menu or the buttons, when there are any.
+    pub markup: Markup,
+}
+
+impl Reply {
+    /// Text and nothing else.
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            markup: Markup::None,
+        }
+    }
+
+    /// Text with something hanging on it.
+    pub fn with(text: impl Into<String>, markup: Markup) -> Self {
+        Self {
+            text: text.into(),
+            markup,
+        }
+    }
+}
+
+impl From<String> for Reply {
+    fn from(text: String) -> Self {
+        Self::plain(text)
+    }
+}
+
+/// A reply reads as its text wherever text is wanted.
+impl std::ops::Deref for Reply {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl std::fmt::Display for Reply {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.text)
+    }
 }
 
 /// One update from `getUpdates`. Only what the bot reads is named.
@@ -57,8 +152,18 @@ pub struct Message {
 /// The account behind a message.
 #[derive(Debug, Clone, Deserialize)]
 pub struct User {
-    /// The account identifier. Kept in the panel only as a keyed digest.
+    /// The account identifier. Found by as a keyed digest, and kept sealed
+    /// with the rest of this (0103).
     pub id: i64,
+    /// The name as the person set it.
+    #[serde(default)]
+    pub first_name: String,
+    /// The second half of it, when there is one.
+    #[serde(default)]
+    pub last_name: Option<String>,
+    /// The `@username`, without the at-sign, when the account has one.
+    #[serde(default)]
+    pub username: Option<String>,
     /// The language the account is set to, when Telegram says.
     #[serde(default)]
     pub language_code: Option<String>,
@@ -144,19 +249,40 @@ impl BotApi {
         serde_json::from_value(result).map_err(|_| Fault::Refused("updates".to_owned()))
     }
 
-    /// Sends text to a chat. Previews are off: a connection link would draw a
-    /// card for t.me under itself.
-    pub async fn send_message(&self, chat_id: i64, text: &str) -> Result<(), Fault> {
-        self.call(
-            "sendMessage",
-            serde_json::json!({
-                "chat_id": chat_id,
-                "text": text,
-                "link_preview_options": { "is_disabled": true },
-            }),
-            PATIENCE,
-        )
-        .await?;
+    /// Sends a message to a chat, with what hangs on it (0106). Previews are
+    /// off: a connection link would draw a card for t.me under itself.
+    pub async fn send(&self, chat_id: i64, reply: &Reply) -> Result<(), Fault> {
+        let mut body = serde_json::json!({
+            "chat_id": chat_id,
+            "text": reply.text,
+            "link_preview_options": { "is_disabled": true },
+        });
+        if let Some(markup) = reply.markup.as_json() {
+            body["reply_markup"] = markup;
+        }
+        self.call("sendMessage", body, PATIENCE).await?;
+        Ok(())
+    }
+
+    /// Tells Telegram which commands the bot answers, for the list a client
+    /// shows beside the box where a person types. In one language, or for
+    /// everybody when none is named.
+    pub async fn set_commands(
+        &self,
+        commands: &[(&str, String)],
+        language: Option<&str>,
+    ) -> Result<(), Fault> {
+        let list: Vec<_> = commands
+            .iter()
+            .map(|(command, description)| {
+                serde_json::json!({ "command": command, "description": description })
+            })
+            .collect();
+        let mut body = serde_json::json!({ "commands": list });
+        if let Some(language) = language {
+            body["language_code"] = serde_json::json!(language);
+        }
+        self.call("setMyCommands", body, PATIENCE).await?;
         Ok(())
     }
 
@@ -212,6 +338,13 @@ impl BotApi {
         }
         match answer["error_code"].as_i64() {
             Some(401) => Err(Fault::Unauthorized),
+            Some(403) => Err(Fault::Forbidden),
+            Some(429) => Err(Fault::Slow(
+                answer["parameters"]["retry_after"]
+                    .as_u64()
+                    .unwrap_or(1)
+                    .clamp(1, 3600),
+            )),
             _ => Err(Fault::Refused(
                 answer["description"]
                     .as_str()

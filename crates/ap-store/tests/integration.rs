@@ -12,7 +12,8 @@ use ap_core::{
     StealthMethod, Tag, TagName,
 };
 use ap_store::{
-    AccessRepo, AuditRepo, ClientRepo, NodeRepo, SettingRepo, StoreError, TagRepo, TrafficRepo,
+    AccessRepo, AuditRepo, BotRepo, ClientRepo, NodeRepo, Outgoing, SettingRepo, StoreError,
+    TagRepo, TrafficRepo,
 };
 use sqlx::{PgPool, Row};
 use time::{Date, OffsetDateTime};
@@ -849,4 +850,38 @@ async fn a_setting_keeps_what_it_was_set_to_and_who_set_it() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn a_links_change_landing_mid_send_is_sent_again() {
+    let pool = db!();
+    let client = a_client(&pool).await;
+    let at = OffsetDateTime::now_utc();
+    let mine = |due: Vec<Outgoing>| -> Vec<Outgoing> {
+        due.into_iter()
+            .filter(|one| one.client_id == client.id())
+            .collect()
+    };
+
+    BotRepo::queue_links(&pool, client.id(), at).await.unwrap();
+    BotRepo::queue_links(&pool, client.id(), at).await.unwrap();
+    let read = mine(BotRepo::due(&pool, at, 10_000).await.unwrap());
+    assert_eq!(read.len(), 1, "two changes in a row are one message");
+
+    // Another change while that one is on its way to Telegram.
+    BotRepo::queue_links(&pool, client.id(), at).await.unwrap();
+    BotRepo::done(&pool, read[0].id, read[0].revision)
+        .await
+        .unwrap();
+    let again = mine(BotRepo::due(&pool, at, 10_000).await.unwrap());
+    assert_eq!(
+        again.len(),
+        1,
+        "the change that landed mid-send is still to go"
+    );
+
+    BotRepo::done(&pool, again[0].id, again[0].revision)
+        .await
+        .unwrap();
+    assert!(mine(BotRepo::due(&pool, at, 10_000).await.unwrap()).is_empty());
 }

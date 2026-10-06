@@ -39,8 +39,17 @@ pub(crate) fn key_file() -> PathBuf {
 }
 
 pub(crate) async fn panel() -> Option<Panel> {
+    panel_where(false).await
+}
+
+/// A panel where an account that writes to the bot is taken in (0105), or
+/// one where it is asked for a code. Said outright rather than left to the
+/// setting: the setting is one row for every panel on the database, and
+/// the tests share one.
+pub(crate) async fn panel_where(bot_signup: bool) -> Option<Panel> {
     let url = std::env::var("DATABASE_URL").ok()?;
-    let config = Config::loopback(0, url, key_file());
+    let mut config = Config::loopback(0, url, key_file());
+    config.bot_signup = Some(bot_signup);
     let state = AppState::build(&config).await.expect("state");
     Some(Panel {
         router: ap_panel::router(state.clone()),

@@ -1,7 +1,6 @@
 use ap_core::{
-    Access, AccessCommon, AccessState, AdTag, AdminLogin, AnyAccess, Client, ClientState,
-    Credential, Domain, Holder, Label, LinkName, Locale, Node, NodeKind, NodeKindTag, Open,
-    OpenMethod, Served, Stealth, StealthMethod, Tag, TagName, i18n::raw_messages,
+    AccessCommon, AccessState, AdTag, AdminLogin, AnyAccess, Client, ClientState, Domain, Holder,
+    Label, LinkName, Locale, Node, NodeKind, NodeKindTag, Tag, TagName, i18n::raw_messages,
     time::format_date, time::format_rfc3339,
 };
 use axum::extract::{FromRequestParts, Path, Query, State};
@@ -41,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/clients/{id}/traffic", get(client_traffic))
         .route("/v1/clients/{id}/bot-code", post(issue_bot_code))
         .route("/v1/clients/{id}/telegram", delete(unlink_telegram))
+        .route("/v1/bot/messages", post(queue_message))
         .route("/v1/clients/{id}/accesses", get(list_accesses))
         .route("/v1/accesses", get(list_all_accesses).post(create_access))
         .route("/v1/accesses/public", get(list_public_accesses))
@@ -327,7 +327,19 @@ struct Page {
     label: Option<String>,
 }
 
-fn client_json(client: &Client) -> Result<serde_json::Value, ApiError> {
+fn client_json(client: &Client, key: &ap_core::KeyStore) -> Result<serde_json::Value, ApiError> {
+    // Who is behind the tied account, as Telegram last described them (0103),
+    // and whether the bot can write to them first (0102). A record that does
+    // not open under this key is shown as absent rather than failing the list.
+    let account = client
+        .telegram_account()
+        .and_then(|sealed| sealed.open(key).ok())
+        .map(|account| {
+            serde_json::json!({
+                "username": account.username(),
+                "name": account.name(),
+            })
+        });
     Ok(serde_json::json!({
         "id": client.id(),
         "label": client.label().as_str(),
@@ -335,9 +347,12 @@ fn client_json(client: &Client) -> Result<serde_json::Value, ApiError> {
         "quota_bytes": client.quota_bytes(),
         "expires_at": client.expires_at().map(format_rfc3339).transpose()?,
         "created_at": format_rfc3339(client.created_at())?,
-        // When a Telegram account was tied to this client, and nothing
-        // about the account (0082).
+        // When a Telegram account was tied to this client (0082).
         "telegram_linked_at": client.telegram_linked_at().map(format_rfc3339).transpose()?,
+        "telegram": account,
+        // Who made the client: an operator, or the bot for an account that
+        // wrote to it (0105).
+        "origin": if client.came_through_bot() { "bot" } else { "operator" },
     }))
 }
 
@@ -351,7 +366,10 @@ async fn list_clients(
         Some(label) => vec![guarded.client_by_label(&Label::try_from(label)?).await?],
         None => guarded.clients(page.limit).await?,
     };
-    let body: Result<Vec<_>, ApiError> = clients.iter().map(client_json).collect();
+    let body: Result<Vec<_>, ApiError> = clients
+        .iter()
+        .map(|client| client_json(client, state.key()))
+        .collect();
     Ok(Json(serde_json::json!(body?)))
 }
 
@@ -386,7 +404,81 @@ async fn create_client(
         )
         .await?;
 
-    Ok((StatusCode::CREATED, Json(client_json(&client)?)).into_response())
+    Ok((
+        StatusCode::CREATED,
+        Json(client_json(&client, state.key())?),
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+struct OperatorMessage {
+    /// What to say, as it will be sent.
+    text: String,
+    /// One client, when it goes to one.
+    #[serde(default)]
+    client_id: Option<Uuid>,
+    /// Clients with an access under this tag, when it goes to them.
+    #[serde(default)]
+    tag_id: Option<Uuid>,
+}
+
+/// Queues an operator's message for clients the bot can reach (0102).
+///
+/// To one client, to those with an access under a tag, or to everyone this
+/// operator may see; a reseller reaches only their own either way. Answers
+/// with how many it was queued for: a client who never wrote to the bot, or
+/// who blocked it, cannot be written to.
+async fn queue_message(
+    State(state): State<AppState>,
+    actor: Actor,
+    Json(body): Json<OperatorMessage>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let text = body.text.trim();
+    if text.is_empty() || text.chars().count() > crate::bot::outbox::OPERATOR_CEILING {
+        return Err(ApiError::Unprocessable("message_form"));
+    }
+    let to = match (body.client_id, body.tag_id) {
+        (None, None) => crate::guard::Recipients::All,
+        (Some(client), None) => crate::guard::Recipients::Client(client),
+        (None, Some(tag)) => crate::guard::Recipients::Tag(tag),
+        (Some(_), Some(_)) => return Err(ApiError::Unprocessable("message_form")),
+    };
+    let guarded = state.guarded(&actor);
+    let recipients = guarded.message_recipients(to).await?;
+    let queued = crate::bot::outbox::operator_message(&state, &recipients, text).await?;
+
+    // Named by whom it went to, never by what it said (0074).
+    let (addressed, target) = match to {
+        crate::guard::Recipients::All => ("all", None),
+        crate::guard::Recipients::Client(id) => (
+            "client",
+            Some(guarded.client(id).await?.label().as_str().to_owned()),
+        ),
+        crate::guard::Recipients::Tag(id) => (
+            "tag",
+            guarded
+                .tags()
+                .await?
+                .into_iter()
+                .find(|tag| tag.id() == id)
+                .map(|tag| tag.name().as_str().to_owned()),
+        ),
+    };
+    guarded
+        .record(
+            "bot.message.queued",
+            target.as_deref(),
+            serde_json::json!({ "to": addressed, "count": queued }),
+        )
+        .await?;
+    // Queued is not sent: a bot that is off or refused sends it when it is
+    // running again, and the operator is told which it is.
+    let (standing, _) = state.bot_status().snapshot();
+    Ok(Json(serde_json::json!({
+        "queued": queued,
+        "bot": standing.as_stored(),
+    })))
 }
 
 async fn read_client(
@@ -395,7 +487,7 @@ async fn read_client(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let client = state.guarded(&actor).client(id).await?;
-    Ok(Json(client_json(&client)?))
+    Ok(Json(client_json(&client, state.key())?))
 }
 
 #[derive(Deserialize)]
@@ -619,43 +711,9 @@ async fn create_access(
         common = common.with_max_devices(devices)?;
     }
 
-    // A node serves the one method its kind names and nothing else, so the
-    // node decides. A caller that named a method is held to it — an access for
-    // another method could never be served, and refusing is better than
-    // storing one and wondering later — but naming it is not required.
-    let access = match node.kind().tag().served() {
-        Served::Masked(only) => {
-            if let Some(asked) = &body.method {
-                let asked = StealthMethod::from_stored(asked)
-                    .map_err(|_| ApiError::Unprocessable("method_not_served"))?;
-                if asked != only {
-                    return Err(ApiError::Unprocessable("method_not_served"));
-                }
-            }
-            AnyAccess::Stealth(Access::<Stealth>::new(common, only))
-        }
-        Served::Open(only) => {
-            if let Some(asked) = &body.method {
-                let asked = OpenMethod::from_stored(asked)
-                    .map_err(|_| ApiError::Unprocessable("method_not_served"))?;
-                if asked != only {
-                    return Err(ApiError::Unprocessable("method_not_served"));
-                }
-            }
-            AnyAccess::Open(Access::<Open>::new(common, only))
-        }
-    };
-
-    let credential = match &access {
-        AnyAccess::Open(open) if !matches!(open.method(), OpenMethod::Mtproto) => {
-            // Named by the access, not by the client that holds it. A client
-            // with two accesses would otherwise have one name for both, and a
-            // node keyed by name would serve whichever it stored last while
-            // charging the traffic to whichever it happened to keep.
-            Credential::generate_login(access.common().id().simple().to_string())?
-        }
-        _ => Credential::generate_secret(),
-    };
+    // The node decides what an access on it is; the bot's sign-up makes its
+    // accesses the same way (0105).
+    let (access, credential) = crate::issue::for_node(&node, common, body.method.as_deref())?;
 
     guarded.create_access(&access, &credential).await?;
     // Whose the link is, by name where it has one: making a link public is
@@ -672,6 +730,9 @@ async fn create_access(
             serde_json::json!({ "method": body.method, "holder": holder, "name": name }),
         )
         .await?;
+    if let Holder::Client(client_id) = access.common().holder() {
+        crate::bot::outbox::links_changed_for_client(&state, *client_id).await?;
+    }
 
     Ok((StatusCode::CREATED, Json(access_json(&access)?)).into_response())
 }
@@ -1038,6 +1099,7 @@ async fn burn_node(
     // Read before it is burned: a burned node is still there to be named, and
     // reading it first keeps the journal line readable either way (0074).
     let node = guarded.node(id).await?;
+    let told = crate::bot::outbox::reachable_on_node(&state, id).await?;
     guarded.burn_node(id).await?;
     guarded
         .record(
@@ -1046,6 +1108,8 @@ async fn burn_node(
             serde_json::json!({}),
         )
         .await?;
+    // What they have left, so nobody is left holding only the dead link (0102).
+    crate::bot::outbox::links_changed_for(&state, &told).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1107,6 +1171,7 @@ async fn rename_node(
             serde_json::json!({ "domain": body.domain }),
         )
         .await?;
+    crate::bot::outbox::links_changed_on_node(&state, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1149,6 +1214,7 @@ async fn set_node_address(
             serde_json::json!({ "address": address.map(|address| address.to_string()) }),
         )
         .await?;
+    crate::bot::outbox::links_changed_on_node(&state, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

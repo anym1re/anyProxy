@@ -1,7 +1,7 @@
 use ::time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Encrypted, Error, Label};
+use crate::{Encrypted, Error, Label, TelegramAccount};
 
 /// Lifecycle of a client as the panel sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,6 +25,10 @@ pub struct Client {
     expires_at: Option<OffsetDateTime>,
     created_at: OffsetDateTime,
     telegram_linked_at: Option<OffsetDateTime>,
+    telegram_account: Option<Encrypted<TelegramAccount>>,
+    /// Whether the bot made this client for an account that wrote to it,
+    /// rather than an operator in the panel (0105).
+    via_bot: bool,
 }
 
 impl Client {
@@ -39,6 +43,8 @@ impl Client {
             expires_at: None,
             created_at,
             telegram_linked_at: None,
+            telegram_account: None,
+            via_bot: false,
         }
     }
 
@@ -63,6 +69,8 @@ impl Client {
             expires_at,
             created_at,
             telegram_linked_at: None,
+            telegram_account: None,
+            via_bot: false,
         }
     }
 
@@ -84,6 +92,32 @@ impl Client {
     /// When a Telegram account was tied to this client, if one is.
     pub fn telegram_linked_at(&self) -> Option<OffsetDateTime> {
         self.telegram_linked_at
+    }
+
+    /// Records who is behind the tied account, sealed (0103).
+    pub fn with_telegram_account(mut self, account: Option<Encrypted<TelegramAccount>>) -> Self {
+        self.telegram_account = account;
+        self
+    }
+
+    /// Who is behind the tied account, sealed, when the bot has heard from
+    /// them since the account was tied. Its presence is also what lets the
+    /// bot write to them first (0102).
+    pub fn telegram_account(&self) -> Option<&Encrypted<TelegramAccount>> {
+        self.telegram_account.as_ref()
+    }
+
+    /// Marks the client as made by the bot (0105).
+    pub fn with_bot_origin(mut self, via_bot: bool) -> Self {
+        self.via_bot = via_bot;
+        self
+    }
+
+    /// Whether the bot made this client. Such a client is given an access
+    /// on every node that can take one; an operator's client holds what
+    /// the operator gave it.
+    pub fn came_through_bot(&self) -> bool {
+        self.via_bot
     }
 
     /// The sealed operator note, if one is set.

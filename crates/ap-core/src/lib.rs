@@ -13,6 +13,7 @@ pub mod net;
 mod node;
 mod stored;
 mod tag;
+mod telegram;
 pub mod time;
 
 pub use access::{
@@ -33,3 +34,4 @@ pub use node::{
     Machine, Node, NodeHealth, NodeKind, NodeKindTag, NodeState, Pressure, Process, Served,
 };
 pub use tag::Tag;
+pub use telegram::TelegramAccount;

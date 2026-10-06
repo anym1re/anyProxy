@@ -6,16 +6,19 @@
 //! at all, and as whom, is a setting (0085).
 
 pub mod api;
+pub mod outbox;
+mod signup;
 mod talk;
 
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::{ApiError, AppState};
-pub use api::{BotApi, Fault};
+pub use api::{BotApi, Fault, Markup, Reply};
+pub use signup::Pace;
 pub use talk::{Incoming, answer};
 
 /// How long a poll waits for an update before returning empty-handed.
@@ -23,6 +26,13 @@ const POLL_WAIT: u64 = 25;
 
 /// How long to wait before looking at the settings again while off.
 const IDLE: Duration = Duration::from_secs(10);
+
+/// How often quotas and terms are looked at for warnings (0102).
+const SCAN_EVERY: Duration = Duration::from_secs(600);
+
+/// Least time between turns while there is more to send, so a long queue goes
+/// out at a pace Telegram accepts rather than as fast as the loop can spin.
+const PACE: Duration = Duration::from_secs(1);
 
 /// What the bot is doing, in one word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -55,6 +65,7 @@ struct Inner {
     standing: Standing,
     username: Option<String>,
     token_digest: Option<Vec<u8>>,
+    scanned_at: Option<Instant>,
 }
 
 /// What the bot is doing right now, for the screen (0085).
@@ -95,6 +106,19 @@ impl Status {
         let fresh = inner.token_digest.as_deref() != Some(token_digest);
         inner.token_digest = Some(token_digest.to_vec());
         fresh || inner.standing != Standing::Polling
+    }
+
+    /// Whether it is time to look at quotas and terms again, and if so,
+    /// marks it done now.
+    fn scan_due(&self) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        let due = inner.scanned_at.is_none_or(|at| at.elapsed() >= SCAN_EVERY);
+        if due {
+            inner.scanned_at = Some(Instant::now());
+        }
+        due
     }
 }
 
@@ -163,7 +187,10 @@ async fn turn(state: &AppState) -> Duration {
         .needs_hello(&Sha256::digest(token.as_bytes()))
     {
         match api.get_me().await {
-            Ok(username) => note(state, Standing::Polling, Some(username)).await,
+            Ok(username) => {
+                note(state, Standing::Polling, Some(username)).await;
+                announce(&api).await;
+            }
             Err(Fault::Unauthorized) => {
                 note(state, Standing::Refused, None).await;
                 return Duration::from_secs(60);
@@ -175,17 +202,57 @@ async fn turn(state: &AppState) -> Duration {
         }
     }
 
-    match step(state, &api).await {
+    if state.bot_status().scan_due() {
+        let _ = outbox::scan(state).await;
+    }
+
+    // What is waiting goes first, and while more is waiting the poll does not
+    // sit for its full wait: a long queue would otherwise drain at one batch
+    // per quiet poll.
+    let delivered = match outbox::deliver(state, &api).await {
+        Ok(delivery) => delivery,
+        Err(trouble) => return after(state, trouble).await,
+    };
+    if let Some(hold) = delivered.hold {
+        return hold;
+    }
+    let wait = if delivered.more { 0 } else { POLL_WAIT };
+    match step(state, &api, wait).await {
+        Ok(_) if delivered.more => PACE,
         Ok(_) => Duration::ZERO,
-        Err(Trouble::Telegram(Fault::Unauthorized)) => {
+        Err(trouble) => after(state, trouble).await,
+    }
+}
+
+/// Tells Telegram which commands the bot answers, in each language it
+/// speaks and once more for everybody else (0106). A list that did not get
+/// through costs a person the hint beside the box they type in and nothing
+/// more, so a failure here stops nothing.
+async fn announce(api: &BotApi) {
+    for locale in ap_core::Locale::all() {
+        let _ = api
+            .set_commands(&talk::commands(locale), Some(locale.code()))
+            .await;
+    }
+    let _ = api
+        .set_commands(&talk::commands(ap_core::Locale::default()), None)
+        .await;
+}
+
+/// What a turn that stopped on trouble waits before the next.
+async fn after(state: &AppState, trouble: Trouble) -> Duration {
+    match trouble {
+        Trouble::Telegram(Fault::Unauthorized) => {
             note(state, Standing::Refused, None).await;
             Duration::from_secs(60)
         }
-        Err(Trouble::Telegram(_)) => {
+        // Asked to slow down: not a fault of the bot's, nothing to report.
+        Trouble::Telegram(Fault::Slow(seconds)) => Duration::from_secs(seconds),
+        Trouble::Telegram(_) => {
             note(state, Standing::Unreachable, None).await;
             IDLE
         }
-        Err(Trouble::Panel(_)) => IDLE,
+        Trouble::Panel(_) => IDLE,
     }
 }
 
@@ -207,12 +274,13 @@ async fn note(state: &AppState, standing: Standing, username: Option<String>) {
 }
 
 /// One poll: takes the updates after the cursor, answers each, and moves
-/// the cursor past them (0087). How many were answered.
-pub async fn step(state: &AppState, api: &BotApi) -> Result<usize, Trouble> {
+/// the cursor past them (0087). How many were answered. The poll waits up to
+/// `wait_secs` for an update to arrive.
+pub async fn step(state: &AppState, api: &BotApi, wait_secs: u64) -> Result<usize, Trouble> {
     let cursor = ap_store::BotRepo::cursor(state.pool())
         .await
         .map_err(ApiError::from)?;
-    let updates = api.get_updates(cursor, POLL_WAIT).await?;
+    let updates = api.get_updates(cursor, wait_secs).await?;
     let mut next = cursor;
     let mut answered = 0;
     for update in updates {
@@ -221,8 +289,8 @@ pub async fn step(state: &AppState, api: &BotApi) -> Result<usize, Trouble> {
             continue;
         };
         let replies = answer(state, &incoming).await?;
-        for text in replies {
-            api.send_message(incoming.chat_id, &text).await?;
+        for reply in &replies {
+            api.send(incoming.chat_id, reply).await?;
         }
         answered += 1;
     }

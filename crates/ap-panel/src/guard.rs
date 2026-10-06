@@ -3,7 +3,8 @@ use ap_core::{
     KeyStore, Label, Node, NodeState, Role, Tag, TagName,
 };
 use ap_store::{
-    AccessRepo, AuditRepo, ClientRepo, DailyTraffic, NodeRepo, TagRepo, TrafficRepo, TrafficTotals,
+    AccessRepo, AuditRepo, BotRepo, ClientRepo, DailyTraffic, NodeRepo, TagRepo, TrafficRepo,
+    TrafficTotals,
 };
 use sqlx::PgPool;
 use time::OffsetDateTime;
@@ -16,6 +17,17 @@ pub const MAX_PAGE: i64 = 200;
 
 /// Page size when the caller does not ask for one.
 pub const DEFAULT_PAGE: i64 = 50;
+
+/// Whom an operator's message is addressed to (0102).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recipients {
+    /// Every client the operator may see.
+    All,
+    /// One client.
+    Client(Uuid),
+    /// Clients holding an access under a tag.
+    Tag(Uuid),
+}
 
 /// Who is making the request.
 #[derive(Debug, Clone)]
@@ -104,6 +116,29 @@ impl<'a> Guarded<'a> {
         )
         .await?;
         Ok(())
+    }
+
+    /// Whom an operator's message would reach: clients this actor may see
+    /// that the bot can write to (0102). A reseller reaches only their own,
+    /// whichever way the message is addressed.
+    pub async fn message_recipients(&self, to: Recipients) -> Result<Vec<Uuid>, ApiError> {
+        let owner = (!self.actor.role().reaches_every_client()).then(|| self.actor.id());
+        Ok(match to {
+            Recipients::All => BotRepo::reachable(self.pool, owner)
+                .await?
+                .iter()
+                .map(Client::id)
+                .collect(),
+            Recipients::Client(id) => {
+                let client = self.client(id).await?;
+                if client.telegram_account().is_some() {
+                    vec![id]
+                } else {
+                    Vec::new()
+                }
+            }
+            Recipients::Tag(tag) => BotRepo::reachable_with_tag(self.pool, tag, owner).await?,
+        })
     }
 
     /// Clients this actor may see.
@@ -249,7 +284,28 @@ impl<'a> Guarded<'a> {
         if !self.may_see(access.common().holder()).await? {
             return Err(ApiError::NotFound);
         }
+        self.refuse_full_node(access).await?;
         AccessRepo::insert(self.pool, access, credential, self.key).await?;
+        Ok(())
+    }
+
+    /// Refuses an access a node has no room for (0105).
+    ///
+    /// A WEB node is configured with every access it keeps, and one too many
+    /// takes it away from everybody on it. Whose the access is does not
+    /// matter: a node carries public links and clients together (0107).
+    async fn refuse_full_node(&self, access: &AnyAccess) -> Result<(), ApiError> {
+        if !crate::issue::is_web(access) {
+            return Ok(());
+        }
+        let kept = AccessRepo::by_node(self.pool, access.common().node_id())
+            .await?
+            .iter()
+            .filter(|one| one.common().state() != AccessState::Revoked)
+            .count() as i64;
+        if crate::issue::is_full(true, kept) {
+            return Err(ApiError::Conflict("node_full"));
+        }
         Ok(())
     }
 

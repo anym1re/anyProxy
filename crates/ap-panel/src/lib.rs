@@ -13,6 +13,7 @@ mod error;
 pub mod feed;
 mod guard;
 pub mod handout;
+mod issue;
 mod own;
 mod routes;
 pub mod settings;
@@ -45,6 +46,12 @@ pub struct Config {
     /// Where the bot talks to Telegram (0081). [`BOT_API`] outside tests; a
     /// test points it at a double on the loopback.
     pub bot_api: String,
+    /// Whether an account that writes to the bot is given a client of its
+    /// own (0105). `None` outside tests: the setting decides, and an
+    /// operator changes it on the settings screen. A test pins it, because
+    /// the setting is one row for every panel on the database and the tests
+    /// share one.
+    pub bot_signup: Option<bool>,
 }
 
 /// The Bot API, where it really is.
@@ -59,6 +66,7 @@ impl Config {
             key_file,
             channel_address: String::new(),
             bot_api: BOT_API.to_owned(),
+            bot_signup: None,
         }
     }
 }
@@ -76,6 +84,8 @@ pub struct AppState {
     attempts: Arc<auth::Attempts>,
     channel_address: Arc<str>,
     bot_api: Arc<str>,
+    bot_signup: Option<bool>,
+    signups: Arc<bot::Pace>,
     bot: Arc<bot::Status>,
     /// When this process started answering, for the figure the foot of the
     /// dashboard was drawn with.
@@ -104,6 +114,8 @@ impl AppState {
             attempts: Arc::new(auth::Attempts::default()),
             channel_address: Arc::from(config.channel_address.as_str()),
             bot_api: Arc::from(config.bot_api.as_str()),
+            bot_signup: config.bot_signup,
+            signups: Arc::new(bot::Pace::default()),
             bot: Arc::new(bot::Status::default()),
             started: std::time::Instant::now(),
         })
@@ -145,6 +157,18 @@ impl AppState {
     /// Where the bot talks to Telegram.
     pub(crate) fn bot_api(&self) -> &str {
         &self.bot_api
+    }
+
+    /// Whether an account that writes to the bot is given a client of its
+    /// own (0105): what this panel was started with when it was told, and
+    /// the setting otherwise.
+    pub(crate) fn signup_open(&self, settings: &settings::Settings) -> bool {
+        self.bot_signup.unwrap_or_else(|| settings.on("bot_signup"))
+    }
+
+    /// How many have signed up through the bot lately (0105).
+    pub(crate) fn signups(&self) -> &bot::Pace {
+        &self.signups
     }
 
     /// What the bot is doing right now (0085).
