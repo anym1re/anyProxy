@@ -25,6 +25,19 @@ pub struct NodeLoad {
     pub held: bool,
 }
 
+/// What deleting a node would take away (0104).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeCarries {
+    /// Accesses that are not revoked: what a burn revokes.
+    pub accesses: i64,
+    /// The public links among them, by name.
+    pub public_links: Vec<String>,
+    /// Bytes carried through the node since a day.
+    pub carried_bytes: i64,
+    /// The last day anything was carried through it.
+    pub last_active_on: Option<time::Date>,
+}
+
 /// Reads and writes accesses.
 pub struct AccessRepo;
 
@@ -166,6 +179,39 @@ impl AccessRepo {
         .fetch_all(pool)
         .await?;
         rows.into_iter().map(read_access).collect()
+    }
+
+    /// What one node carries: counted here, because the list of accesses an
+    /// operator's screen holds is a page of it, and a figure about what will
+    /// be revoked must not be a figure about a page.
+    pub async fn carried_by_node(
+        pool: &PgPool,
+        node_id: Uuid,
+        since: time::Date,
+    ) -> Result<NodeCarries, StoreError> {
+        let row = sqlx::query(
+            "select \
+                (select count(*) from access \
+                  where node_id = $1 and state <> 'revoked') as accesses, \
+                (select coalesce(array_agg(name order by name), '{}') from access \
+                  where node_id = $1 and state <> 'revoked' and name is not null) as links, \
+                (select coalesce(sum(t.bytes_in + t.bytes_out), 0)::bigint \
+                   from traffic_daily t join access a on a.id = t.access_id \
+                  where a.node_id = $1 and t.day >= $2) as carried, \
+                (select max(t.day) \
+                   from traffic_daily t join access a on a.id = t.access_id \
+                  where a.node_id = $1 and t.bytes_in + t.bytes_out > 0) as last_day",
+        )
+        .bind(node_id)
+        .bind(since)
+        .fetch_one(pool)
+        .await?;
+        Ok(NodeCarries {
+            accesses: row.try_get("accesses")?,
+            public_links: row.try_get("links")?,
+            carried_bytes: row.try_get("carried")?,
+            last_active_on: row.try_get("last_day")?,
+        })
     }
 
     /// What every node is carrying, and whether one client is on it already

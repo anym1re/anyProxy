@@ -427,6 +427,13 @@ impl<'a> Guarded<'a> {
         Ok(withdrawn)
     }
 
+    /// What a node carries, for whoever is about to delete it (0104).
+    pub async fn node_carries(&self, id: Uuid) -> Result<ap_store::NodeCarries, ApiError> {
+        self.node(id).await?;
+        let since = (OffsetDateTime::now_utc() - time::Duration::days(30)).date();
+        Ok(AccessRepo::carried_by_node(self.pool, id, since).await?)
+    }
+
     /// Changes the name a node answers to.
     ///
     /// The kind stays what it was: a node serving a recognisable method has no

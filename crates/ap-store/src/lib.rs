@@ -17,7 +17,7 @@ mod setting;
 mod tag;
 mod traffic;
 
-pub use access::{AccessRepo, NodeLoad};
+pub use access::{AccessRepo, NodeCarries, NodeLoad};
 pub use admin::{AdminRepo, SessionRepo};
 pub use audit::{AuditEntry, AuditRepo};
 pub use bot::{BotRepo, Linked, Outgoing};

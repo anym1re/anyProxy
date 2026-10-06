@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/tags", get(list_tags).post(create_tag))
         .route("/v1/nodes", get(list_nodes).post(create_node))
         .route("/v1/nodes/{id}/burn", post(burn_node))
+        .route("/v1/nodes/{id}/carries", get(node_carries))
         .route("/v1/nodes/{id}/names", post(rename_node))
         .route("/v1/nodes/{id}/sponsorship", post(sponsor_node))
         .route("/v1/nodes/{id}/address", post(set_node_address))
@@ -893,6 +894,22 @@ async fn render_link(
         .into_response())
 }
 
+/// What a node carries: how many accesses a burn would revoke, which public
+/// links are among them, what it carried in thirty days and when last.
+async fn node_carries(
+    State(state): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let carries = state.guarded(&actor).node_carries(id).await?;
+    Ok(Json(serde_json::json!({
+        "accesses": carries.accesses,
+        "public_links": carries.public_links,
+        "carried_bytes": carries.carried_bytes,
+        "last_active_on": carries.last_active_on.map(format_date).transpose()?,
+    })))
+}
+
 // ── tags ─────────────────────────────────────────────────────────────────
 
 async fn list_tags(
@@ -1128,12 +1145,14 @@ async fn burn_node(
     // reading it first keeps the journal line readable either way (0074).
     let node = guarded.node(id).await?;
     let told = crate::bot::outbox::reachable_on_node(&state, id).await?;
-    guarded.burn_node(id).await?;
+    let revoked = guarded.burn_node(id).await?;
+    // How many accesses went with it: the dialog that asks for the burn
+    // says the journal keeps this figure, and so it does.
     guarded
         .record(
             "node.burned",
             Some(node.label().as_str()),
-            serde_json::json!({}),
+            serde_json::json!({ "revoked": revoked }),
         )
         .await?;
     // What they have left, so nobody is left holding only the dead link (0102).
