@@ -102,9 +102,64 @@ struct Row {
     password: Option<String>,
 }
 
+/// What the panel says about the site itself, before it is believed.
+#[derive(Debug, Default, serde::Deserialize)]
+struct SiteRow {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    indexed: Option<bool>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    intro: Option<String>,
+    #[serde(default)]
+    bot: Option<String>,
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct Body {
     links: Vec<Row>,
+    /// Absent from a panel older than 0108, which is read as before: a site
+    /// that answers and may be indexed.
+    #[serde(default)]
+    site: Option<SiteRow>,
+}
+
+/// What the panel says the site is to be (0108).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Setting {
+    /// Whether the site answers at all.
+    pub enabled: bool,
+    /// Whether an indexer may take it.
+    pub indexed: bool,
+    /// The heading, when the operator wrote one.
+    pub title: Option<String>,
+    /// The words under it, when the operator wrote any.
+    pub intro: Option<String>,
+    /// The bot to point at, when there is one that takes people in.
+    pub bot: Option<String>,
+}
+
+impl Default for Setting {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            indexed: true,
+            title: None,
+            intro: None,
+            bot: None,
+        }
+    }
+}
+
+/// A feed, whole: what the site is to be and what it shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Feed {
+    /// What the site is to be.
+    pub site: Setting,
+    /// The links it shows.
+    pub links: Vec<PublicLink>,
 }
 
 /// One link the site shows.
@@ -154,11 +209,68 @@ impl PublicLink {
 
 /// Reads a feed body into links, or refuses it whole.
 pub fn parse(body: &[u8]) -> Result<Vec<PublicLink>, FeedError> {
+    parse_feed(body).map(|feed| feed.links)
+}
+
+/// Reads a feed body whole — what the site is to be and its links — or
+/// refuses it whole.
+pub fn parse_feed(body: &[u8]) -> Result<Feed, FeedError> {
     let body: Body = serde_json::from_slice(body).map_err(|_| FeedError::Malformed("json"))?;
     if body.links.len() > MOST_ROWS {
         return Err(FeedError::TooMany);
     }
-    body.links.into_iter().map(believe).collect()
+    let site = match body.site {
+        Some(row) => setting(row)?,
+        None => Setting::default(),
+    };
+    let links = body
+        .links
+        .into_iter()
+        .map(believe)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Feed { site, links })
+}
+
+/// Longest heading and longest text under it, in bytes: what the panel takes.
+const TITLE_CEILING: usize = 160;
+const INTRO_CEILING: usize = 600;
+
+/// Holds what the panel says about the site to the rules, or refuses it.
+///
+/// The words go onto a public page. They are escaped there like a link's name;
+/// here they are bounded and kept to one line of printable text. The bot's
+/// name becomes part of an address, so it is only what Telegram makes a name
+/// of.
+fn setting(row: SiteRow) -> Result<Setting, FeedError> {
+    let words = |value: Option<String>, ceiling: usize, what: &'static str| match value
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+    {
+        None => Ok(None),
+        Some(text) if text.len() <= ceiling && !text.chars().any(char::is_control) => {
+            Ok(Some(text))
+        }
+        Some(_) => Err(FeedError::Malformed(what)),
+    };
+    let bot = match row.bot.filter(|name| !name.is_empty()) {
+        None => None,
+        Some(name)
+            if (5..=32).contains(&name.len())
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') =>
+        {
+            Some(name)
+        }
+        Some(_) => return Err(FeedError::Malformed("bot")),
+    };
+    Ok(Setting {
+        enabled: row.enabled.unwrap_or(true),
+        indexed: row.indexed.unwrap_or(true),
+        title: words(row.title, TITLE_CEILING, "title")?,
+        intro: words(row.intro, INTRO_CEILING, "intro")?,
+        bot,
+    })
 }
 
 /// The only prefix a link may have. Anything else is not a Telegram link,
@@ -379,6 +491,76 @@ mod tests {
             .collect();
         let body = serde_json::json!({ "links": rows });
         assert_eq!(parse(body.to_string().as_bytes()), Err(FeedError::TooMany));
+    }
+
+    fn feed(site: serde_json::Value) -> Result<Feed, FeedError> {
+        parse_feed(
+            serde_json::json!({ "site": site, "links": [] })
+                .to_string()
+                .as_bytes(),
+        )
+    }
+
+    #[test]
+    fn a_feed_without_a_word_about_the_site_is_a_site_as_before() {
+        let read = parse_feed(br#"{"links":[]}"#).unwrap();
+        assert_eq!(read.site, Setting::default());
+        assert!(read.site.enabled && read.site.indexed);
+        assert_eq!(
+            feed(serde_json::json!({})).unwrap().site,
+            Setting::default()
+        );
+    }
+
+    #[test]
+    fn what_the_panel_says_about_the_site_is_taken() {
+        let read = feed(serde_json::json!({
+            "enabled": false, "indexed": false,
+            "title": "  Прокси  ", "intro": "Откройте ссылку.", "bot": "any_proxy_bot",
+        }))
+        .unwrap()
+        .site;
+        assert!(!read.enabled && !read.indexed);
+        assert_eq!(read.title.as_deref(), Some("Прокси"));
+        assert_eq!(read.intro.as_deref(), Some("Откройте ссылку."));
+        assert_eq!(read.bot.as_deref(), Some("any_proxy_bot"));
+        // Words that are only spaces are no words.
+        let blank = feed(serde_json::json!({ "title": "   ", "intro": "", "bot": "" }))
+            .unwrap()
+            .site;
+        assert_eq!((blank.title, blank.intro, blank.bot), (None, None, None));
+    }
+
+    #[test]
+    fn words_too_long_or_not_printable_refuse_the_feed() {
+        for bad in [
+            serde_json::json!({ "title": "x".repeat(161) }),
+            serde_json::json!({ "intro": "x".repeat(601) }),
+            serde_json::json!({ "title": "two\nlines" }),
+            serde_json::json!({ "intro": "a\u{0007}b" }),
+        ] {
+            assert!(
+                matches!(feed(bad.clone()), Err(FeedError::Malformed(_))),
+                "{bad} was taken"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bot_name_is_only_what_telegram_makes_a_name_of() {
+        for bad in [
+            "a/b_c_d",
+            "x y z w v",
+            "https://t.me/x",
+            "abcd",
+            &"a".repeat(33),
+        ] {
+            assert_eq!(
+                feed(serde_json::json!({ "bot": bad })),
+                Err(FeedError::Malformed("bot")),
+                "{bad:?} was taken"
+            );
+        }
     }
 
     #[test]

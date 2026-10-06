@@ -108,6 +108,10 @@ pub struct Rendered {
     pub json: Arc<[u8]>,
     /// How many links are on it.
     pub count: usize,
+    /// Whether the site answers at all (0108).
+    pub enabled: bool,
+    /// Whether an indexer may take it.
+    pub indexed: bool,
     /// When the feed this was built from arrived; absent before the first.
     pub taken: Option<Instant>,
 }
@@ -133,6 +137,10 @@ impl Site {
             en: page::html(Locale::En, &config, &[])?.into_bytes().into(),
             json: page::json(&[]).into_bytes().into(),
             count: 0,
+            // Until the panel has been heard there is nothing to show and
+            // nothing an indexer should keep.
+            enabled: true,
+            indexed: true,
             taken: None,
         });
         Ok(Self {
@@ -166,17 +174,30 @@ impl Site {
         &self.counters
     }
 
-    /// Replaces what is shown with a list that just arrived.
+    /// Replaces what is shown with a list that just arrived, on a site
+    /// nobody has set anything on.
     pub fn replace(&self, links: &[feed::PublicLink]) -> Result<(), ap_core::Error> {
+        self.show(&feed::Feed {
+            site: feed::Setting::default(),
+            links: links.to_vec(),
+        })
+    }
+
+    /// Replaces what is shown with a feed that just arrived: its links, as
+    /// the panel says the site is to be (0108).
+    pub fn show(&self, feed: &feed::Feed) -> Result<(), ap_core::Error> {
+        let links = feed.links.as_slice();
         let fresh = Arc::new(Rendered {
-            ru: page::html(Locale::Ru, &self.config, links)?
+            ru: page::html_as(Locale::Ru, &self.config, &feed.site, links)?
                 .into_bytes()
                 .into(),
-            en: page::html(Locale::En, &self.config, links)?
+            en: page::html_as(Locale::En, &self.config, &feed.site, links)?
                 .into_bytes()
                 .into(),
             json: page::json(links).into_bytes().into(),
             count: links.len(),
+            enabled: feed.site.enabled,
+            indexed: feed.site.indexed,
             taken: Some(Instant::now()),
         });
         match self.rendered.write() {
@@ -195,9 +216,9 @@ impl Site {
         let started = Instant::now();
         let outcome = async {
             let body = feed::fetch(&self.config.feed).await?;
-            let links = feed::parse(&body)?;
-            self.replace(&links).map_err(|_| FeedError::Render)?;
-            Ok(links.len())
+            let feed = feed::parse_feed(&body)?;
+            self.show(&feed).map_err(|_| FeedError::Render)?;
+            Ok(feed.links.len())
         }
         .await;
         match &outcome {

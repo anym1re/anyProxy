@@ -111,6 +111,7 @@ site-links = Ссылки
 site-none = Сейчас ссылок нет.
 site-open = Открыть в Telegram
 site-machine = Список для программ
+site-bot = Получить личный доступ в Telegram
 site-languages = Язык
 site-lang-ru = Русский
 site-lang-en = English

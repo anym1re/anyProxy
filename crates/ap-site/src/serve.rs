@@ -132,6 +132,27 @@ pub fn route(site: &Site, path: &str, accept_language: Option<&str>) -> Response
     let rendered = site.rendered();
     let statics = site.statics();
     let config = site.config();
+    // Switched off in the panel (0108): there is no site at this address,
+    // whatever is asked for.
+    if !rendered.enabled {
+        return plain(StatusCode::NOT_FOUND, "no-store", "");
+    }
+    // Not to be indexed: no map of it and no summary of it for a crawler,
+    // and a robots file that turns one away.
+    if !rendered.indexed {
+        match path {
+            "/sitemap.xml" | "/llms.txt" => return plain(StatusCode::NOT_FOUND, "no-store", ""),
+            "/robots.txt" => {
+                return text(
+                    StatusCode::OK,
+                    "text/plain; charset=utf-8",
+                    "no-store",
+                    statics.robots_closed,
+                );
+            }
+            _ => {}
+        }
+    }
     match path {
         "/" => {
             let locale = choose(accept_language).unwrap_or(config.default_locale);
@@ -279,6 +300,78 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Config;
+    use crate::feed::{Feed, Setting};
+
+    fn a_site() -> Site {
+        let config = Config::build(
+            "https://links.example",
+            "http://127.0.0.1:8090",
+            ([127, 0, 0, 1], 0).into(),
+            ([127, 0, 0, 1], 0).into(),
+            60,
+            Locale::Ru,
+        )
+        .unwrap();
+        Site::new(config).unwrap()
+    }
+
+    fn set(site: &Site, enabled: bool, indexed: bool) {
+        site.show(&Feed {
+            site: Setting {
+                enabled,
+                indexed,
+                ..Setting::default()
+            },
+            links: Vec::new(),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_site_switched_off_in_the_panel_is_not_there() {
+        let site = a_site();
+        set(&site, false, true);
+        for path in [
+            "/",
+            "/ru/",
+            "/en/",
+            "/links.json",
+            "/robots.txt",
+            "/sitemap.xml",
+            "/llms.txt",
+            "/style.css",
+        ] {
+            assert_eq!(
+                route(&site, path, None).status(),
+                StatusCode::NOT_FOUND,
+                "{path} answered on a site that is off"
+            );
+        }
+        // Switched back on, it is there again.
+        set(&site, true, true);
+        assert_eq!(route(&site, "/ru/", None).status(), StatusCode::OK);
+        assert_eq!(route(&site, "/sitemap.xml", None).status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn a_site_not_to_be_indexed_answers_people_and_turns_crawlers_away() {
+        let site = a_site();
+        set(&site, true, false);
+        assert_eq!(route(&site, "/ru/", None).status(), StatusCode::OK);
+        assert_eq!(route(&site, "/links.json", None).status(), StatusCode::OK);
+        assert_eq!(
+            route(&site, "/sitemap.xml", None).status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            route(&site, "/llms.txt", None).status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(route(&site, "/robots.txt", None).status(), StatusCode::OK);
+        assert_eq!(site.statics().robots_closed, "User-agent: *\nDisallow: /\n");
+        assert!(site.statics().robots.contains("Allow: /"));
+    }
 
     #[test]
     fn the_preferred_language_is_read_by_weight_then_order() {

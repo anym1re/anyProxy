@@ -9,7 +9,7 @@ use ap_core::i18n::message;
 use ap_core::{Locale, NodeKindTag};
 
 use crate::Config;
-use crate::feed::PublicLink;
+use crate::feed::{PublicLink, Setting};
 
 /// Everything that does not change with the feed.
 #[derive(Debug, Clone)]
@@ -20,6 +20,8 @@ pub struct Statics {
     pub icon: &'static str,
     /// `/robots.txt`.
     pub robots: String,
+    /// `/robots.txt` of a site that is not to be indexed (0108).
+    pub robots_closed: &'static str,
     /// `/sitemap.xml`.
     pub sitemap: String,
     /// `/llms.txt`.
@@ -33,6 +35,7 @@ impl Statics {
             style: STYLE,
             icon: ICON,
             robots: robots(config),
+            robots_closed: "User-agent: *\nDisallow: /\n",
             sitemap: sitemap(config),
             llms: llms(config)?,
         })
@@ -83,14 +86,32 @@ fn page_url(config: &Config, locale: Locale) -> String {
     format!("{}/{}/", config.public_url, locale.code())
 }
 
-/// One page, whole.
+/// One page, whole, as a site nobody has set anything on.
 pub fn html(
     locale: Locale,
     config: &Config,
     links: &[PublicLink],
 ) -> Result<String, ap_core::Error> {
+    html_as(locale, config, &Setting::default(), links)
+}
+
+/// One page, whole, as the panel says the site is to be (0108).
+///
+/// An operator's own heading and text stand where the catalogue's would, on
+/// both languages' pages: the operator wrote them once, in the language of
+/// the people the site is for.
+pub fn html_as(
+    locale: Locale,
+    config: &Config,
+    setting: &Setting,
+    links: &[PublicLink],
+) -> Result<String, ap_core::Error> {
     let t = |key: &str| message(locale, key);
-    let title = escape(&t("site-title")?);
+    let own = |written: &Option<String>, key: &str| match written {
+        Some(text) => Ok(text.clone()),
+        None => t(key),
+    };
+    let title = escape(&own(&setting.title, "site-title")?);
     let description = escape(&t("site-description")?);
     let here = escape(&page_url(config, locale));
     let other = match locale {
@@ -106,6 +127,10 @@ pub fn html(
     out.push_str(&format!("<html lang=\"{}\">\n<head>\n", locale.code()));
     out.push_str("<meta charset=\"utf-8\">\n");
     out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
+    if !setting.indexed {
+        // Open to whoever has the address, and not to be taken into an index.
+        out.push_str("<meta name=\"robots\" content=\"noindex\">\n");
+    }
     out.push_str(&format!("<title>{title}</title>\n"));
     out.push_str(&format!(
         "<meta name=\"description\" content=\"{description}\">\n"
@@ -162,8 +187,23 @@ pub fn html(
         ));
     }
     out.push_str("</nav>\n</header>\n<main>\n");
-    out.push_str(&format!("<h1>{}</h1>\n", escape(&t("site-heading")?)));
-    out.push_str(&format!("<p>{}</p>\n", escape(&t("site-lead")?)));
+    out.push_str(&format!(
+        "<h1>{}</h1>\n",
+        escape(&own(&setting.title, "site-heading")?)
+    ));
+    out.push_str(&format!(
+        "<p>{}</p>\n",
+        escape(&own(&setting.intro, "site-lead")?)
+    ));
+    if let Some(bot) = &setting.bot {
+        // The way to an access of one's own. The name was held to the letters
+        // Telegram makes names of before it got here.
+        out.push_str(&format!(
+            "<p><a class=\"open\" href=\"https://t.me/{}\">{}</a></p>\n",
+            escape(bot),
+            escape(&t("site-bot")?)
+        ));
+    }
     out.push_str("<section aria-labelledby=\"links\">\n");
     out.push_str(&format!(
         "<h2 id=\"links\">{}</h2>\n",
@@ -390,6 +430,34 @@ mod tests {
             Locale::Ru,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_site_set_from_the_panel_says_what_it_was_set_to() {
+        let setting = Setting {
+            enabled: true,
+            indexed: false,
+            title: Some("Мой <прокси>".to_owned()),
+            intro: Some("Текст & всё".to_owned()),
+            bot: Some("any_proxy_bot".to_owned()),
+        };
+        for locale in [Locale::Ru, Locale::En] {
+            let page = html_as(locale, &config(), &setting, &[]).unwrap();
+            assert!(page.contains("<meta name=\"robots\" content=\"noindex\">"));
+            // The operator's words, as text and nothing else.
+            assert!(page.contains("<h1>Мой &lt;прокси&gt;</h1>"), "{page}");
+            assert!(page.contains("<title>Мой &lt;прокси&gt;</title>"));
+            assert!(page.contains("<p>Текст &amp; всё</p>"));
+            assert!(page.contains("href=\"https://t.me/any_proxy_bot\""));
+        }
+        // A site nobody has set anything on says none of it.
+        let plain = html(Locale::Ru, &config(), &[]).unwrap();
+        assert!(!plain.contains("noindex"));
+        assert!(!plain.contains("t.me/any_proxy_bot"));
+        assert_eq!(
+            plain,
+            html_as(Locale::Ru, &config(), &Setting::default(), &[]).unwrap()
+        );
     }
 
     #[test]

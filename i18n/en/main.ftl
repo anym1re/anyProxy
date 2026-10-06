@@ -110,6 +110,7 @@ site-links = Links
 site-none = No links right now.
 site-open = Open in Telegram
 site-machine = List for programs
+site-bot = Get your own access in Telegram
 site-languages = Language
 site-lang-ru = Русский
 site-lang-en = English
