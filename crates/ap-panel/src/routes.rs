@@ -130,6 +130,9 @@ async fn setup_state(State(state): State<AppState>) -> Result<Json<serde_json::V
             "" => state.channel_address(),
             said => said,
         },
+        // How long an enrolment code lives, for the dialog that describes
+        // one before it is issued.
+        "enrollment_minutes": crate::enrollment::MINUTES,
         // How long this process has been answering, which the foot of the
         // dashboard was drawn to show.
         "uptime_seconds": state.uptime_seconds(),
@@ -1646,4 +1649,108 @@ async fn interface_text(
         .map(|(key, pattern)| (key, serde_json::Value::String(pattern)))
         .collect();
     Json(serde_json::json!({ "lang": locale.code(), "messages": messages }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The same in every language and nobody's data: the product's name, the
+    /// keys the interface names, the signs between words, the four transports.
+    const SIGNS: [&str; 25] = [
+        "anyProxy", "Esc", "Ctrl", "Ctrl S", "K", "S", "N", "Enter", "Tab", "1", "2", "3", "4",
+        "5", "·", "—", "–", "/", ":", "×", "+", "mtproto", "web", "socks5", "http",
+    ];
+
+    /// The page without its drawings: an icon's path is not text.
+    fn page_without_drawings() -> String {
+        let mut page = INTERFACE_PAGE.to_owned();
+        while let Some(start) = page.find("<svg") {
+            let Some(length) = page[start..].find("</svg>") else {
+                break;
+            };
+            page.replace_range(start..start + length + "</svg>".len(), "");
+        }
+        page
+    }
+
+    /// Every piece of text in the page, with the tag it stands right after.
+    fn texts(page: &str) -> Vec<(&str, &str)> {
+        let mut found = Vec::new();
+        let mut rest = page;
+        while let Some(close) = rest.find('>') {
+            let tag = &rest[rest[..close].rfind('<').unwrap_or(0)..=close];
+            let after = &rest[close + 1..];
+            let Some(open) = after.find('<') else {
+                break;
+            };
+            let text = after[..open].trim();
+            if !text.is_empty() {
+                found.push((tag, text));
+            }
+            rest = &after[open..];
+        }
+        found
+    }
+
+    #[test]
+    fn the_page_carries_no_text_that_was_drawn_for_show() {
+        // The page is built from a drawing that also draws what a screen might
+        // show: names, figures, addresses, links. None of that may ship (0104).
+        // What ships is a word of the catalogue, a sign, or a run of dots that
+        // keeps the place of what the script will write there.
+        let page = page_without_drawings();
+        let strays: Vec<&str> = texts(&page)
+            .into_iter()
+            .filter(|(tag, text)| {
+                let quiet = ["<title", "<script", "<style"]
+                    .iter()
+                    .any(|name| tag.starts_with(name));
+                let filler = text.chars().all(|one| one == '·' || one.is_whitespace());
+                !quiet && !tag.contains("data-t=\"") && !SIGNS.contains(text) && !filler
+            })
+            .map(|(_, text)| text)
+            .collect();
+        assert!(
+            strays.is_empty(),
+            "text in the page that is neither a word of the catalogue nor a sign: {strays:?}"
+        );
+    }
+
+    #[test]
+    fn the_page_carries_no_drawn_value_in_a_field() {
+        let page = page_without_drawings();
+        // A hint, a pattern and a name for a dialog are said by the script, for
+        // the thing really on the screen; a field starts empty.
+        for attribute in [" placeholder=\"", " pattern=\"", " aria-label=\""] {
+            assert!(!page.contains(attribute), "{attribute} in the page");
+        }
+        let mut rest = page.as_str();
+        while let Some(at) = rest.find(" value=\"") {
+            rest = &rest[at + " value=\"".len()..];
+            assert!(rest.starts_with('"'), "a field drawn with something in it");
+        }
+        // The stand's pages link to one another as files; the panel has none.
+        assert!(!page.contains(".html\""), "a link to a page of the stand");
+    }
+
+    #[test]
+    fn every_word_the_page_marks_is_in_both_catalogues() {
+        let page = page_without_drawings();
+        for locale in Locale::all() {
+            let known: std::collections::HashSet<String> = raw_messages(locale, "ui-")
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect();
+            let mut rest = page.as_str();
+            while let Some(at) = rest.find("data-t=\"") {
+                rest = &rest[at + "data-t=\"".len()..];
+                let key = &rest[..rest.find('"').unwrap_or(0)];
+                assert!(
+                    known.contains(key),
+                    "{key} is not in the {locale:?} catalogue"
+                );
+            }
+        }
+    }
 }

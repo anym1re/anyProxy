@@ -5,8 +5,9 @@ use uuid::Uuid;
 
 use crate::{ApiError, AppState};
 
-/// How long a code stays usable.
-const MINUTES: i64 = 60;
+/// How long a code stays usable. The interface says this figure where it
+/// describes a code, and reads it from here rather than repeating it.
+pub(crate) const MINUTES: i64 = 60;
 
 /// What an operator is shown once.
 pub struct Issued {

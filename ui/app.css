@@ -840,9 +840,13 @@ body { margin: 0; background: #080A0D; }
 .scr-users .tr { height: 46px; font-size: 12px; transition: background var(--t-state) ease; }
 .scr-users .tr + .tr { border-top: 1px solid var(--line); }
 .scr-users .t-acc .th, .scr-users .t-acc .tr { grid-template-columns: 132px 132px 112px 124px 172px minmax(0, 1fr); }
-.scr-users .t-link .th, .scr-users .t-link .tr { grid-template-columns: 172px 132px 124px 124px minmax(0, 1fr); }
+.scr-users .t-link .th, .scr-users .t-link .tr { grid-template-columns: 172px 132px 124px 124px 112px minmax(0, 1fr); }
+.scr-users .t-link .ls .btn.off { color: var(--ink-3); border-color: var(--line); }
 .scr-users .who { font-weight: 500; font-size: 12.5px; }
 .scr-users .who.same { color: var(--ink-3); font-weight: 400; }
+.scr-users .who .tg { display: block; margin-top: 1px; overflow: hidden; text-overflow: ellipsis;
+           font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11px;
+           font-weight: 400; color: var(--ink-3); }
 .scr-users .node { display: flex; align-items: center; gap: 8px; font-weight: 500; font-size: 12.5px; }
 .scr-users .node .sd { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none;
             box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent); }
@@ -3053,6 +3057,306 @@ body { margin: 0; background: #080A0D; }
 .scr-delete > .rail { position: sticky; top: 0; height: 100vh; align-self: flex-start; }
 .scr-delete .barstrip { position: sticky; top: 0; z-index: 4; }
 
+/* ── message ── */
+.scr-message { margin: 0; }
+.scr-message {
+  --bg: #080A0D; --panel: rgba(20, 25, 31, 0.72); --panel-solid: #14191F;
+  --panel-2: rgba(28, 34, 42, 0.6); --rail: rgba(10, 13, 17, 0.82); --raise: #1C222A;
+  --line: rgba(255, 255, 255, 0.07); --line-2: rgba(255, 255, 255, 0.13);
+  --ink: #EAF0F5; --ink-2: #9AA6B1; --ink-3: #68747F;
+  --key: #4C9AF0; --key-bg: rgba(76, 154, 240, 0.14);
+  --ok: #3FCF7F; --warn: #F5B143; --bad: #F5705F; --wait: #7DA7E8;
+  --seg-ok: #2E9E63; --seg-warn: #B8802B; --seg-bad: #C0453A; --seg-none: rgba(255,255,255,0.08);
+  --sel: rgba(76, 154, 240, 0.12); --ring: #4C9AF0;
+  --scrim: rgba(4, 6, 9, 0.62);
+  --kbd-bg: rgba(255, 255, 255, 0.05); --kbd-line: rgba(255, 255, 255, 0.14);
+  --pal: rgba(20, 25, 31, 0.86); --pal-line: rgba(255, 255, 255, 0.13);
+  --shadow: 0 30px 80px rgba(0, 0, 0, 0.62);
+  --flash: rgba(76, 154, 240, 0.18);
+  --glass: blur(22px) saturate(150%);
+  --card-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --lift: 0 18px 44px -20px rgba(0, 0, 0, 0.9);
+  --bad-bg: rgba(245, 112, 95, 0.10);
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --t-state: 140ms; --t-press: 100ms; --t-expand: 180ms;
+  --t-overlay: 200ms; --t-enter: 300ms; --t-draw: 900ms; --t-bar: 700ms; --t-hold: 2s; box-sizing: border-box;
+  position: relative; display: flex;
+  background: var(--bg); color: var(--ink);
+  font-family: "IBM Plex Sans", "Segoe UI", "Helvetica Neue", sans-serif;
+  font-size: 13px; line-height: 1.4;
+  accent-color: var(--key); caret-message-color: var(--key);
+}
+:root[data-theme="light"] .scr-message {
+  --bg: #EEF1F4; --panel: rgba(255, 255, 255, 0.78); --panel-solid: #FFFFFF;
+  --panel-2: rgba(255, 255, 255, 0.6); --rail: rgba(250, 251, 252, 0.86); --raise: #E7EBEE;
+  --line: rgba(12, 20, 28, 0.10); --line-2: rgba(12, 20, 28, 0.17);
+  --ink: #0E141A; --ink-2: #4C565F; --ink-3: #7F8A94;
+  --key: #14507A; --key-bg: rgba(20, 80, 122, 0.10);
+  --ok: #146A41; --warn: #8A5600; --bad: #9C2A21; --wait: #2B559B;
+  --seg-ok: #4FA97B; --seg-warn: #D3A559; --seg-bad: #C9695D; --seg-none: rgba(12,20,28,0.10);
+  --sel: rgba(20, 80, 122, 0.10);
+  --scrim: rgba(14, 20, 26, 0.34);
+  --kbd-bg: rgba(255,255,255,0.8); --kbd-line: rgba(12,20,28,0.16);
+  --pal: rgba(255, 255, 255, 0.9); --pal-line: rgba(12, 20, 28, 0.16);
+  --shadow: 0 30px 70px rgba(12, 20, 28, 0.22);
+  --flash: rgba(20, 80, 122, 0.12);
+  --card-top: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --lift: 0 18px 40px -24px rgba(12, 20, 28, 0.35);
+  --bad-bg: rgba(156, 42, 33, 0.08);
+}
+.scr-message *, .scr-message *::before, .scr-message *::after { box-sizing: border-box; }
+.scr-message ::selection { background: var(--key-bg); color: var(--ink); }
+.scr-message :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.scr-message .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.scr-message .mono { font-family: "IBM Plex Mono", "SF Mono", Consolas, monospace;
+        font-variant-numeric: tabular-nums; font-size: 0.94em; }
+.scr-message .m2 { color: var(--ink-2); }
+.scr-message .m3 { color: var(--ink-3); }
+.scr-message .bad { color: var(--bad); }
+.scr-message .warn { color: var(--warn); }
+.scr-message .ok { color: var(--ok); }
+.scr-message .rail { width: 200px; flex: none; background: var(--rail);
+        border-right: 1px solid var(--line); display: flex; flex-direction: column; }
+.scr-message .brand { height: 56px; flex: none; display: flex; align-items: center; gap: 9px;
+         padding: 0 16px; border-bottom: 1px solid var(--line); }
+.scr-message .brand b { font-size: 13.5px; font-weight: 600; letter-spacing: -0.01em; }
+.scr-message .brand svg { color: var(--key); }
+.scr-message .nav { padding: 12px 10px; display: flex; flex-direction: column; gap: 1px; }
+.scr-message .nav a { display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 8px;
+         border-radius: 6px; font-size: 12.5px; color: var(--ink-2); text-decoration: none; }
+.scr-message .nav a .kbd { margin-left: auto; }
+.scr-message .nav a.on { background: var(--sel); color: var(--ink); font-weight: 500; }
+.scr-message .nav a.on svg { color: var(--key); }
+.scr-message .grow { flex: 1; min-height: 0; }
+.scr-message .rfoot { border-top: 1px solid var(--line); padding: 12px 14px 14px;
+         display: flex; flex-direction: column; gap: 9px; }
+.scr-message .frow { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.scr-message .frow .k { color: var(--ink-3); }
+.scr-message .frow .v { margin-left: auto; color: var(--ink-2); }
+.scr-message .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.scr-message .barstrip { height: 56px; flex: none; display: flex; align-items: center;
+            padding: 0 28px; border-bottom: 1px solid var(--line); }
+.scr-message .cmdbar { flex: 1; height: 34px; display: flex; align-items: center; gap: 10px;
+          padding: 0 8px 0 11px; border: 1px solid var(--line-2); border-radius: 7px;
+          background: var(--panel); }
+.scr-message .cmdbar .pr { color: var(--key); flex: none; display: flex; }
+.scr-message .cmdbar .ph { color: var(--ink-3); font-size: 12.5px; }
+.scr-message .cmdbar .hint { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.scr-message .kbd { display: inline-flex; align-items: center; justify-content: center; gap: 2px;
+       min-width: 18px; height: 18px; padding: 0 5px; border: 1px solid var(--kbd-line);
+       border-radius: 4px; background: var(--kbd-bg); color: var(--ink-2);
+       font-family: "IBM Plex Mono", Consolas, monospace; font-size: 10px; letter-spacing: 0.02em; }
+.scr-message .content { flex: 1; min-height: 0; padding: 22px 28px; }
+.scr-message h1 { margin: 0; font-size: 21px; font-weight: 600; letter-spacing: -0.02em; }
+.scr-message .sub { margin-top: 4px; font-size: 12.5px; color: var(--ink-2); }
+.scr-message .grid { margin-top: 22px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.scr-message .gcard { border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+         box-shadow: var(--card-top); padding: 16px; }
+.scr-message .gcard.doomed { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.scr-message .gcard .nm { font-size: 14px; font-weight: 600; }
+.scr-message .gcard .ln { margin-top: 6px; font-size: 12px; color: var(--ink-2); }
+.scr-message .gcard .st { margin-top: 14px; display: flex; gap: 18px; font-size: 12px; color: var(--ink-3); }
+.scr-message .gcard .st b { display: block; margin-top: 2px; color: var(--ink); font-size: 16px; font-weight: 600; }
+.scr-message .scrim { position: absolute; inset: 0; z-index: 10; background: rgba(4, 6, 8, 0.7);
+         animation: fade-in-message 160ms ease both; }
+@keyframes fade-in-message { from { opacity: 0; } to { opacity: 1; } }
+.scr-message .dlgwrap { position: absolute; inset: 0; z-index: 11; display: flex;
+           align-items: center; justify-content: center; }
+.scr-message .dlg { width: 620px; border: 1px solid color-mix(in srgb, var(--bad) 38%, var(--line-2));
+       border-radius: 14px; background: var(--panel);
+       box-shadow: 0 32px 90px rgba(0, 0, 0, 0.66);
+       overflow: hidden; animation: dlg-in-message var(--t-overlay) var(--ease-out) both; }
+@keyframes dlg-in-message { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+.scr-message .dh { display: flex; align-items: center; gap: 11px; padding: 16px 18px;
+      border-bottom: 1px solid var(--line); background: var(--bad-bg); }
+.scr-message .dh h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.015em; }
+.scr-message .dh svg { color: var(--bad); flex: none; }
+.scr-message .dh .esc { margin-left: auto; }
+.scr-message .db { padding: 18px; display: flex; flex-direction: column; gap: 16px; }
+.scr-message .lead { font-size: 13px; line-height: 1.55; }
+.scr-message .lead b { font-family: "IBM Plex Mono", Consolas, monospace; font-weight: 500; }
+.scr-message .lbl { font-size: 10px; font-weight: 500; letter-spacing: 0.055em;
+       text-transform: uppercase; color: var(--ink-3); }
+.scr-message .steps { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.scr-message .step { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center;
+        gap: 11px; padding: 11px 13px; border-top: 1px solid var(--line); font-size: 12.5px; }
+.scr-message .step:first-child { border-top: none; }
+.scr-message .step .n { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line-2);
+           display: grid; place-items: center; font-family: "IBM Plex Mono", Consolas, monospace;
+           font-size: 10.5px; color: var(--ink-3); }
+.scr-message .step .m { font-size: 11.5px; color: var(--ink-3);
+           font-family: "IBM Plex Mono", Consolas, monospace; }
+.scr-message .step.last .n { border-color: color-mix(in srgb, var(--bad) 50%, transparent); color: var(--bad); }
+.scr-message .keeps { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.scr-message .keep { padding: 11px 13px; border: 1px solid var(--line); border-radius: 9px;
+        background: var(--panel-2); }
+.scr-message .keep .t { font-size: 12px; color: var(--ink-3); }
+.scr-message .keep .v { margin-top: 4px; font-size: 12.5px; }
+.scr-message .confirm { display: flex; flex-direction: column; gap: 7px; }
+.scr-message .inp { display: flex; align-items: center; gap: 2px; height: 36px; padding: 0 11px;
+       border: 1px solid var(--line-2); border-radius: 7px; background: var(--panel-2);
+       font-family: "IBM Plex Mono", Consolas, monospace; font-size: 13px;
+       transition: border-color var(--t-state) ease, box-shadow var(--t-state) ease; }
+.scr-message .inp.focus, .scr-message .inp:focus { border-color: var(--bad);
+             box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 15%, transparent); }
+.scr-message .inp .typed { color: var(--ink); }
+.scr-message .inp .ghost { color: var(--ink-3); }
+.scr-message .inp .car { width: 1.5px; height: 15px; background: var(--bad); margin: 0 1px;
+            animation: caret-message 1.06s steps(1) infinite; }
+@keyframes caret-message { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+.scr-message .inp .tail { margin-left: auto; font-family: "IBM Plex Sans", sans-serif;
+             font-size: 11px; color: var(--ink-3); }
+.scr-message .df { display: flex; align-items: center; gap: 10px; padding: 14px 18px;
+      border-top: 1px solid var(--line); background: var(--panel-2); }
+.scr-message .df .note { font-size: 11.5px; color: var(--ink-3); }
+.scr-message .df .sp { margin-left: auto; }
+.scr-message .btn { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px;
+       border: 1px solid var(--line-2); border-radius: 7px; background: var(--panel);
+       color: var(--ink); font: inherit; font-size: 12.5px; cursor: pointer;
+       transition: background var(--t-state) ease, border-color var(--t-state) ease,
+                   transform var(--t-press) var(--ease-out); }
+.scr-message .btn:active { transform: scale(0.98); }
+.scr-message .btn.risk { position: relative; border-color: color-mix(in srgb, var(--bad) 55%, transparent);
+            color: var(--bad); overflow: hidden; }
+.scr-message .btn.risk .fillbar { position: absolute; inset: 0; background: color-mix(in srgb, var(--bad) 22%, transparent);
+                     transform: scaleX(0); transform-origin: left; }
+.scr-message .btn.risk:active .fillbar { transform: scaleX(1);
+                            transition: transform var(--t-hold) linear; }
+.scr-message .btn.risk span { position: relative; }
+.scr-message .btn.off { color: var(--ink-3); border-color: var(--line); cursor: default; }
+@media (hover: hover) and (pointer: fine) {
+  .scr-message .btn:hover { border-color: var(--ink-3); }
+  .scr-message .btn.risk:hover { background: var(--bad-bg); }
+  .scr-message .btn.off:hover { border-color: var(--line); background: var(--panel); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scr-message .dlg { animation: fade-in-message var(--t-state) ease both; }
+  .scr-message .inp .car { animation: none; }
+  .scr-message .btn:active { transform: none; }
+}
+.scr-message .aura { position: absolute; inset: -10% -6%; pointer-events: none; z-index: 0; }
+.scr-message .aura i { position: absolute; border-radius: 50%; filter: blur(90px); opacity: 0.45; }
+.scr-message .aura .a1 { width: 760px; height: 500px; left: 5%; top: -16%;
+            background: radial-gradient(circle, rgba(76,154,240,0.30), transparent 68%);
+            animation: drift1-message 28s ease-in-out infinite alternate; }
+.scr-message .aura .a2 { width: 620px; height: 440px; right: 3%; top: -12%;
+            background: radial-gradient(circle, rgba(140,96,240,0.26), transparent 68%);
+            animation: drift2-message 34s ease-in-out infinite alternate; }
+@keyframes drift1-message { from { transform: translate3d(0,0,0) scale(1); }
+                    to   { transform: translate3d(54px, 30px, 0) scale(1.07); } }
+@keyframes drift2-message { from { transform: translate3d(0,0,0) scale(1.05); }
+                    to   { transform: translate3d(-48px, 26px, 0) scale(1); } }
+:root[data-theme="light"] .scr-message .aura i { opacity: 0.24; }
+.scr-message .rail, .scr-message .barstrip, .scr-message .statusbar { background: var(--rail);
+  -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass);
+  position: relative; z-index: 3; }
+.scr-message .main { position: relative; z-index: 2; }
+.scr-message .brand svg { filter: drop-shadow(0 0 8px rgba(76,154,240,0.55)); }
+.scr-message .nav a { border-radius: 8px; }
+.scr-message .nav a.on { box-shadow: inset 0 0 0 1px rgba(76,154,240,0.22); }
+.scr-message .cmdbar { background: var(--panel-2); border-radius: 9px; }
+.scr-message .card, .scr-message .tbl, .scr-message .pal, .scr-message .dlg, .scr-message .gcard, .scr-message .steps, .scr-message .box { background: var(--panel);
+  -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass); }
+.scr-message .card, .scr-message .gcard { border-radius: 16px; box-shadow: var(--card-top), var(--lift); }
+.scr-message .pal, .scr-message .dlg { border-radius: 16px; box-shadow: var(--card-top), var(--shadow); }
+.scr-message .tbl, .scr-message .steps { border-radius: 14px; box-shadow: var(--card-top); }
+.scr-message .scrim { -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.scr-message .btn, .scr-message .act, .scr-message .cbtn, .scr-message .pg, .scr-message .chip { border-radius: 8px; }
+.scr-message .add { border-radius: 16px; }
+@media (hover: hover) and (pointer: fine) {
+  .scr-message .card:hover, .scr-message .gcard:hover { transform: translateY(-2px); }
+  .scr-message .btn:hover, .scr-message .act:hover { box-shadow: 0 0 22px -6px var(--key); }
+  .scr-message .cmdbar:hover { border-color: var(--key);
+                  box-shadow: 0 0 0 4px color-mix(in srgb, var(--key) 10%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scr-message .aura i { animation: none; }
+  .scr-message:has(#pal:checked) .pal { animation: pal-fade 120ms linear both; }
+  .scr-message .card:hover, .scr-message .gcard:hover { transform: none; }
+}
+.scr-message .tr { font-size: 12px; }
+.scr-message .tr .mono, .scr-message .tr .pct, .scr-message .th .mono { font-size: 12px; }
+.scr-message .probe .cnt, .scr-message .probe .when { font-size: 12px; }
+.scr-message .pct { width: 38px; }
+.scr-message .inp { padding: 0; }
+.scr-message .inp input { width: 100%; height: 100%; padding: 0 11px; border: 0; background: transparent;
+             color: var(--ink); font-family: "IBM Plex Mono", Consolas, monospace;
+             font-size: 13px; outline: none; }
+.scr-message .inp input::placeholder { color: var(--ink-3); }
+.scr-message .inp:has(input:focus) { border-color: var(--bad);
+                        box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 15%, transparent); }
+.scr-message .btn.risk { opacity: 0.4; pointer-events: none; }
+.scr-message:has(#confirm:valid) .btn.risk { opacity: 1; pointer-events: auto; }
+.scr-message a.btn, .scr-message .btn { text-decoration: none; }
+.scr-message .fld { display: flex; flex-direction: column; gap: 7px; }
+.scr-message .lbl { font-size: 10px; font-weight: 500; letter-spacing: 0.055em;
+       text-transform: uppercase; color: var(--ink-3); }
+.scr-message .inp { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 11px;
+       border: 1px solid var(--line-2); border-radius: 7px; background: var(--panel-2);
+       font-family: "IBM Plex Mono", Consolas, monospace; font-size: 13px;
+       transition: border-color var(--t-state) ease; }
+.scr-message .inp .car { width: 1.5px; height: 15px; background: var(--key); margin-left: -6px;
+            animation: caret-message 1.06s steps(1) infinite; }
+.scr-message .inp .tail { margin-left: auto; font-size: 11px; color: var(--ink-3);
+             font-family: "IBM Plex Sans", sans-serif; }
+.scr-message .inp.focus, .scr-message .inp:focus { border-color: var(--key); box-shadow: 0 0 0 3px color-mix(in srgb, var(--key) 16%, transparent); }
+.scr-message .tcard { border: 1px solid var(--line-2); border-radius: 9px; background: var(--panel-2);
+         padding: 11px 12px 12px; cursor: pointer;
+         transition: border-color var(--t-state) ease, background var(--t-state) ease; }
+.scr-message .tcard .t { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 500; }
+.scr-message .tcard .t .rd { width: 13px; height: 13px; border-radius: 50%; border: 1px solid var(--ink-3);
+                flex: none; display: grid; place-items: center; }
+.scr-message .tcard .t .rd::after { content: ""; width: 6px; height: 6px; border-radius: 50%;
+                       background: var(--key); transform: scale(0);
+                       transition: transform var(--t-state) var(--ease-out); }
+.scr-message .tcard .x { margin-top: 5px; font-size: 11px; color: var(--ink-3); line-height: 1.45; }
+.scr-message .box { flex-direction: column; gap: 13px; padding: 14px; border: 1px solid var(--line);
+       border-radius: 10px; background: var(--panel-2); }
+.scr-message .chk { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.scr-message .chk .bx { width: 15px; height: 15px; border-radius: 4px; border: 1px solid var(--ink-3);
+           flex: none; margin-top: 1px; display: grid; place-items: center;
+           transition: background var(--t-state) ease, border-color var(--t-state) ease; }
+.scr-message .chk .bx svg { opacity: 0; transform: scale(0.7); color: #fff;
+               transition: opacity var(--t-state) ease, transform var(--t-state) var(--ease-out); }
+.scr-message:has(#mask:checked) .chk .bx { background: var(--key); border-color: var(--key); }
+.scr-message:has(#mask:checked) .chk .bx svg { opacity: 1; transform: none; }
+.scr-message:has(#mask:focus-visible) .chk .bx { outline: 2px solid var(--ring); outline-offset: 2px; }
+.scr-message .chk .tx { display: flex; flex-direction: column; min-width: 0; }
+.scr-message .chk .tx .t { font-size: 13px; font-weight: 500; }
+.scr-message .chk .tx .x { margin-top: 3px; font-size: 11.5px; color: var(--ink-3); line-height: 1.5; }
+.scr-message .sitefld { display: none; flex-direction: column; gap: 7px; }
+.scr-message .stage { flex: 1; display: flex; align-items: center; justify-content: center;
+         gap: 30px; padding: 40px; position: relative; z-index: 1; }
+.scr-message .dlg { position: static; width: 420px; transform: none; }
+.scr-message .dlgwrap { position: static; display: block; }
+.scr-message .db { display: flex; flex-direction: column; gap: 14px; }
+.scr-message .link { display: flex; align-items: center; gap: 10px; padding: 11px 12px;
+        border: 1px solid color-mix(in srgb, var(--key) 40%, var(--line-2));
+        border-radius: 9px; background: color-mix(in srgb, var(--key) 8%, transparent);
+        font-family: "IBM Plex Mono", Consolas, monospace; font-size: 12px;
+        overflow-wrap: anywhere; }
+.scr-message .link .cp { margin-left: auto; flex: none; color: var(--ink-3); }
+.scr-message .pair { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 7px 12px;
+        font-size: 12.5px; }
+.scr-message .pair .k { color: var(--ink-3); }
+.scr-message .pair .v { font-family: "IBM Plex Mono", Consolas, monospace; }
+.scr-message .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.scr-message .dh { background: var(--panel-2); }
+.scr-message .btn.key { background: var(--key); border-color: var(--key); color: #06121F; font-weight: 500; }
+.scr-message .dh .note { font-size: 12px; color: var(--ink-3); }
+.scr-message .inp.area { height: 148px; padding: 10px 11px; align-items: flex-start;
+            font-family: "IBM Plex Sans", "Segoe UI", sans-serif; font-size: 13px;
+            line-height: 1.5; white-space: pre-wrap; overflow: auto; resize: vertical; }
+.scr-message .fld .cnt { align-self: flex-end; margin-top: -2px; font-size: 11px; color: var(--ink-3); }
+.scr-message .inp .tail.mono { font-family: "IBM Plex Mono", Consolas, monospace; }
+.scr-message { min-height: 100vh; width: 100%; }
+.scr-message > .aura { position: fixed; }
+.scr-message > .rail { position: sticky; top: 0; height: 100vh; align-self: flex-start; }
+.scr-message .barstrip { position: sticky; top: 0; z-index: 4; }
+
 /* The stand switched ranges with hidden radio buttons, which a live page has
    no use for: it draws the one curve it was asked for, and the figures beside
    it belong to that curve. */
@@ -3124,7 +3428,10 @@ select.inp { appearance: none; }
 #screen .who .lnk, #screen .nm .lnk { color: inherit; font: inherit; }
 .dh .sp, .ch .sp { flex: 1; }
 .tr .btn, .lk .btn { height: 24px; padding: 0 9px; font-size: 11.5px; }
-.toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 40;
+/* The toast lives inside the root, where the screen's colours and face are;
+   outside it, it had neither. Above an open dialog, which is where a copy
+   from a dialog is announced. */
+.toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 41;
          padding: 9px 14px; border-radius: 10px; border: 1px solid var(--line-2);
          background: var(--panel-solid); box-shadow: var(--lift); font-size: 12.5px;
          max-width: min(640px, calc(100vw - 40px));
@@ -3135,6 +3442,9 @@ select.inp { appearance: none; }
 .lst { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .lst .lk { display: flex; align-items: center; gap: 10px; }
 .lst .lk .v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Who is behind a tied Telegram account, under the line about the tie. */
+.lst .lk .v .sub { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis;
+                   font-size: 11.5px; color: var(--ink-3); }
 .res { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; }
 .res .row { display: flex; align-items: center; gap: 12px; height: 34px; padding: 0 10px;
             border-radius: 8px; cursor: pointer; }

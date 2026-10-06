@@ -7,6 +7,8 @@
   'use strict';
 
   const REFRESH_MS = 30000;
+  // How long the button that deletes a node is held, as its dialog says.
+  const HOLD_MS = 2000;
   const PAGE = 200;
   // The four ranges the stand drew. The shortest is a day, counted by the
   // hour (0072); the rest are counted by the day.
@@ -30,6 +32,7 @@
     channel: '',
     uptime: null,
     own: null,
+    enrolMinutes: 60,
     // Which page of the journal is on screen, and what it is filtered to.
     journal: { group: 'all', day: false, node: null, offset: 0, size: 12 },
     setupNeeded: false,
@@ -325,7 +328,9 @@
    * `prepare` gets the dialog's own markup to fill and wire; the scrim, the
    * Esc key and the buttons are the stand's.
    */
-  const DIALOG_SCREEN = { link: 'link', user: 'new-user', node: 'new-node', delete: 'delete' };
+  const DIALOG_SCREEN = {
+    link: 'link', user: 'new-user', access: 'new-user', node: 'new-node', delete: 'delete', message: 'message',
+  };
 
   function dialog(name, prepare) {
     const root = $('#modal-root');
@@ -337,10 +342,21 @@
       document.removeEventListener('keydown', onKey);
     }
     function onKey(event) { if (event.key === 'Escape') close(); }
+    // The words the drawing shares with the catalogue are said in the
+    // operator's language before anything is filled in: a dialog is cloned
+    // from a template, and a template is not on the page to be translated
+    // with it.
+    applyStaticText(wrap);
+    // The stand's buttons are sometimes links to another of its pages. Here
+    // they are buttons: what they do is the script's, and they go nowhere.
+    wrap.addEventListener('click', (event) => { if (event.target.closest('a')) event.preventDefault(); });
     root.replaceChildren(h('div', { class: 'scrim', on: { click: close } }), wrap);
     document.addEventListener('keydown', onKey);
     prepare(box, close);
-    const first = $('input, select, button', box);
+    // Named for what its head says, whatever it was filled with.
+    const title = $('.dh h2', box);
+    if (title) box.setAttribute('aria-label', title.textContent.trim());
+    const first = $('input:not(.sr), select, textarea, button', box);
     if (first) first.focus();
     return close;
   }
@@ -1085,6 +1101,11 @@
     }
   }
 
+  /// The dot before a node on the users screen, in the three it drew: well,
+  /// in trouble, and none. It drew no amber one, and a class it has no
+  /// colour for came out green, which said a sick node was well.
+  const usersDot = (node) => (!node ? 'n' : (standing(node) === 'ok' ? '' : 'b'));
+
   async function users(root) {
     const seesAll = state.me.role !== 'reseller';
     const [clients, accesses, list, publics] = await Promise.all([
@@ -1120,11 +1141,14 @@
       .forEach((label, index) => { if (head[index]) head[index].textContent = label; });
     if (links) {
       const linkHead = $$('.th > div', links);
-      [t('ui-col-link-name'), t('ui-col-node'), t('ui-col-issued'), t('ui-col-carried'), t('ui-col-connection')]
+      [t('ui-col-link-name'), t('ui-col-node'), t('ui-col-issued'), t('ui-col-carried'), t('ui-col-landing'),
+        t('ui-col-connection')]
         .forEach((label, index) => { if (linkHead[index]) linkHead[index].textContent = label; });
     }
     const heading = $('.shead h2', root);
     if (heading) heading.textContent = t('ui-users-public');
+    // The figure beside it was the stand's own until now.
+    put(root, '.shead .cnt', num(publics.length));
     const idle = clients.filter((client) => !accesses.some((one) => one.client_id === client.id)).length;
     statusbar(root, [
       [num(clients.length), counted('ui-count-clients', clients.length)],
@@ -1151,14 +1175,22 @@
       const who = $('.who', row);
       who.className = `who ${first ? '' : 'same'}`;
       if (client) {
-        who.textContent = first ? client.label : '';
+        // Under the name, who is behind the tied Telegram account, as drawn
+        // (0103); a person the bot cannot write to has no second line.
+        who.replaceChildren(...(first
+          ? [client.label, ...(client.telegram ? [h('span', { class: 'tg' }, telegramName(client))] : [])]
+          : []));
         who.style.cursor = 'pointer';
         who.onclick = () => clientCard(client, byClient.get(client.id) || [], list);
       } else {
         who.textContent = access.name || '—';
       }
       const where = $('.node', row);
-      where.replaceChildren(h('span', { class: `sd ${node && standing(node) === 'ok' ? '' : 'w'}` }), node ? node.label : '—');
+      // As drawn: a person with nothing to connect with has a grey dot and
+      // says so, where the node would be.
+      where.replaceChildren(h('span', { class: `sd ${usersDot(node)}` }), access
+        ? (node ? node.label : '—')
+        : h('span', { class: 'm3' }, t('ui-users-no-access')));
       const cells = [...row.children];
       // As drawn: when it was granted, what it carried over the range, and
       // when it was last busy. A row with nothing behind it says so and is
@@ -1244,12 +1276,26 @@
         const cells = [...row.children];
         cells[0].replaceChildren(access.name || access.id.slice(0, 8));
         $('.node', row).replaceChildren(
-          h('span', { class: `sd ${node && standing(node) === 'ok' ? '' : 'w'}` }), node ? node.label : '—');
+          h('span', { class: `sd ${usersDot(node)}` }), node ? node.label : '—');
         if (cells[2]) cells[2].textContent = shortDate(access.created_at);
         const carried = Number(access.carried_bytes || 0);
         if (cells[3]) {
           cells[3].textContent = carried ? bytes(carried) : '0';
           cells[3].className = carried ? 'r mono' : 'r mono m3';
+        }
+        // Whether the landing page shows it, and the way to change that
+        // (0108): the link itself goes on working either way.
+        const shown = $('.ls .btn', row);
+        if (shown) {
+          const listed = access.listed !== false;
+          shown.textContent = t(listed ? 'ui-link-listed' : 'ui-link-unlisted');
+          shown.classList.toggle('off', !listed);
+          shown.setAttribute('role', 'button');
+          shown.setAttribute('tabindex', '0');
+          shown.style.cursor = 'pointer';
+          shown.onclick = async () => {
+            try { await api('POST', `/v1/accesses/${access.id}/listed`, { listed: !listed }); reload(); } catch (error) { refused(error); }
+          };
         }
         const link = $('.lk', row);
         if (link) {
@@ -1553,11 +1599,23 @@
     // The bot for the users (0085). Its head says what the bot is doing
     // rather than a scope: that is what an operator looks here to learn.
     { title: 'ui-set-bot', scope: 'ui-set-scope-bot', column: 0, bot: true,
-      names: ['bot_enabled', 'bot_token', 'bot_greeting', 'bot_show_usage', 'bot_show_node'] },
+      names: ['bot_enabled', 'bot_token', 'bot_signup', 'bot_greeting', 'bot_show_usage', 'bot_show_node'] },
     { title: 'ui-set-checks', scope: 'ui-set-scope-nodes', column: 1,
       names: ['heartbeat_secs', 'silence_minutes'] },
     { title: 'ui-set-sponsor', scope: 'ui-set-scope-new', column: 1,
       names: ['default_ad_tag'] },
+    // When the bot writes first to warn a person (0102). A group of its own
+    // in the shorter column: the bot's group is already the longest.
+    { title: 'ui-set-bot-warn', scope: 'ui-set-scope-bot', column: 1,
+      names: ['bot_warn_quota_percent', 'bot_warn_days'] },
+    // What somebody the bot takes in starts with (0105). Nought is no limit.
+    // Under the bot's own group: it is the same bot.
+    { title: 'ui-set-bot-signup-defaults', scope: 'ui-set-scope-bot', column: 0,
+      names: ['bot_signup_quota_gb', 'bot_signup_days', 'bot_signup_devices'] },
+    // The landing page (0108): whether it is there, whether it may be found,
+    // what it says at the top and whether it points at the bot.
+    { title: 'ui-set-site', scope: 'ui-set-scope-site', column: 1,
+      names: ['site_enabled', 'site_indexed', 'site_bot', 'site_title', 'site_intro'] },
   ];
 
   /// Which of them the nodes are told about, for the figure in the head.
@@ -1574,6 +1632,13 @@
     if (name === 'session_hours') return t('ui-lasting-hours', { count: value });
     if (name === 'heartbeat_secs') return t('ui-set-every-seconds', { count: value });
     if (name === 'silence_minutes') return t('ui-lasting-minutes', { count: value });
+    if (name === 'bot_warn_quota_percent') return t('ui-percent', { count: value });
+    if (name === 'bot_warn_days') return t('ui-lasting-days', { count: value });
+    if (name.startsWith('bot_signup_') && value === '0') {
+      return t(name === 'bot_signup_days' ? 'ui-no-expiry' : 'ui-no-limit');
+    }
+    if (name === 'bot_signup_quota_gb') return t('ui-gigabytes', { count: value });
+    if (name === 'bot_signup_days') return t('ui-lasting-days', { count: value });
     return value;
   }
 
@@ -1952,6 +2017,101 @@
     });
   }
 
+  /// Who is behind a tied Telegram account, as Telegram last described them
+  /// (0103): the handle where there is one, else the name; `full` gives both.
+  function telegramName(client, full) {
+    const account = client.telegram || {};
+    const handle = account.username ? `@${account.username}` : '';
+    if (!full) return handle || account.name || '';
+    return [handle, account.name].filter(Boolean).join(' · ');
+  }
+
+  /// The longest message the panel queues, in characters (0102).
+  const MESSAGE_CEILING = 4000;
+
+  /// Writes to people through the bot (0102): to everyone it can write to,
+  /// to those holding an access under a tag, or to one person. The head says
+  /// how many that is as the panel sees it now; the answer says how many it
+  /// was queued for, and whether the bot is running to send it.
+  async function writeMessage(forClient) {
+    let clients;
+    let accesses;
+    let tags;
+    try {
+      [clients, accesses, tags] = await Promise.all([
+        api('GET', `/v1/clients?limit=${PAGE}`),
+        api('GET', `/v1/accesses?limit=${PAGE}`),
+        api('GET', '/v1/tags').catch(() => []),
+      ]);
+    } catch (error) { refused(error); return; }
+    const reachable = new Set(clients.filter((client) => client.telegram).map((client) => client.id));
+    // The same count the panel makes when it queues: a tag reaches those
+    // with an access under it that is not revoked.
+    const reach = (to) => {
+      if (to === 'all') return reachable.size;
+      const [kind, id] = to.split(':');
+      if (kind === 'client') return reachable.has(id) ? 1 : 0;
+      return new Set(accesses
+        .filter((access) => access.tag_id === id && access.state !== 'revoked' && reachable.has(access.client_id))
+        .map((access) => access.client_id)).size;
+    };
+    dialog('message', (box, close) => {
+      put(box, '.dh h2', t('ui-message-title'));
+      const labels = $$('.fld .lbl', box);
+      if (labels[0]) labels[0].textContent = t('ui-message-to');
+      if (labels[1]) labels[1].textContent = t('ui-message-text');
+      const [toBox, textBox] = $$('.fld .inp', box);
+      const to = h('select', { class: 'inp' }, [
+        ['all', t('ui-message-everyone')],
+        ...tags.map((tag) => [`tag:${tag.id}`, t('ui-message-tag', { name: tag.name })]),
+        ...clients.filter((client) => reachable.has(client.id))
+          .map((client) => [`client:${client.id}`, `${client.label} · ${telegramName(client)}`]),
+      ].map(([value, label]) => h('option', { value }, label)));
+      toBox.replaceWith(to);
+      if (forClient) to.value = `client:${forClient.id}`;
+      const text = h('textarea', { class: 'inp area', rows: '6' });
+      textBox.replaceWith(text);
+      const count = $('.cnt', box);
+      const buttons = $$('.df .btn', box);
+      const send = buttons[buttons.length - 1];
+      buttons[0].textContent = t('ui-cancel');
+      buttons[0].addEventListener('click', close);
+      send.textContent = t('ui-message-send');
+      // Counted as the panel counts: characters of the trimmed text.
+      const length = () => [...text.value.trim()].length;
+      const ready = () => {
+        const many = reach(to.value);
+        put(box, '.dh .note', `${num(many)} ${counted('ui-count-recipients', many)}`);
+        if (count) {
+          count.textContent = t('ui-message-length', { count: num(length()), max: num(MESSAGE_CEILING) });
+          count.classList.toggle('bad', length() > MESSAGE_CEILING);
+        }
+        send.disabled = !many || !length() || length() > MESSAGE_CEILING;
+      };
+      to.addEventListener('change', ready);
+      text.addEventListener('input', ready);
+      ready();
+      send.addEventListener('click', async () => {
+        const [kind, id] = to.value.split(':');
+        const body = { text: text.value.trim() };
+        if (kind === 'client') body.client_id = id;
+        if (kind === 'tag') body.tag_id = id;
+        send.disabled = true;
+        try {
+          const answer = await api('POST', '/v1/bot/messages', body);
+          close();
+          const queued = t('ui-message-queued', { count: num(answer.queued) });
+          toast(answer.bot === 'polling' ? queued : `${queued} · ${t('ui-message-waits')}`);
+        } catch (error) {
+          refused(error);
+          ready();
+        }
+      });
+      // Opened for one person, the text is what is left to write.
+      if (forClient) queueMicrotask(() => text.focus());
+    });
+  }
+
   function linkFor(access, node) {
     dialog('link', (box, close) => {
       const fields = $$('.fld .inp', box);
@@ -1981,19 +2141,16 @@
       let acknowledged = false;
       // A link to nowhere is not a link: the button waits for a host as well.
       const ready = () => { get.disabled = !acknowledged || !host.value.trim(); };
+      // The box that is ticked is the stand's own: its label presses it, and
+      // the drawing shows the tick. It opens empty — nobody has agreed yet.
+      const consent = $('#mask', box.parentElement);
       const check = $('.chk', box);
-      if (check) {
-        put(check, '.tx .t', t('ui-link-acknowledge'));
-        const mark = $('.bx', check);
-        const tick = $('.bx svg', check);
-        if (tick) tick.style.opacity = '0';
-        check.addEventListener('click', () => {
-          acknowledged = !acknowledged;
-          if (tick) tick.style.opacity = acknowledged ? '1' : '0';
-          if (mark) mark.style.cssText = acknowledged
-            ? 'background: var(--key); border-color: var(--key);' : '';
-          ready();
-        });
+      if (check) put(check, '.tx .t', t('ui-link-acknowledge'));
+      // Drawn as a label that names no box; told here which one it presses.
+      if (check && consent) check.setAttribute('for', 'mask');
+      if (consent) {
+        consent.checked = false;
+        consent.addEventListener('change', () => { acknowledged = consent.checked; ready(); });
       }
       ready();
       get.addEventListener('click', async () => {
@@ -2036,17 +2193,18 @@
   }
 
   function newAccess(clients, nodes_, isPublic, forClient) {
-    dialog('user', (box, close) => {
-      const wrap = box.parentElement;
-      const cards = $$('.dlg', wrap);
-      const card = cards[1] || cards[0];
-      cards.filter((other) => other !== card).forEach((other) => other.remove());
-      const fields = $$('.fld .inp', card);
-      const who = fields[0];
+    dialog('access', (box, close) => {
+      const fields = $$('.fld .inp', box);
+      const labels = $$('.fld .lbl', box);
       const client = h('select', { class: 'inp' }, clients.filter((candidate) => candidate.state === 'active')
         .map((candidate) => h('option', { value: candidate.id }, candidate.label)));
       const name = h('input', { class: 'inp', type: 'text', maxlength: '64' });
-      who.replaceWith(isPublic ? name : client);
+      fields[0].replaceWith(isPublic ? name : client);
+      // A link that belongs to nobody has a name where a person would be.
+      if (isPublic) {
+        put(box, '.dh h2', t('ui-users-new-public'));
+        if (labels[0]) labels[0].textContent = t('ui-new-access-name');
+      }
       // Opened from a person's own row, it opens on that person.
       if (forClient) client.value = forClient.id;
       const node = h('select', { class: 'inp' }, nodes_.filter((candidate) => candidate.state !== 'burned')
@@ -2056,9 +2214,16 @@
       const devices = editable(fields[3], '');
       const expires = editable(fields[4], '');
       expires.type = 'date';
-      const buttons = $$('.df .btn', card);
+      const buttons = $$('.df .btn', box);
+      const create = buttons[buttons.length - 1];
       buttons[0].addEventListener('click', close);
-      buttons[1].addEventListener('click', async () => {
+      // Nothing to give it on, or nobody to give it to: nothing to create.
+      const ready = () => {
+        create.disabled = !node.value || (isPublic ? !name.value.trim() : !client.value);
+      };
+      name.addEventListener('input', ready);
+      ready();
+      create.addEventListener('click', async () => {
         const body = {
           node_id: node.value,
           quota_bytes: gbToBytes(quotaField.value),
@@ -2082,7 +2247,9 @@
         h('div', { class: 'pair' },
           h('span', { class: 'k' }, t('ui-col-quota')), h('span', { class: 'v' }, quota(client.quota_bytes)),
           h('span', { class: 'k' }, t('ui-col-expires')), h('span', { class: 'v' }, date(client.expires_at)),
-          h('span', { class: 'k' }, t('ui-node-created')), h('span', { class: 'v' }, date(client.created_at))),
+          h('span', { class: 'k' }, t('ui-node-created')), h('span', { class: 'v' }, date(client.created_at)),
+          h('span', { class: 'k' }, t('ui-client-origin')),
+          h('span', { class: 'v' }, t(`ui-client-origin-${client.origin === 'bot' ? 'bot' : 'operator'}`))),
         // What this person holds, and the way to take one back. The users
         // screen was drawn without such a control; this is where the access
         // being turned off can be named.
@@ -2102,12 +2269,24 @@
             }, t(access.state === 'active' ? 'ui-access-disable' : 'ui-access-enable')));
         }))] : []),
         // Whether this person reaches the bot, and the way to change that:
-        // a code to hand them, or the tie taken off (0086). The table above
-        // has no column for it; this card is where there is room.
+        // a code to hand them, or the tie taken off (0086). Who is behind the
+        // account, and whether the bot can write to them first (0102, 0103):
+        // a tie without an account is one the person blocked, or one made
+        // before the panel kept accounts and not written from since.
+        // The account, or that there is none to write to, goes on a line of
+        // its own: beside the buttons, one line would cut the date off.
         h('div', { class: 'lst' }, h('div', { class: 'lk' },
           h('span', { class: 'v' }, `${t('ui-bot-telegram')} · ${client.telegram_linked_at
             ? t('ui-bot-linked-since', { date: shortDate(client.telegram_linked_at) })
-            : t('ui-bot-not-linked')}`),
+            : t('ui-bot-not-linked')}`,
+          ...(client.telegram ? [h('span', { class: 'sub' }, telegramName(client, true))] : []),
+          ...(client.telegram_linked_at && !client.telegram
+            ? [h('span', { class: 'sub' }, t('ui-bot-cannot-write'))] : [])),
+          ...(client.telegram ? [h('button', {
+            type: 'button',
+            class: 'btn',
+            on: { click: () => { close(); writeMessage(client); } },
+          }, t('ui-bot-write'))] : []),
           h('button', {
             type: 'button',
             class: 'btn',
@@ -2139,30 +2318,47 @@
 
   function newNode() {
     dialog('node', (box, close) => {
-      const fields = $$('.fld .inp', box);
-      const label = editable(fields[0], '');
-      const kinds = $$('.tcard', box);
-      let kind = 'mtproto';
-      let masked = true;
-      const domainBox = fields[1] ? editable(fields[1], '') : null;
-      kinds.forEach((choice) => choice.addEventListener('click', () => {
-        kinds.forEach((other) => other.classList.remove('on'));
-        choice.classList.add('on');
-        kind = (choice.textContent.match(/mtproto|web|socks5|http/i) || ['mtproto'])[0].toLowerCase();
+      const wrap = box.parentElement;
+      const label = editable($('.fld .inp', box), '');
+      label.maxLength = 32;
+      // Which transport, and whether it hides, are the stand's own switches:
+      // its cards press them, and the drawing shows the fields each one needs.
+      const KINDS = { t1: 'mtproto', t2: 'web', t3: 'socks5', t4: 'http' };
+      const kind = () => KINDS[($('input[name="tr"]:checked', wrap) || {}).id] || 'mtproto';
+      const mask = $('#mask', wrap);
+      const site = editable($('.only-mt .sitefld .inp', box), '');
+      const domain = editable($('.only-web .sitefld .inp', box), '');
+      // What the panel hands over once the node is made, with this panel's
+      // own address in it, and its own figure for how long a code lives.
+      put(box, '.cmdline', t('ui-new-node-command', {
+        panel: channelAddress(), code: t('ui-new-node-code-word'), fingerprint: t('ui-new-node-fingerprint-word'),
       }));
-      const check = $('.chk', box);
-      if (check) check.addEventListener('click', () => { masked = !masked; $('.bx svg', check).style.opacity = masked ? '1' : '0'; });
+      put(box, '.res .dl dd.mono', t('ui-lasting-minutes', { count: state.enrolMinutes }));
       const buttons = $$('.df .btn', box);
+      const go = buttons[buttons.length - 1];
       buttons[0].addEventListener('click', close);
-      buttons[buttons.length - 1].addEventListener('click', async () => {
-        const body = { label: label.value.trim(), kind };
-        if (kind === 'mtproto') body.masked = masked;
-        if (domainBox && domainBox.value.trim()) body.domain = domainBox.value.trim();
+      const submit = async () => {
+        const body = { label: label.value.trim(), kind: kind() };
+        if (body.kind === 'mtproto') {
+          body.masked = mask.checked;
+          if (mask.checked && site.value.trim()) body.domain = site.value.trim();
+        }
+        if (body.kind === 'web' && domain.value.trim()) body.domain = domain.value.trim();
+        go.disabled = true;
         try {
           const node = await api('POST', '/v1/nodes', body);
           close();
           enrol(node);
-        } catch (error) { refused(error); }
+        } catch (error) {
+          refused(error);
+          go.disabled = false;
+        }
+      };
+      go.addEventListener('click', submit);
+      // The button names Enter, so Enter does it — from a field, where
+      // nothing else would answer the key.
+      box.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && event.target.matches('input.inp')) { event.preventDefault(); submit(); }
       });
     });
   }
@@ -2221,19 +2417,65 @@
     });
   }
 
-  function deleteNode(node) {
+  async function deleteNode(node) {
+    // What this node carries, asked before the dialog opens: the dialog says
+    // in figures what will be lost, and they have to be this node's.
+    let carries;
+    try { carries = await api('GET', `/v1/nodes/${node.id}/carries`); } catch (error) { refused(error); return; }
     dialog('delete', (box, close) => {
       put(box, '.dh h2', t('ui-node-delete-title', { label: node.label }));
-      const confirm = $('.confirm .inp, .lock .inp, .fld .inp', box) || $('.inp', box);
-      const typed = editable(confirm, '');
+      const many = Number(carries.accesses || 0);
+      const links = carries.public_links || [];
+      const steps = $$('.step', box);
+      const revoked = many
+        ? t('ui-delete-revoke', { count: num(many), noun: counted('ui-count-accesses-of', many) })
+        : t('ui-delete-revoke-none');
+      if (steps[0] && steps[0].children[1]) {
+        steps[0].children[1].textContent = links.length
+          ? `${revoked}, ${t('ui-delete-with-links', { names: links.join(', ') })}` : revoked;
+      }
+      const keeps = $$('.keep .v', box);
+      if (keeps[0]) {
+        keeps[0].replaceChildren(
+          h('span', { class: 'mono' }, num(many)),
+          ` ${counted('ui-count-accesses', many)} · ${carries.last_active_on
+            ? t('ui-delete-last-active', { date: shortDate(`${carries.last_active_on}T00:00:00Z`) })
+            : t('ui-never-connected')}`);
+      }
+      if (keeps[1]) {
+        keeps[1].replaceChildren(
+          h('span', { class: 'mono' }, bytes(Number(carries.carried_bytes || 0))), ` · ${t('ui-delete-by-day')}`);
+      }
+      // The field the stand drew, kept: the drawing wakes the button when
+      // what is typed is the pattern, so the pattern is this node's name.
+      const typed = $('#confirm', box);
+      typed.value = '';
+      typed.placeholder = t('ui-delete-type', { label: node.label });
+      typed.pattern = node.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const buttons = $$('.df .btn', box);
       const go = buttons[buttons.length - 1];
+      const named = () => typed.value.trim() === node.label;
       go.disabled = true;
-      typed.addEventListener('input', () => { go.disabled = typed.value.trim() !== node.label; });
+      typed.addEventListener('input', () => { go.disabled = !named(); });
       buttons[0].addEventListener('click', close);
-      go.addEventListener('click', async () => {
-        try { await api('POST', `/v1/nodes/${node.id}/burn`); close(); reload(); } catch (error) { refused(error); }
-      });
+      // Held for two seconds, as the dialog says: the drawing fills the
+      // button while it is pressed, and letting go early does nothing.
+      let holding = null;
+      const release = () => { clearTimeout(holding); holding = null; };
+      const press = () => {
+        if (holding || !named()) return;
+        holding = setTimeout(async () => {
+          holding = null;
+          go.disabled = true;
+          try { await api('POST', `/v1/nodes/${node.id}/burn`); close(); reload(); } catch (error) { refused(error); go.disabled = !named(); }
+        }, HOLD_MS);
+      };
+      go.addEventListener('pointerdown', press);
+      go.addEventListener('pointerup', release);
+      go.addEventListener('pointerleave', release);
+      go.addEventListener('keydown', (event) => { if ((event.key === 'Enter' || event.key === ' ') && !event.repeat) press(); });
+      go.addEventListener('keyup', release);
+      go.addEventListener('blur', release);
     });
   }
 
@@ -2258,6 +2500,7 @@
       ] : []),
       ...(state.me.role === 'superadmin'
         ? [{ label: t('ui-nodes-new'), hint: t('ui-palette-command'), go: newNode }] : []),
+      { label: t('ui-message-title'), hint: t('ui-palette-command'), go: () => writeMessage(null) },
       { label: t('ui-sign-out'), hint: t('ui-palette-command'), go: signOut },
       ...['ru', 'en'].filter((code) => code !== state.lang).map((code) => ({
         label: t('ui-palette-language', { name: code.toUpperCase() }),
@@ -2448,6 +2691,7 @@
       state.channel = panel.channel_address || '';
       state.uptime = panel.uptime_seconds == null ? null : Number(panel.uptime_seconds);
       state.own = panel.own || null;
+      state.enrolMinutes = Number(panel.enrollment_minutes) || 60;
     } catch { state.setupNeeded = false; }
     showRail();
     route();
