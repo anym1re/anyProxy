@@ -538,6 +538,13 @@ async fn the_application_role_cannot_rewrite_the_audit_log() {
     .unwrap();
 
     let mut connection = pool.acquire().await.unwrap();
+    // Since PostgreSQL 16 a role that created another may administer it but
+    // not become it until it grants itself that; before 16 the clause does
+    // not exist and there is nothing to grant. Whether this statement is
+    // taken does not matter: the next one says whether the role can be worn.
+    let _ = sqlx::query("grant anyproxy_app to current_user with set true")
+        .execute(&mut *connection)
+        .await;
     sqlx::query("set role anyproxy_app")
         .execute(&mut *connection)
         .await
