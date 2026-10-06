@@ -249,43 +249,7 @@ impl<'a> Guarded<'a> {
         if !self.may_see(access.common().holder()).await? {
             return Err(ApiError::NotFound);
         }
-        self.refuse_new_holder_mix(access).await?;
         AccessRepo::insert(self.pool, access, credential, self.key).await?;
-        Ok(())
-    }
-
-    /// Refuses placing a public link on a node that already carries live client
-    /// accesses, and a client access on a node that already carries a live
-    /// public link (0090, 0097): a node whose address is published will be
-    /// censored, and clients on it die with it.
-    ///
-    /// Only a NEW mix is refused. A node that is already mixed — the rule was
-    /// documentation-only before, so such nodes exist — can still grow the
-    /// kind it already has, or one forgotten public link would freeze a node
-    /// full of paying clients. "Live" is any access that is not revoked and not
-    /// past its own expiry; a revoked or lapsed access is dead and endangers
-    /// nothing.
-    async fn refuse_new_holder_mix(&self, access: &AnyAccess) -> Result<(), ApiError> {
-        let adding_public = matches!(access.common().holder(), Holder::Public(_));
-        let now = OffsetDateTime::now_utc();
-        let siblings = AccessRepo::by_node(self.pool, access.common().node_id()).await?;
-        let mut live_public = false;
-        let mut live_client = false;
-        for one in &siblings {
-            let common = one.common();
-            let live = common.state() != AccessState::Revoked
-                && common.expires_at().is_none_or(|when| when > now);
-            if !live {
-                continue;
-            }
-            match common.holder() {
-                Holder::Public(_) => live_public = true,
-                Holder::Client(_) => live_client = true,
-            }
-        }
-        if creates_new_holder_mix(adding_public, live_public, live_client) {
-            return Err(ApiError::Conflict("node_mixes_holders"));
-        }
         Ok(())
     }
 
@@ -498,51 +462,5 @@ impl<'a> Guarded<'a> {
         }
         let since = time::OffsetDateTime::now_utc() - time::Duration::days(days.clamp(1, 3650));
         Ok(AuditRepo::counts(self.pool, since).await?)
-    }
-}
-
-/// Whether adding an access of the given holder kind to a node that already
-/// carries these live holder kinds would create a NEW mix of public and client
-/// holders (0090, 0097).
-///
-/// Same-kind growth is never a mix, and growth on a node that is already mixed
-/// is not a new mix: the rule prevents sweeping the two kinds together for the
-/// first time, not the kind a node already carries. Refusing same-kind growth
-/// would freeze a node full of paying clients over one forgotten public link.
-fn creates_new_holder_mix(adding_public: bool, live_public: bool, live_client: bool) -> bool {
-    let (opposite, same) = if adding_public {
-        (live_client, live_public)
-    } else {
-        (live_public, live_client)
-    };
-    opposite && !same
-}
-
-#[cfg(test)]
-mod tests {
-    use super::creates_new_holder_mix;
-
-    #[test]
-    fn a_kind_on_an_empty_node_is_no_mix() {
-        assert!(!creates_new_holder_mix(true, false, false));
-        assert!(!creates_new_holder_mix(false, false, false));
-    }
-
-    #[test]
-    fn same_kind_growth_is_no_mix() {
-        assert!(!creates_new_holder_mix(true, true, false));
-        assert!(!creates_new_holder_mix(false, false, true));
-    }
-
-    #[test]
-    fn the_opposite_kind_on_a_single_kind_node_is_a_new_mix() {
-        assert!(creates_new_holder_mix(true, false, true));
-        assert!(creates_new_holder_mix(false, true, false));
-    }
-
-    #[test]
-    fn growth_on_an_already_mixed_node_is_not_refused() {
-        assert!(!creates_new_holder_mix(true, true, true));
-        assert!(!creates_new_holder_mix(false, true, true));
     }
 }
