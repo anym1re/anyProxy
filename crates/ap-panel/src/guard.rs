@@ -309,6 +309,16 @@ impl<'a> Guarded<'a> {
         Ok(())
     }
 
+    /// Puts a public link on the landing page or takes it off (0108).
+    pub async fn set_access_listed(&self, id: Uuid, listed: bool) -> Result<(), ApiError> {
+        let access = self.access(id).await?;
+        if !matches!(access.common().holder(), Holder::Public(_)) {
+            return Err(ApiError::Unprocessable("not_a_public_link"));
+        }
+        AccessRepo::set_listed(self.pool, id, listed).await?;
+        Ok(())
+    }
+
     /// Moves an access to a new state.
     pub async fn set_access_state(&self, id: Uuid, state: AccessState) -> Result<bool, ApiError> {
         self.access(id).await?;

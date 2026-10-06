@@ -90,6 +90,11 @@ pub async fn published(state: &AppState) -> Result<Vec<PublicLink>, crate::ApiEr
         if common.state() != AccessState::Active {
             continue;
         }
+        // Taken off the landing page by the operator (0108): it still works,
+        // and is handed out by hand.
+        if !common.listed() {
+            continue;
+        }
         if common.expires_at().is_some_and(|until| until <= now) {
             continue;
         }
@@ -151,12 +156,98 @@ pub async fn published(state: &AppState) -> Result<Vec<PublicLink>, crate::ApiEr
     Ok(links)
 }
 
+/// What the landing page is set to, as the site is told (0108).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SiteSetting {
+    /// Whether the site answers at all.
+    pub enabled: bool,
+    /// Whether an indexer may take it.
+    pub indexed: bool,
+    /// The operator's heading; empty for the catalogue's own.
+    pub title: String,
+    /// The operator's text under it; empty for the catalogue's own.
+    pub intro: String,
+    /// The bot the page points at, when there is one worth pointing at.
+    pub bot: Option<String>,
+}
+
+/// Reads what the landing page is set to.
+///
+/// The bot is named only while it is answering and taking people in (0105):
+/// a button that leads to «send the code you were given» leads nowhere.
+pub async fn site_setting(state: &AppState) -> Result<SiteSetting, crate::ApiError> {
+    let settings = crate::settings::Settings::read(state.pool()).await?;
+    let (standing, username) = state.bot_status().snapshot();
+    let taking = standing == crate::bot::Standing::Polling && state.signup_open(&settings);
+    Ok(site_from(&settings, taking.then_some(username).flatten()))
+}
+
+/// What the settings say the site is to be, given the bot that is answering
+/// and taking people in right now, if one is.
+fn site_from(settings: &crate::settings::Settings, bot: Option<String>) -> SiteSetting {
+    SiteSetting {
+        enabled: settings.on("site_enabled"),
+        indexed: settings.on("site_indexed"),
+        title: settings.text("site_title").trim().to_owned(),
+        intro: settings.text("site_intro").trim().to_owned(),
+        bot: bot.filter(|_| settings.on("site_bot")),
+    }
+}
+
 async fn public_links(State(state): State<AppState>) -> Result<Response, crate::ApiError> {
-    let links = published(&state).await?;
+    let site = site_setting(&state).await?;
+    // A site that is switched off is told nothing to show: a link's secret
+    // does not leave the panel for a page nobody is to see.
+    let links = if site.enabled {
+        published(&state).await?
+    } else {
+        Vec::new()
+    };
     Ok((
         StatusCode::OK,
         [("cache-control", "no-store")],
-        axum::Json(serde_json::json!({ "links": links })),
+        axum::Json(serde_json::json!({ "site": site, "links": links })),
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::Settings;
+
+    #[test]
+    fn a_site_nobody_has_set_is_on_and_may_be_indexed() {
+        let site = site_from(&Settings::of(&[]), None);
+        assert!(site.enabled && site.indexed);
+        assert_eq!((site.title.as_str(), site.intro.as_str()), ("", ""));
+        assert_eq!(site.bot, None);
+    }
+
+    #[test]
+    fn the_site_is_told_what_the_operator_set() {
+        let settings = Settings::of(&[
+            ("site_enabled", "off"),
+            ("site_indexed", "off"),
+            ("site_title", "  Прокси  "),
+            ("site_intro", "Откройте ссылку."),
+        ]);
+        let site = site_from(&settings, None);
+        assert!(!site.enabled && !site.indexed);
+        assert_eq!(site.title, "Прокси");
+        assert_eq!(site.intro, "Откройте ссылку.");
+    }
+
+    #[test]
+    fn the_bot_is_named_only_when_it_takes_people_in_and_the_button_is_wanted() {
+        let bot = || Some("any_proxy_bot".to_owned());
+        assert_eq!(site_from(&Settings::of(&[]), bot()).bot, bot());
+        // Not answering, or asking for a code: nobody to point at.
+        assert_eq!(site_from(&Settings::of(&[]), None).bot, None);
+        // Answering, and the operator does not want the button.
+        assert_eq!(
+            site_from(&Settings::of(&[("site_bot", "off")]), bot()).bot,
+            None
+        );
+    }
 }

@@ -46,6 +46,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/accesses/public", get(list_public_accesses))
         .route("/v1/accesses/{id}", get(read_access))
         .route("/v1/accesses/{id}/state", post(set_access_state))
+        .route("/v1/accesses/{id}/listed", post(set_access_listed))
         .route("/v1/accesses/{id}/link", post(render_link))
         .route("/v1/tags", get(list_tags).post(create_tag))
         .route("/v1/nodes", get(list_nodes).post(create_node))
@@ -612,6 +613,8 @@ fn access_json(access: &AnyAccess) -> Result<serde_json::Value, ApiError> {
         "expires_at": common.expires_at().map(format_rfc3339).transpose()?,
         "max_devices": common.max_devices(),
         "created_at": format_rfc3339(common.created_at())?,
+        // Whether a public link is on the landing page (0108).
+        "listed": common.listed(),
     }))
 }
 
@@ -792,6 +795,31 @@ async fn set_access_state(
             "access.state",
             Some(&said),
             serde_json::json!({ "state": body.state, "changed": changed, "access": id }),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct Listing {
+    listed: bool,
+}
+
+/// Puts a public link on the landing page or takes it off (0108).
+async fn set_access_listed(
+    State(state): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Listing>,
+) -> Result<StatusCode, ApiError> {
+    let guarded = state.guarded(&actor);
+    let said = said_access(&guarded, id).await?;
+    guarded.set_access_listed(id, body.listed).await?;
+    guarded
+        .record(
+            "access.listed",
+            Some(&said),
+            serde_json::json!({ "listed": body.listed, "access": id }),
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)

@@ -86,6 +86,7 @@ api-password-too-short = the password is too short
 api-value-refused = the panel would not take that value
 api-already-set-up = this panel already has an owner
 api-node-full = a WEB node holds at most 32 accesses: the engine takes no more
+api-not-a-public-link = this is not a public link
 api-message-form = the message is empty, longer than 4000 characters, or addressed to a user and a tag at once
 api-unknown = the panel refused the request ({ $code })
 

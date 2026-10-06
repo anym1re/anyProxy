@@ -9,7 +9,8 @@ use uuid::Uuid;
 use crate::StoreError;
 
 const COLUMNS: &str = "id, client_id, name, node_id, surface, method, credential_nonce, \
-     credential_ciphertext, tag_id, quota_bytes, expires_at, max_devices, state, created_at";
+     credential_ciphertext, tag_id, quota_bytes, expires_at, max_devices, state, created_at, \
+     listed";
 
 /// What one node is carrying, as far as deciding whether it can take one more
 /// access goes (0105).
@@ -217,6 +218,18 @@ impl AccessRepo {
         ))
     }
 
+    /// Puts a public link on the landing page or takes it off (0108).
+    /// Whether there was such a link: a client's own access is not one.
+    pub async fn set_listed(pool: &PgPool, id: Uuid, listed: bool) -> Result<bool, StoreError> {
+        let result =
+            sqlx::query("update access set listed = $2 where id = $1 and client_id is null")
+                .bind(id)
+                .bind(listed)
+                .execute(pool)
+                .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Moves an access to a new state. A revoked one is never moved out of it.
     pub async fn set_state(
         pool: &PgPool,
@@ -284,7 +297,8 @@ fn read_access(row: sqlx::postgres::PgRow) -> Result<AnyAccess, StoreError> {
         row.try_get("max_devices")?,
         AccessState::from_stored(&row.try_get::<String, _>("state")?)?,
         row.try_get("created_at")?,
-    );
+    )
+    .with_listed(row.try_get("listed")?);
     let method: String = row.try_get("method")?;
     match row.try_get::<String, _>("surface")?.as_str() {
         "stealth" => Ok(AnyAccess::Stealth(Access::<Stealth>::new(

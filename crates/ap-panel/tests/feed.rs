@@ -388,3 +388,99 @@ async fn an_address_is_an_ip_and_only_a_node_manager_sets_it() {
     .await;
     assert_eq!(cleared.status, StatusCode::NO_CONTENT, "{}", cleared.body);
 }
+
+#[tokio::test]
+async fn a_link_taken_off_the_landing_page_leaves_the_feed_and_goes_on_working() {
+    let panel = panel!();
+    let (_, token) = admin(&panel, Role::Superadmin).await;
+    let node = a_node(&panel, &token, "socks5", Some("203.0.113.21")).await;
+    let name = unique("p");
+    let link = a_public_link(&panel, &token, &node, &name).await;
+    assert!(named(&feed(&panel).await, &name).is_some());
+
+    let place = format!("/v1/accesses/{link}/listed");
+    let listed = |listed: bool| {
+        call(
+            &panel.router,
+            "POST",
+            &place,
+            Some(&token),
+            Some(serde_json::json!({ "listed": listed })),
+        )
+    };
+    let off = listed(false).await;
+    assert_eq!(off.status, StatusCode::NO_CONTENT, "{}", off.body);
+    assert!(
+        named(&feed(&panel).await, &name).is_none(),
+        "a link taken off the page is still in the feed"
+    );
+
+    // Off the page, and still a link: the operator is handed it as before.
+    let handed = call(
+        &panel.router,
+        "POST",
+        &format!("/v1/accesses/{link}/link"),
+        Some(&token),
+        Some(serde_json::json!({ "host": "203.0.113.21", "acknowledged": true })),
+    )
+    .await;
+    assert_eq!(handed.status, StatusCode::OK, "{}", handed.body);
+    let read = call(
+        &panel.router,
+        "GET",
+        &format!("/v1/accesses/{link}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(read.json()["listed"], false);
+    assert_eq!(read.json()["state"], "active");
+
+    let on = listed(true).await;
+    assert_eq!(on.status, StatusCode::NO_CONTENT, "{}", on.body);
+    assert!(named(&feed(&panel).await, &name).is_some());
+
+    // The feed says what the site is to be, beside what it shows.
+    let told = feed(&panel).await;
+    assert!(told["site"]["enabled"].is_boolean(), "{told}");
+    assert!(told["site"]["indexed"].is_boolean());
+
+    // A client's own access is not a link the page could show.
+    let client = call(
+        &panel.router,
+        "POST",
+        "/v1/clients",
+        Some(&token),
+        Some(serde_json::json!({ "label": unique("c") })),
+    )
+    .await;
+    let access = call(
+        &panel.router,
+        "POST",
+        "/v1/accesses",
+        Some(&token),
+        Some(serde_json::json!({
+            "client_id": client.json()["id"], "node_id": node,
+        })),
+    )
+    .await;
+    assert_eq!(access.status, StatusCode::CREATED, "{}", access.body);
+    let refused = call(
+        &panel.router,
+        "POST",
+        &format!(
+            "/v1/accesses/{}/listed",
+            access.json()["id"].as_str().unwrap()
+        ),
+        Some(&token),
+        Some(serde_json::json!({ "listed": false })),
+    )
+    .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        refused.body
+    );
+    assert_eq!(refused.json()["error"]["code"], "not_a_public_link");
+}

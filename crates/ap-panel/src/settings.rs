@@ -139,6 +139,43 @@ pub const KNOWN: &[Known] = &[
         max: 0,
         secret: false,
     },
+    // The landing page (0108): whether it answers, whether it may be
+    // indexed, what it says at the top, and whether it points at the bot.
+    Known {
+        name: "site_enabled",
+        fallback: "on",
+        choices: SWITCH,
+        max: 0,
+        secret: false,
+    },
+    Known {
+        name: "site_indexed",
+        fallback: "on",
+        choices: SWITCH,
+        max: 0,
+        secret: false,
+    },
+    Known {
+        name: "site_title",
+        fallback: "",
+        choices: &[],
+        max: 160,
+        secret: false,
+    },
+    Known {
+        name: "site_intro",
+        fallback: "",
+        choices: &[],
+        max: 600,
+        secret: false,
+    },
+    Known {
+        name: "site_bot",
+        fallback: "on",
+        choices: SWITCH,
+        max: 0,
+        secret: false,
+    },
     // At what share of a quota the bot warns the person, once (0102).
     Known {
         name: "bot_warn_quota_percent",
@@ -185,6 +222,17 @@ impl Settings {
                 .map(|one| (one.name, one.value))
                 .collect(),
         })
+    }
+
+    /// Settings as given, for a test that needs no database.
+    #[cfg(test)]
+    pub(crate) fn of(given: &[(&str, &str)]) -> Self {
+        Self {
+            values: given
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        }
     }
 
     /// What a setting says, as text.
@@ -249,6 +297,9 @@ mod tests {
             "bot_show_usage",
             "bot_show_node",
             "bot_signup",
+            "site_enabled",
+            "site_indexed",
+            "site_bot",
         ] {
             assert!(acceptable(name, "on"), "{name}");
             assert!(acceptable(name, "off"), "{name}");

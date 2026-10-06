@@ -160,6 +160,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0028_client_signup",
         include_str!("../../../migrations/0028_client_signup.sql"),
     ),
+    (
+        "0029_access_listed",
+        include_str!("../../../migrations/0029_access_listed.sql"),
+    ),
 ];
 
 /// The migrations this build carries, in the order they apply.

@@ -112,6 +112,9 @@ pub struct AccessCommon {
     max_devices: Option<i32>,
     state: AccessState,
     created_at: OffsetDateTime,
+    /// Whether a public link is shown on the landing page (0108). Says
+    /// nothing about a client's own access, which no page shows.
+    listed: bool,
 }
 
 impl AccessCommon {
@@ -127,6 +130,7 @@ impl AccessCommon {
             max_devices: None,
             state: AccessState::Active,
             created_at,
+            listed: true,
         }
     }
 
@@ -153,7 +157,19 @@ impl AccessCommon {
             max_devices,
             state,
             created_at,
+            listed: true,
         }
+    }
+
+    /// Says whether a public link is shown on the landing page (0108).
+    pub fn with_listed(mut self, listed: bool) -> Self {
+        self.listed = listed;
+        self
+    }
+
+    /// Whether a public link is shown on the landing page.
+    pub fn listed(&self) -> bool {
+        self.listed
     }
 
     /// Puts the access in a tag, for selection and bulk withdrawal.
