@@ -748,8 +748,8 @@ mod tests {
 
     #[test]
     fn a_bare_code_is_taken_as_a_start() {
-        let code = "0123456789abcdef0123456789abcdef";
-        assert_eq!(parse(code), Ask::Start(Some(code.to_owned())));
+        let code = "0123456789abcdef".repeat(2);
+        assert_eq!(parse(&code), Ask::Start(Some(code.clone())));
         assert_eq!(parse("0123456789abcdef0123456789abcdeg"), Ask::Help);
     }
 

@@ -191,7 +191,7 @@ async fn a_wrong_code_and_a_spent_code_get_one_answer() {
 
     let wrong = answer(
         &panel.state,
-        &from(first, "/start 00000000000000000000000000000000"),
+        &from(first, &format!("/start {}", "0".repeat(32))),
     )
     .await
     .unwrap();

@@ -21,3 +21,11 @@ cbfc64991584c881a87c3bc9e90d5fd6e5d3d7a5:crates/ap-core/src/name.rs:mtproto-secr
 cbfc64991584c881a87c3bc9e90d5fd6e5d3d7a5:crates/ap-core/src/name.rs:mtproto-secret:339
 cbfc64991584c881a87c3bc9e90d5fd6e5d3d7a5:crates/ap-engine/src/config.rs:mtproto-secret:811
 cbfc64991584c881a87c3bc9e90d5fd6e5d3d7a5:crates/ap-engine/src/config.rs:mtproto-secret:815
+
+# These two are codes a test hands the bot: the digits from nought to f twice
+# over, and thirty-two noughts for a code that matches nothing. A code has the
+# length of a secret, which is all the rule saw. The tests build them now, and
+# the commit that spelled them out is named here for the same reason as above.
+
+7779fb64e307a8846fb63b74cad069110d7ba8e4:crates/ap-panel/src/bot/talk.rs:mtproto-secret:491
+7779fb64e307a8846fb63b74cad069110d7ba8e4:crates/ap-panel/tests/bot.rs:mtproto-secret:188
